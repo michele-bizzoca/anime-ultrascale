@@ -852,7 +852,7 @@ for _ in range(main_iterations - 1):
            (1 / (main_iterations - 1))                                            )
     step_forward()
 
-if main_iterations != 0:
+if main_iterations > 0:
     run_realesrgan(settings.soft.model)
     step_forward()
 
