@@ -13,10 +13,10 @@ import re
 # Standard Unqualified
 from os import getpid
 from pathlib import Path
-from enum import IntEnum
+from enum import Enum, IntEnum
 from datetime import datetime
 from dataclasses import dataclass, asdict
-from typing import cast, Callable, TypeVar, Generic, NoReturn
+from typing import cast, Callable, TypeVar, NoReturn
 from types import SimpleNamespace
 
 # Custom Qualified
@@ -102,11 +102,11 @@ class CoreOption(IntEnum):
     final_scaler      = 11
 
 @dataclass
-class FlexOption(Generic[T]):
+class FlexOption:
     name      : str
     letter    : str
-    values    : list[T]
-    default   : T
+    values    : list[str]
+    default   : str
 
 flex_register = [
 
@@ -120,10 +120,10 @@ flex_register = [
 
     FlexOption (
 
-        "tile"    ,
-        "t"       ,
-        range(16) ,
-        0
+        "tile"                      ,
+        "t"                         ,
+        [str(i) for i in range(16)] ,
+        "0"
     )
 ]
 
@@ -169,10 +169,10 @@ class ScalerSettings:
 @dataclass
 class Settings:
 
-    main   : MainSettings
-    soft   : ModelSettings
-    hard   : ModelSettings
-    scaler : ScalerSettings
+    main    : MainSettings
+    soft    : ModelSettings
+    hard    : ModelSettings
+    scaling : ScalerSettings
 
 @dataclass
 class Session:
@@ -181,6 +181,46 @@ class Session:
     input      : ImageInfo
     output     : ImageInfo
     settings   : Settings
+
+########################################################################################
+# Transformations Description
+########################################################################################
+
+@dataclass
+class Scaling:
+    algorithm  : Image.Resampling
+    in_width   : int
+    in_height  : int
+    out_width  : int
+    out_height : int
+
+@dataclass
+class ScalingAI:
+    model      : str
+    in_width   : int
+    in_height  : int
+    out_width  : int
+    out_height : int
+
+@dataclass
+class PhaseClosure:
+    pass
+
+@dataclass
+class Identity:
+    pass
+
+type Unit = Scaling | ScalingAI | PhaseClosure | Identity
+
+def cost(unit: Unit) -> float:
+
+    if not isinstance(unit, (Scaling, ScalingAI)):
+        return 0
+
+    return ( unit.out_width                                *
+             unit.out_height                               *
+             (1.0 if isinstance(unit, ScalingAI) else 0.1) /
+             1000000                                       )
 
 ########################################################################################
 # Error Reporting
@@ -206,14 +246,12 @@ for option in flex_register:
     flex_option_by_name[option.name]     = option
     flex_option_by_letter[option.letter] = option
 
-fixed_arguments    = []
-flex_options       = {}
-positional_options = []
-
 early_assume( len(sys.argv) >= len(Argument) ,
               "incomplete I/O specification" )
 
-fixed_arguments = sys.argv[:len(Argument)]
+fixed_arguments    = sys.argv[:len(Argument)]
+flex_options       = {}
+positional_options = []
 
 i = len(Argument)
 while i < len(sys.argv):
@@ -233,7 +271,7 @@ while i < len(sys.argv):
         option = flex_option_by_letter[key]
 
     else:
-        early_assume( not flex.options                             ,
+        early_assume( not flex_options                             ,
                       "positional option following a floating one" )
         positional_options.append(arg)
         i += 1
@@ -320,7 +358,7 @@ if save_level >= SaveLevel.text:
     def close_log_file(): log_handle.close()
     atexit.register(close_log_file)
 
-    log("log system is operative")
+log("the log system is operative")
 
 ########################################################################################
 # Error Reporting
@@ -396,7 +434,7 @@ log("the input image has been loaded")
 # State
 ########################################################################################
 
-state = SimpleNamespace(image = input_image)
+state = SimpleNamespace(image = input_image, units = [])
 
 ########################################################################################
 # Nested Dictionary Underscore-Based Flattening
@@ -623,7 +661,7 @@ else:
           f"{len(Argument) - 1 + len(PathOption)} or "
           f"{len(Argument) - 1 + len(CoreOption)} expected" )
 
-log("options have been loaded")
+log("the options have been loaded")
 
 ########################################################################################
 # Disjoint Settings Validation
@@ -648,20 +686,20 @@ assume( (model_folder / (settings.hard.model + ".bin")).is_file()   ,
 assume( (model_folder / (settings.hard.model + ".param")).is_file() ,
         "missing hard-phase model parameters (.param)"              )
 
-assume ( settings.scaler.main in ["bicubic", "lanczos"] ,
+assume ( settings.scaling.main in ["bicubic", "lanczos"] ,
         "unknown scaling algorithm"                     )
 
-assume ( settings.scaler.final in ["bicubic", "lanczos"] ,
+assume ( settings.scaling.final in ["bicubic", "lanczos"] ,
         "unknown scaling algorithm"                      )
 
-log("settings have passed disjoint validation")
+log("the settings have passed disjoint validation")
 
 ########################################################################################
 # Shorthands
 ########################################################################################
 
-input_min_length = min(input_width, input_height)
-input_max_length = max(input_width, input_height)
+input_min_length = int(min(input_width, input_height))
+input_max_length = int(max(input_width, input_height))
 input_mpx        = input_width * input_height / float(1000000)
 
 main_factor  = settings.main.multiplier / settings.main.divisor
@@ -673,17 +711,17 @@ total_factor = max( settings.main.multiplier * max(soft_factor, hard_factor) ,
                     1 if total_main_multiplier >= settings.soft.multiplier
                       else settings.soft.multiplier / settings.main.divisor  )
 
-final_width      = int(input_width  * settings.main.multiplier)
-final_height     = int(input_height * settings.main.multiplier)
-final_min_length = min(final_width, final_height)
-final_max_length = max(final_width, final_height)
+output_width      = int(input_width * settings.main.multiplier)
+output_height     = int(input_height * settings.main.multiplier)
+output_min_length = min(output_width, output_height)
+output_max_length = max(output_width, output_height)
 
 base_main_width  = int(input_width  / settings.main.divisor)
 base_main_height = int(input_height / settings.main.divisor)
-base_soft_width  = int(final_width  / settings.soft.divisor)
-base_soft_height = int(final_height / settings.soft.divisor)
-base_hard_width  = int(final_width  / settings.hard.divisor)
-base_hard_height = int(final_height / settings.hard.divisor)
+base_soft_width  = int(output_width / settings.soft.divisor)
+base_soft_height = int(output_height / settings.soft.divisor)
+base_hard_width  = int(output_width / settings.hard.divisor)
+base_hard_height = int(output_height / settings.hard.divisor)
 
 ########################################################################################
 # Combined Settings Validation
@@ -699,14 +737,14 @@ assume ( settings.hard.multiplier >= settings.hard.divisor ,
          "hard-phase divisor exceeds multiplier"            )
 
 assume (input_min_length >= settings.main.divisor and
-        final_min_length >= settings.soft.divisor and
-        final_min_length >= settings.hard.divisor,
+        output_min_length >= settings.soft.divisor and
+        output_min_length >= settings.hard.divisor,
          "attempt to generate an empty intermediate image")
 
 assume( input_mpx * total_factor ** 2 < MAX_MPX                                ,
         f"attempt to generate an intermediate image larger than {MAX_MPX} Mpx" )
 
-log("settings have passed combined validation")
+log("the settings have passed combined validation")
 
 ########################################################################################
 # Session Construction
@@ -718,7 +756,7 @@ session = Session (
                 SOFTWARE_VERSION                        ,
                 flex_options["save"]                    ) ,
     ImageInfo(input_format, input_mode, input_width, input_height)   ,
-    ImageInfo(OUTPUT_FORMAT, OUTPUT_MODE, final_width, final_height) ,
+    ImageInfo(OUTPUT_FORMAT, OUTPUT_MODE, output_width, output_height) ,
     settings
 )
 
@@ -731,7 +769,7 @@ if save_level >= SaveLevel.text:
     with open(session_file, "w") as session_handle:
         session_handle.write(export_session(session))
 
-    log("session file has been written")
+    log("the session file has been written")
 
 ########################################################################################
 # Settings Recording
@@ -742,7 +780,7 @@ if save_level >= SaveLevel.text:
     with open(settings_file, "w") as settings_handle:
         settings_handle.write(export_settings(settings))
 
-    log("settings file has been written")
+    log("the settings file has been written")
 
 ########################################################################################
 # Internal Output Naming System
@@ -788,23 +826,27 @@ def phase_forward() -> None:
     naming_state.j = 0
 
 ########################################################################################
-# RealESRGAN Runner
+# Runners
 ########################################################################################
 
-def run_realesrgan(model_name: str):
+def run_realesrgan(model: str):
+
+    ms = settings.soft if model == settings.soft.model else settings.hard
 
     state.image.save(temp_input_file)
 
     subprocess.run(
 
-        [ str(renv_file)                                                ,
-          "-i", str(temp_input_file)                                    ,
-          "-o", str(temp_output_file)                                   ,
-          "-m", str(model_folder)                                       ,
-          "-n", model_name                                              ,
-          "-t", "0" if tiling_level == 0 else 64 * flex_options["tile"] ,
-          "-g", "0"                                                     ,
-          "-j", "1:1:1"                                                 ],
+        [ str(renv_file)                                     ,
+          "-i", str(temp_input_file)                         ,
+          "-o", str(temp_output_file)                        ,
+          "-m", str(model_folder)                            ,
+          "-n", ms.model                                     ,
+          "-t", "0" if flex_options["tile"] == "0"
+                    else str(64 * int(flex_options["tile"])) ,
+          "-g", "0"                                          ,
+          "-j", "1:1:1"                                      ,
+          "-s", str(ms.multiplier)                           ],
 
         check = True
     )
@@ -812,92 +854,137 @@ def run_realesrgan(model_name: str):
     with Image.open(temp_output_file) as result:
         state.image = result.copy()
 
-########################################################################################
-# Image Processing
-########################################################################################
-
-scalers = [Image.Resampling.BICUBIC if settings.scaler.main == "bicubic"
-                                    else Image.Resampling.LANCZOS         ,
-           Image.Resampling.BICUBIC if settings.scaler.final == "bicubic"
-                                    else Image.Resampling.LANCZOS         ]
-
-def scale(factor: float, final: bool = False):
-
-    size        = int(state.image.width * factor), int(state.image.height * factor)
-    state.image = state.image.resize(size, scalers[final])
-
-def resize(width: int, height: int, final: bool = False):
-
-    state.image = state.image.resize((width, height), scalers[final])
+def run_algorithm(algorithm: Image.Resampling, size: tuple[int, int]) -> None:
+    state.image = state.image.resize(size, algorithm)
 
 ########################################################################################
-# Input Phase
+# Scaling Algorithms
 ########################################################################################
 
-step_forward()
-
-resize(base_main_width, base_main_height)
-step_forward()
-
-phase_forward()
+main_scaler  = Image.Resampling[settings.scaling.main]
+final_scaler = Image.Resampling[settings.scaling.final]
 
 ########################################################################################
-# Main Phase
+# Planners
+########################################################################################
+
+def current_size() -> tuple[int, int]:
+
+    for i in range(len(state.units) - 1, 0, -1):
+
+        unit = state.units[i]
+
+        if isinstance(unit, (Scaling, ScalingAI)):
+            return unit.out_width, unit.out_height
+        else:
+            continue
+
+    return input_width, input_height
+
+def plan_scaling( arg: float |tuple[int, int]               ,
+                  algorithm: Image.Resampling = main_scaler ) -> None:
+
+    in_width  , in_height  = current_size()
+    out_width , out_height = ( arg if isinstance(arg, tuple)
+                                   else [in_width * arg, in_height * arg] )
+    state.units.append(Scaling( algorithm  ,
+                                in_width   ,
+                                in_height  ,
+                                out_width  ,
+                                out_height ))
+
+def plan_realesrgan(settings: ModelSettings = settings.soft) -> None:
+
+    in_width  , in_height  = current_size()
+    out_width , out_height = ( int(in_width  * settings.multiplier) ,
+                               int(in_height * settings.multiplier) )
+    state.units.append(ScalingAI( settings.model ,
+                                  in_width       ,
+                                  in_height      ,
+                                  out_width      ,
+                                  out_height     ))
+
+def plan_phase_closure() -> None:
+    state.units.append(PhaseClosure())
+
+def plan_identity() -> None:
+    state.units.append(Identity())
+
+########################################################################################
+# Planning - Input Phase
+########################################################################################
+
+plan_identity()
+plan_scaling((base_main_width, base_main_height))
+plan_phase_closure()
+
+########################################################################################
+# Planning - Main Phase
 ########################################################################################
 
 main_iterations = math.ceil(math.log(total_main_multiplier, settings.soft.multiplier))
+factor = ( (total_main_multiplier / settings.soft.multiplier ** main_iterations) **
+            (1 / (main_iterations - 1))                                           )
 
 for _ in range(main_iterations - 1):
+    plan_realesrgan()
+    plan_scaling(factor)
 
-    run_realesrgan(settings.soft.model)
-    step_forward()
+if main_iterations != 0:
+    plan_realesrgan()
 
-    scale( (total_main_multiplier / settings.soft.multiplier ** main_iterations) **
-           (1 / (main_iterations - 1))                                            )
-    step_forward()
-
-if main_iterations > 0:
-    run_realesrgan(settings.soft.model)
-    step_forward()
-
-phase_forward()
+plan_phase_closure()
 
 ########################################################################################
-# Soft Phase
+# Planning - Soft Phase
 ########################################################################################
 
 for _ in range(settings.soft.iterations):
+    plan_scaling((base_soft_width, base_soft_height))
+    plan_realesrgan()
 
-    resize(base_soft_width, base_soft_height)
-    step_forward()
-
-    run_realesrgan(settings.soft.model)
-    step_forward()
-
-phase_forward()
+plan_phase_closure()
 
 ########################################################################################
-# Hard Phase
+# Planning - Hard Phase
 ########################################################################################
 
 for _ in range(settings.hard.iterations):
+    plan_scaling((base_hard_width, base_hard_height))
+    plan_realesrgan(settings.hard)
 
-    resize(base_hard_width, base_hard_height)
-    step_forward()
-
-    run_realesrgan(settings.hard.model)
-    step_forward()
-
-phase_forward()
+plan_phase_closure()
 
 ########################################################################################
-# Output Phase
+# Planning - Output Phase
 ########################################################################################
 
-resize(final_width, final_height, True)
-step_forward()
+plan_scaling((output_width, output_height), final_scaler)
+plan_phase_closure()
 
-phase_forward()
+########################################################################################
+# Planning Logging
+########################################################################################
+
+log("the execution plan has been created")
+
+########################################################################################
+# Plan Execution
+########################################################################################
+
+image = input_image
+
+for unit in state.units:
+    if isinstance(unit, Identity):
+        step_forward()
+    elif isinstance(unit, Scaling):
+        run_algorithm(unit.algorithm, (unit.out_width, unit.out_height))
+        step_forward()
+    elif isinstance(unit, ScalingAI):
+        run_realesrgan(unit.model)
+        step_forward()
+    elif isinstance(unit, PhaseClosure):
+        phase_forward()
 
 ########################################################################################
 # Output Saving
