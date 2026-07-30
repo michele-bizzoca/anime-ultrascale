@@ -110,12 +110,20 @@ class FlexOption(Generic[T]):
 
 flex_register = [
 
-    FlexOption(
+    FlexOption (
 
         "save"                              ,
         "s"                                 ,
         [level.name for level in SaveLevel] ,
         "all"
+    ),
+
+    FlexOption (
+
+        "tile"    ,
+        "t"       ,
+        range(16) ,
+        0
     )
 ]
 
@@ -199,8 +207,8 @@ for option in flex_register:
     flex_option_by_letter[option.letter] = option
 
 fixed_arguments    = []
-positional_options = []
 flex_options       = {}
+positional_options = []
 
 early_assume( len(sys.argv) >= len(Argument) ,
               "incomplete I/O specification" )
@@ -225,6 +233,8 @@ while i < len(sys.argv):
         option = flex_option_by_letter[key]
 
     else:
+        early_assume( not flex.options                             ,
+                      "positional option following a floating one" )
         positional_options.append(arg)
         i += 1
         continue
@@ -781,26 +791,20 @@ def phase_forward() -> None:
 # RealESRGAN Runner
 ########################################################################################
 
-def run_realesrgan (
-
-    model_name   : str         ,
-    tiling_level : int = 2     , # 128px
-    gpu          : bool = True ,
-
-):
+def run_realesrgan(model_name: str):
 
     state.image.save(temp_input_file)
 
     subprocess.run(
 
-        [ str(renv_file)                                                        ,
-          "-i", str(temp_input_file)                                            ,
-          "-o", str(temp_output_file)                                           ,
-          "-m", str(model_folder)                                               ,
-          "-n", model_name                                                      ,
-          "-t", "0" if tiling_level == 0 else str(64 * 2 ** (tiling_level - 1)) ,
-          "-g", "0" if gpu else "-1"                                            ,
-          "-j", "1:1:1"                                                         ],
+        [ str(renv_file)                                                ,
+          "-i", str(temp_input_file)                                    ,
+          "-o", str(temp_output_file)                                   ,
+          "-m", str(model_folder)                                       ,
+          "-n", model_name                                              ,
+          "-t", "0" if tiling_level == 0 else 64 * flex_options["tile"] ,
+          "-g", "0"                                                     ,
+          "-j", "1:1:1"                                                 ],
 
         check = True
     )
