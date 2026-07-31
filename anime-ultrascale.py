@@ -849,12 +849,6 @@ class ProgressBar:
                                      self.unit_cost_done +  chunk_cost ,
                                      self.unit_cost                    )
 
-    def complete(self) -> None:
-        self.total_cost_done = self.total_cost
-        self.average_speed = 0
-        self.render()
-        print()
-
     def refresh(self) -> None:
         now = perf_counter()
         delta = now - self.bonus_instant
@@ -882,6 +876,10 @@ class ProgressBar:
     def close(self) -> None:
         self.stop_event.set()
         self.refresh_thread.join()
+        self.total_cost_done = self.total_cost
+        self.average_speed = 0
+        self.render()
+        print()
 
     def refresh_call(self) -> None:
         while not self.stop_event.wait(0.1):
@@ -964,13 +962,14 @@ def run_realesrgan( model      : str         ,
         text = True
     )
 
-    if process.stdout is None
+    if process.stdout is None:
         fail("failed to capture Real ESRGAN's output")
 
     for line in process.stdout:
+        print(line)
         line = "".join(line.split())
         if re.search(r"[0-9]+(\.[0-9]+)?%", line):
-            bar.progress(float(line))
+            bar.progress(float(line[:-1]))
 
     return_code = process.wait()
     assume( return_code == 0                              ,
@@ -1110,10 +1109,11 @@ with ProgressBar(total_cost) as bar:
             step_forward()
         elif isinstance(unit, ScalingAI):
             bar.new_unit(cost(unit))
-            run_realesrgan(unit.model, unit.out_width // unit.in_width)
+            run_realesrgan(unit.model, unit.out_width // unit.in_width, bar)
             step_forward()
         elif isinstance(unit, PhaseClosure):
             phase_forward()
+
 
 ########################################################################################
 # Output Saving
