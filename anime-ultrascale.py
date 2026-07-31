@@ -16,6 +16,7 @@ from pathlib import Path
 from enum import IntEnum
 from datetime import datetime
 from dataclasses import dataclass, asdict
+from termios import TIOCPKT_DOSTOP
 from typing import cast, Callable, TypeVar, NoReturn, TypeAlias
 from types import SimpleNamespace
 from time import perf_counter
@@ -225,14 +226,18 @@ def cost(unit: Unit) -> float:
 # Error Reporting
 ########################################################################################
 
-def early_fail(message: str) -> NoReturn:
-    raise SystemExit( message[:1].upper()                        +
-                      message[1:]                                +
-                      ". Run with --help for usage information." )
+def early_fail( message   : str                              ,
+                suggest   : bool = True                      ,
+                exception : type[BaseException] = SystemExit ) -> NoReturn:
+    raise exception( message[:1].upper() + message[1:] + "."                        +
+                     (" Run with --help for usage information." if suggest else "") )
 
-def early_assume(condition : bool, message : str) -> None:
+def early_assume( condition : bool                            ,
+                  message   : str                             ,
+                  suggest   : bool = True                     ,
+                  exception: type[BaseException] = SystemExit ) -> None:
     if not condition:
-        early_fail(message)
+        early_fail(message, suggest, exception)
 
 ########################################################################################
 # Options Sorting
@@ -363,13 +368,18 @@ log("the log system is operative")
 # Error Reporting
 ########################################################################################
 
-def fail(message: str) -> NoReturn:
+def fail( message   : str                              ,
+          suggest   : bool = True                      ,
+          exception : type[BaseException] = SystemExit ) -> NoReturn:
     log(message, "ERROR")
-    early_fail(message)
+    early_fail(message, suggest, exception)
 
-def assume(condition : bool, message : str) -> None:
+def assume( condition : bool                             ,
+            message   : str                              ,
+            suggest   : bool = True                      ,
+            exception : type[BaseException] = SystemExit ) -> None:
     if not condition:
-        fail(message)
+        fail(message, suggest, exception)
 
 ########################################################################################
 # Temporary Files Support
@@ -408,6 +418,8 @@ output_file      = Path(fixed_arguments[Argument.output_filepath])
 ########################################################################################
 # Path Related Checks
 ########################################################################################
+
+# TODO
 
 assume(input_file.is_file(), "input file does not exist")
 assume(output_file.parent.is_dir(), "output folder is not a directory")
@@ -803,11 +815,11 @@ class ProgressBar:
         self.bonus_cost_done = 0.0
         self.last_instant = perf_counter()
         self.bonus_instant = self.last_instant
+        self.last_percentage = 0.0
         self.stop_event = Event()
         self.refresh_thread = Thread( target = self.refresh_call ,
                                       daemon = True              )
         self.refresh_thread.start()
-        self.last_percentage = 0.0
 
     def new_unit(self, current_cost: float) -> None:
         cost_left = self.unit_cost - self.unit_cost_done
@@ -889,7 +901,8 @@ class ProgressBar:
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self.close()
+        self.stop_event.set()
+        self.refresh_thread.join()
 
 ########################################################################################
 # Internal Output Naming System
@@ -966,9 +979,8 @@ def run_realesrgan( model      : str         ,
         fail("failed to capture Real ESRGAN's output")
 
     for line in process.stdout:
-        print(line)
         line = "".join(line.split())
-        if re.search(r"[0-9]+(\.[0-9]+)?%", line):
+        if re.search(r"^[0-9]+(\.[0-9]+)?%$", line):
             bar.progress(float(line[:-1]))
 
     return_code = process.wait()
@@ -1101,19 +1113,22 @@ log("the execution plan has been created")
 # Plan Execution
 ########################################################################################
 
-with ProgressBar(total_cost) as bar:
-    for unit in state.units:
-        if isinstance(unit, Scaling):
-            bar.new_unit(cost(unit))
-            run_algorithm(unit.algorithm, (unit.out_width, unit.out_height), bar)
-            step_forward()
-        elif isinstance(unit, ScalingAI):
-            bar.new_unit(cost(unit))
-            run_realesrgan(unit.model, unit.out_width // unit.in_width, bar)
-            step_forward()
-        elif isinstance(unit, PhaseClosure):
-            phase_forward()
-
+try:
+    with ProgressBar(total_cost) as bar:
+        for unit in state.units:
+            if isinstance(unit, Scaling):
+                bar.new_unit(cost(unit))
+                run_algorithm(unit.algorithm, (unit.out_width, unit.out_height), bar)
+                step_forward()
+            elif isinstance(unit, ScalingAI):
+                bar.new_unit(cost(unit))
+                run_realesrgan(unit.model, unit.out_width // unit.in_width, bar)
+                step_forward()
+            elif isinstance(unit, PhaseClosure):
+                phase_forward()
+except KeyboardInterrupt:
+    print()
+    fail("interrupted by user", False, SystemExit)
 
 ########################################################################################
 # Output Saving
