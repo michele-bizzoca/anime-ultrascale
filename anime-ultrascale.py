@@ -13,10 +13,10 @@ import re
 # Standard Unqualified
 from os import getpid
 from pathlib import Path
-from enum import Enum, IntEnum
+from enum import IntEnum
 from datetime import datetime
 from dataclasses import dataclass, asdict
-from typing import cast, Callable, TypeVar, NoReturn
+from typing import cast, Callable, TypeVar, NoReturn, TypeAlias
 from types import SimpleNamespace
 
 # Custom Qualified
@@ -206,11 +206,7 @@ class ScalingAI:
 class PhaseClosure:
     pass
 
-@dataclass
-class Identity:
-    pass
-
-type Unit = Scaling | ScalingAI | PhaseClosure | Identity
+Unit: TypeAlias = Scaling | ScalingAI | PhaseClosure
 
 def cost(unit: Unit) -> float:
 
@@ -428,7 +424,7 @@ with Image.open(input_file) as input_image:
     input_image               = input_image.convert(OUTPUT_MODE)
 
 
-log("the input image has been loaded")
+log(f"the input image has been loaded: {input_width}x{input_height}px {OUTPUT_MODE}")
 
 ########################################################################################
 # State
@@ -829,9 +825,7 @@ def phase_forward() -> None:
 # Runners
 ########################################################################################
 
-def run_realesrgan(model: str):
-
-    ms = settings.soft if model == settings.soft.model else settings.hard
+def run_realesrgan(model: str, multiplier: int):
 
     state.image.save(temp_input_file)
 
@@ -841,12 +835,12 @@ def run_realesrgan(model: str):
           "-i", str(temp_input_file)                         ,
           "-o", str(temp_output_file)                        ,
           "-m", str(model_folder)                            ,
-          "-n", ms.model                                     ,
+          "-n", model                                        ,
           "-t", "0" if flex_options["tile"] == "0"
                     else str(64 * int(flex_options["tile"])) ,
           "-g", "0"                                          ,
           "-j", "1:1:1"                                      ,
-          "-s", str(ms.multiplier)                           ],
+          "-s", str(multiplier)                              ],
 
         check = True
     )
@@ -861,8 +855,10 @@ def run_algorithm(algorithm: Image.Resampling, size: tuple[int, int]) -> None:
 # Scaling Algorithms
 ########################################################################################
 
-main_scaler  = Image.Resampling[settings.scaling.main]
-final_scaler = Image.Resampling[settings.scaling.final]
+scalers = {"bicubic": Image.Resampling.BICUBIC, "lanczos": Image.Resampling.LANCZOS}
+
+main_scaler  = scalers[settings.scaling.main]
+final_scaler = scalers[settings.scaling.final]
 
 ########################################################################################
 # Planners
@@ -870,7 +866,7 @@ final_scaler = Image.Resampling[settings.scaling.final]
 
 def current_size() -> tuple[int, int]:
 
-    for i in range(len(state.units) - 1, 0, -1):
+    for i in range(len(state.units) - 1, -1, -1):
 
         unit = state.units[i]
 
@@ -886,7 +882,8 @@ def plan_scaling( arg: float |tuple[int, int]               ,
 
     in_width  , in_height  = current_size()
     out_width , out_height = ( arg if isinstance(arg, tuple)
-                                   else [in_width * arg, in_height * arg] )
+                                   else [int(in_width  * arg),
+                                         int(in_height * arg)] )
     state.units.append(Scaling( algorithm  ,
                                 in_width   ,
                                 in_height  ,
@@ -907,14 +904,10 @@ def plan_realesrgan(settings: ModelSettings = settings.soft) -> None:
 def plan_phase_closure() -> None:
     state.units.append(PhaseClosure())
 
-def plan_identity() -> None:
-    state.units.append(Identity())
-
 ########################################################################################
 # Planning - Input Phase
 ########################################################################################
 
-plan_identity()
 plan_scaling((base_main_width, base_main_height))
 plan_phase_closure()
 
@@ -924,7 +917,7 @@ plan_phase_closure()
 
 main_iterations = math.ceil(math.log(total_main_multiplier, settings.soft.multiplier))
 factor = ( (total_main_multiplier / settings.soft.multiplier ** main_iterations) **
-            (1 / (main_iterations - 1))                                           )
+           (1 / (main_iterations - 1) if main_iterations != 1 else 0)             )
 
 for _ in range(main_iterations - 1):
     plan_realesrgan()
@@ -972,16 +965,12 @@ log("the execution plan has been created")
 # Plan Execution
 ########################################################################################
 
-image = input_image
-
 for unit in state.units:
-    if isinstance(unit, Identity):
-        step_forward()
-    elif isinstance(unit, Scaling):
+    if isinstance(unit, Scaling):
         run_algorithm(unit.algorithm, (unit.out_width, unit.out_height))
         step_forward()
     elif isinstance(unit, ScalingAI):
-        run_realesrgan(unit.model)
+        run_realesrgan(unit.model, unit.out_width // unit.in_width)
         step_forward()
     elif isinstance(unit, PhaseClosure):
         phase_forward()
