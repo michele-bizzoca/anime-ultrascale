@@ -18,6 +18,9 @@ from datetime import datetime
 from dataclasses import dataclass, asdict
 from typing import cast, Callable, TypeVar, NoReturn, TypeAlias
 from types import SimpleNamespace
+from time import perf_counter
+from threading import Event, Thread
+from subprocess import Popen, PIPE, STDOUT
 
 # Custom Qualified
 from PIL import Image
@@ -42,7 +45,7 @@ TEMP_INPUT_FILE  = "in.png"
 TEMP_OUTPUT_FILE = "output.png"
 RENV_FILE        = "realesrgan-ncnn-vulkan"
 INVOCATION_FILE  = "call.txt"
-MAX_MPX          = 150
+MAX_MPX          = 150000
 
 ########################################################################################
 # Phases
@@ -213,10 +216,10 @@ def cost(unit: Unit) -> float:
     if not isinstance(unit, (Scaling, ScalingAI)):
         return 0
 
-    return ( unit.out_width                                *
-             unit.out_height                               *
-             (1.0 if isinstance(unit, ScalingAI) else 0.1) /
-             1000000                                       )
+    if isinstance(unit, ScalingAI):
+        return unit.in_width * unit.in_height * 1.0 / 1000000
+    else:
+        return unit.out_width * unit.out_height * 0.1 / 1000000
 
 ########################################################################################
 # Error Reporting
@@ -779,6 +782,118 @@ if save_level >= SaveLevel.text:
     log("the settings file has been written")
 
 ########################################################################################
+# Progress Bar
+########################################################################################
+
+def clamp(l: float | None, x: float, r:float | None) -> float:
+    if l is not None:
+        x = max(l, x)
+    if r is not None:
+        x = min(r, x)
+    return x
+
+class ProgressBar:
+
+    def __init__(self, total_cost: float) -> None:
+        self.total_cost = total_cost
+        self.total_cost_done = 0.0
+        self.unit_cost = 0.0
+        self.unit_cost_done = 0.0
+        self.average_speed = 0.0
+        self.bonus_cost_done = 0.0
+        self.last_instant = perf_counter()
+        self.bonus_instant = self.last_instant
+        self.stop_event = Event()
+        self.refresh_thread = Thread( target = self.refresh_call ,
+                                      daemon = True              )
+        self.refresh_thread.start()
+        self.last_percentage = 0.0
+
+    def new_unit(self, current_cost: float) -> None:
+        cost_left = self.unit_cost - self.unit_cost_done
+        if self.unit_cost > 0:
+            self.progress(cost_left * 100 / self.unit_cost)
+        self.unit_cost = current_cost
+        self.unit_cost_done = 0
+        self.bonus_cost_done = 0
+        self.last_instant = perf_counter()
+        self.bonus_instant = perf_counter()
+        self.last_percentage = 0.0
+
+    def progress(self, percentage: float) -> None:
+        delta = percentage - self.last_percentage
+        self.last_percentage = percentage
+        chunk_cost = self.unit_cost * delta / 100
+        old_part = clamp(None, self.bonus_cost_done, chunk_cost)
+        new_part = chunk_cost - old_part
+        now = perf_counter()
+        delta = now - self.last_instant
+        self.last_instant = now
+        if delta > 0:
+            current_speed = chunk_cost / delta
+            self.average_speed = ( current_speed if self.average_speed == 0
+                                                 else ( 0.8 * self.average_speed +
+                                                        0.2 * current_speed      ) )
+        self._old_progress(old_part)
+        self._new_progress(new_part)
+        self.render()
+
+    def _old_progress(self, chunk_cost: float) -> None:
+        self.bonus_cost_done -= clamp(0, chunk_cost, None)
+
+    def _new_progress(self, chunk_cost: float) -> None:
+        self.total_cost_done = clamp( None                              ,
+                                      self.total_cost_done + chunk_cost ,
+                                      self.total_cost                   )
+        self.unit_cost_done = clamp( None                              ,
+                                     self.unit_cost_done +  chunk_cost ,
+                                     self.unit_cost                    )
+
+    def complete(self) -> None:
+        self.total_cost_done = self.total_cost
+        self.average_speed = 0
+        self.render()
+        print()
+
+    def refresh(self) -> None:
+        now = perf_counter()
+        delta = now - self.bonus_instant
+        self.bonus_instant = now
+        bonus_chunk_cost = clamp( 0,
+                                  delta * self.average_speed           ,
+                                  self.unit_cost - self.unit_cost_done )
+        self.bonus_cost_done += bonus_chunk_cost
+        self.total_cost_done = clamp( None,
+                                      self.total_cost_done + bonus_chunk_cost ,
+                                      self.total_cost                         )
+        self.unit_cost_done = clamp( None                                   ,
+                                     self.unit_cost_done + bonus_chunk_cost ,
+                                     self.unit_cost                         )
+        self.render()
+
+    def render(self) -> None:
+        percentage = 100 * ( 1 if self.total_cost == 0
+                               else self.total_cost_done / self.total_cost )
+        speed = self.average_speed or 0
+        print(f"\r\033[K"
+              f"Progress: {percentage:6.2f}% ({self.total_cost_done:6.2f} Mpx), "
+              f"running at {speed:5.2f} Mpx/s.", end = "", flush = True)
+
+    def close(self) -> None:
+        self.stop_event.set()
+        self.refresh_thread.join()
+
+    def refresh_call(self) -> None:
+        while not self.stop_event.wait(0.1):
+            self.refresh()
+
+    def __enter__(self) -> "ProgressBar":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self.close()
+
+########################################################################################
 # Internal Output Naming System
 ########################################################################################
 
@@ -825,11 +940,13 @@ def phase_forward() -> None:
 # Runners
 ########################################################################################
 
-def run_realesrgan(model: str, multiplier: int):
+def run_realesrgan( model      : str         ,
+                    multiplier : int         ,
+                    bar        : ProgressBar ):
 
     state.image.save(temp_input_file)
 
-    subprocess.run(
+    process = Popen(
 
         [ str(renv_file)                                     ,
           "-i", str(temp_input_file)                         ,
@@ -842,14 +959,32 @@ def run_realesrgan(model: str, multiplier: int):
           "-j", "1:1:1"                                      ,
           "-s", str(multiplier)                              ],
 
-        check = True
+        stdout = PIPE,
+        stderr = STDOUT,
+        text = True
     )
+
+    if process.stdout is None
+        fail("failed to capture Real ESRGAN's output")
+
+    for line in process.stdout:
+        line = "".join(line.split())
+        if re.search(r"[0-9]+(\.[0-9]+)?%", line):
+            bar.progress(float(line))
+
+    return_code = process.wait()
+    assume( return_code == 0                              ,
+            f"Real ESRGAN failed with code {return_code}" )
 
     with Image.open(temp_output_file) as result:
         state.image = result.copy()
 
-def run_algorithm(algorithm: Image.Resampling, size: tuple[int, int]) -> None:
+def run_algorithm( algorithm: Image.Resampling ,
+                   size: tuple[int, int]       ,
+                   bar: ProgressBar            ) -> None:
     state.image = state.image.resize(size, algorithm)
+    bar.progress(100)
+
 
 ########################################################################################
 # Scaling Algorithms
@@ -956,8 +1091,10 @@ plan_scaling((output_width, output_height), final_scaler)
 plan_phase_closure()
 
 ########################################################################################
-# Planning Logging
+# Planning Processing
 ########################################################################################
+
+total_cost = sum([cost(unit) for unit in state.units])
 
 log("the execution plan has been created")
 
@@ -965,15 +1102,18 @@ log("the execution plan has been created")
 # Plan Execution
 ########################################################################################
 
-for unit in state.units:
-    if isinstance(unit, Scaling):
-        run_algorithm(unit.algorithm, (unit.out_width, unit.out_height))
-        step_forward()
-    elif isinstance(unit, ScalingAI):
-        run_realesrgan(unit.model, unit.out_width // unit.in_width)
-        step_forward()
-    elif isinstance(unit, PhaseClosure):
-        phase_forward()
+with ProgressBar(total_cost) as bar:
+    for unit in state.units:
+        if isinstance(unit, Scaling):
+            bar.new_unit(cost(unit))
+            run_algorithm(unit.algorithm, (unit.out_width, unit.out_height), bar)
+            step_forward()
+        elif isinstance(unit, ScalingAI):
+            bar.new_unit(cost(unit))
+            run_realesrgan(unit.model, unit.out_width // unit.in_width)
+            step_forward()
+        elif isinstance(unit, PhaseClosure):
+            phase_forward()
 
 ########################################################################################
 # Output Saving
