@@ -20,12 +20,13 @@ from termios import TIOCPKT_DOSTOP
 from typing import cast, Callable, TypeVar, NoReturn, TypeAlias
 from types import SimpleNamespace
 from time import perf_counter
-from threading import Event, Thread
+from threading import Event, Thread, Lock
 from subprocess import Popen, PIPE, STDOUT
 from multiprocessing import get_context, shared_memory
 
 # Custom Qualified
 from PIL import Image
+Image.MAX_IMAGE_PIXELS = None
 from psutil import Process
 from dacite import from_dict, Config
 import numpy as np
@@ -44,8 +45,8 @@ RENV_FOLDER      = "renv"
 SESSION_FILE     = "session.json"
 SETTINGS_FILE    = "settings.cfg"
 LOG_FILE         = "log.txt"
-TEMP_INPUT_FILE  = "in.png"
-TEMP_OUTPUT_FILE = "output.png"
+TEMP_INPUT_FILE  = "in.bmp"
+TEMP_OUTPUT_FILE = "output.bmp"
 RENV_FILE        = "realesrgan-ncnn-vulkan"
 INVOCATION_FILE  = "call.txt"
 MAX_MPX          = 150000
@@ -60,7 +61,7 @@ phases = [
     ( "main"      , ["upscaling"   , "downscaling"]) ,
     ( "soft"      , ["downscaling" , "upscaling"  ]) ,
     ( "hard"      , ["downscaling" , "upscaling"  ]) ,
-    ( "output"    , ["resizing"                   ])
+    ( "output"    , ["resizing"    , "export"     ])
 ]
 
 ########################################################################################
@@ -121,7 +122,7 @@ flex_register = [
         "save"                              ,
         "s"                                 ,
         [level.name for level in SaveLevel] ,
-        "all"
+        "endpoints"
     ),
 
     FlexOption (
@@ -209,19 +210,38 @@ class ScalingAI:
     out_height : int
 
 @dataclass
-class PhaseClosure:
+class StepForward:
+    saves    : int
+    width    : int
+    height   : int
+
+@dataclass
+class PhaseForward:
     pass
 
-Unit: TypeAlias = Scaling | ScalingAI | PhaseClosure
+Unit: TypeAlias = Scaling | ScalingAI | PhaseForward | StepForward
+
+unit_classes = [Scaling, ScalingAI, PhaseForward, StepForward]
 
 def cost(unit: Unit) -> float:
 
-    if not isinstance(unit, (Scaling, ScalingAI)):
-        return 0
-    elif isinstance(unit, ScalingAI):
+    if isinstance(unit, ScalingAI):
         return unit.in_width * unit.in_height * 1.0 / 1000000
-    elif unit.in_width != unit.out_width:
+    elif isinstance(unit, Scaling) and unit.in_width != unit.out_width:
         return unit.out_width * unit.out_height * 0.1 / 1000000
+    elif isinstance(unit, StepForward):
+        return (unit.width * unit.height * 0.33 / 1000000) * unit.saves
+    else:
+        return 0
+
+def speed_guess(unit_class: type[Unit]) -> float:
+
+    if unit_class == Scaling:
+        return 10.0
+    elif unit_class == ScalingAI:
+        return 1.0
+    elif unit_class == StepForward:
+        return 3.33
     else:
         return 0
 
@@ -741,9 +761,6 @@ base_hard_height = int(output_height / settings.hard.divisor)
 # Combined Settings Validation
 ########################################################################################
 
-assume ( settings.main.multiplier >= settings.main.divisor ,
-         "main-phase divisor exceeds multiplier"           )
-
 assume ( settings.soft.multiplier >= settings.soft.divisor ,
          "soft-phase divisor exceeds multiplier"           )
 
@@ -807,11 +824,26 @@ def clamp(l: float | None, x: float, r:float | None) -> float:
         x = min(r, x)
     return x
 
+
+def make_bar(percentage: float, width: int = 40) -> str:
+    blocks = " ▏▎▍▌▋▊▉█"
+
+    units = percentage / 100.0 * width
+    full = int(units)
+    fraction = int((units - full) * 8)
+
+    return (
+            "█" * full
+            + blocks[fraction]
+            + " " * max(0, width - full - 1)
+    )
+
 class ProgressBar:
 
     def __init__(self, total_cost: float) -> None:
         self.total_cost = total_cost
         self.total_cost_done = 0.0
+        self.unit_class_name = PhaseForward.__name__
         self.unit_cost = 0.0
         self.high_speed = False
         self.unit_cost_done = 0.0
@@ -823,20 +855,21 @@ class ProgressBar:
         self.last_refresh_instant = self.last_progress_instant
         self.last_progress_percentage = 0.0
         self.last_render_percentage = 0.0
+        self.lock = Lock()
         self.stop_event = Event()
-        self.refresh_thread = Thread( target = self.refresh_call ,
-                                      daemon = True              )
+        self.refresh_thread = Thread( target = self._refresh_call ,
+                                      daemon = True               )
         self.refresh_thread.start()
-        self.timespans = [1.0, 1,0]
-        self.costs = [1.0, 10.0]
+        self.timespans = {k.__name__: 1 for k in unit_classes}
+        self.costs = {k.__name__: speed_guess(k) for k in unit_classes}
 
-    def new_unit(self, current_cost: float, high_speed: bool) -> None:
+    def new_unit(self, unit: Unit) -> None:
         if self.unit_cost > 0.0:
             self.progress(100.0)
-        self.high_speed = high_speed
-        self.progress_average_speed = ( self.costs[high_speed]     /
-                                        self.timespans[high_speed] )
-        self.unit_cost = current_cost
+        self.progress_average_speed = ( self.costs[type(unit).__name__]     /
+                                        self.timespans[type(unit).__name__] )
+        self.unit_cost = cost(unit)
+        self.unit_class_name = type(unit).__name__
         self.unit_cost_done = 0.0
         self.bonus_cost_done = 0.0
         self.last_progress_instant = perf_counter()
@@ -852,22 +885,22 @@ class ProgressBar:
         now = perf_counter()
         delta = now - self.last_progress_instant
         self.last_progress_instant = now
-        self.timespans[self.high_speed] += delta
-        self.costs[self.high_speed] += chunk_cost
+        self.timespans[self.unit_class_name] += delta
+        self.costs[self.unit_class_name] += chunk_cost
         if delta > 0.0:
             current_speed = chunk_cost / delta
             self.progress_average_speed = (
                 current_speed if self.progress_average_speed == 0.0
                               else ( 0.8 * self.progress_average_speed +
                                      0.2 * current_speed      ) )
-        self.old_progress(old_part)
-        self.new_progress(new_part)
+        self._old_progress(old_part)
+        self._new_progress(new_part)
         self.render()
 
-    def old_progress(self, chunk_cost: float) -> None:
+    def _old_progress(self, chunk_cost: float) -> None:
         self.bonus_cost_done -= clamp(0, chunk_cost, None)
 
-    def new_progress(self, chunk_cost: float) -> None:
+    def _new_progress(self, chunk_cost: float) -> None:
         self.total_cost_done = clamp( None                              ,
                                       self.total_cost_done + chunk_cost ,
                                       self.total_cost                   )
@@ -906,12 +939,20 @@ class ProgressBar:
                 speed if self.refresh_average_speed == 0.0
                       else ( decay * self.refresh_average_speed +
                              (1 - decay)* speed                 ) )
+
         self.last_render_percentage = percentage
-        print(f"\r\033[K"
-              f"Progress: {percentage:6.2f}% ({self.total_cost_done:6.2f} Mpx), "
-              f"running at {self.refresh_average_speed:5.2f} Mpx/s."              ,
-              end = ""                                                            ,
-              flush = True                                                        )
+
+        bar = make_bar(percentage)
+
+        print(
+            f"\r\033[K"
+            f" ◆{bar}◆"
+            f"{percentage:6.2f}% "
+            f"({self.total_cost_done:6.2f}/{self.total_cost:6.2f} Mpx), "
+            f"{self.refresh_average_speed:5.2f} Mpx/s",
+            end="",
+            flush=True,
+        )
 
     def close(self) -> None:
         self.stop_event.set()
@@ -922,7 +963,7 @@ class ProgressBar:
         self.render()
         print()
 
-    def refresh_call(self) -> None:
+    def _refresh_call(self) -> None:
         while not self.stop_event.wait(0.1):
             self.refresh()
 
@@ -967,6 +1008,11 @@ def step_forward():
          f" phase has been completed with output size {state.image.width}x"
          f"{state.image.height}" )
 
+    if last_step():
+        state.image.save(output_file)
+    log(f"the output image has been saved, {state.image.width}x"
+         f"{state.image.height}px PNG {OUTPUT_FORMAT}")
+
     naming_state.j = (naming_state.j + 1) % len(steps)
 
 def phase_forward() -> None:
@@ -975,14 +1021,22 @@ def phase_forward() -> None:
 
     naming_state.i += 1
     naming_state.j = 0
-
+    
 ########################################################################################
 # Runners
 ########################################################################################
 
+def run_phase_forward(bar: ProgressBar) -> None:
+    phase_forward()
+    bar.progress(100)
+    
+def run_step_forward(bar: ProgressBar) -> None:
+    step_forward()
+    bar.progress(100)
+
 def run_realesrgan( model      : str         ,
                     multiplier : int         ,
-                    bar        : ProgressBar ):
+                    bar        : ProgressBar ) -> None:
 
     state.image.save(temp_input_file)
 
@@ -1036,8 +1090,8 @@ def resize_worker(
     algorithm: int,
 ) -> None:
 
-    input_shm = shared_memory.SharedMemory(name=input_shm_name)
-    output_shm = shared_memory.SharedMemory(name=output_shm_name)
+    input_shm = shared_memory.SharedMemory(name=input_shm_name, track=False)
+    output_shm = shared_memory.SharedMemory(name=output_shm_name, track=False)
 
     image: Image.Image | None = None
     result: Image.Image | None = None
@@ -1087,6 +1141,10 @@ def run_algorithm(
     bar: ProgressBar,
 ) -> None:
 
+    if state.image.width == size[0]:
+        bar.progress(100.0)
+        return
+
     input_size = state.image.size
     channels = len(OUTPUT_MODE)
 
@@ -1096,8 +1154,8 @@ def run_algorithm(
     input_bytes = math.prod(input_shape)
     output_bytes = math.prod(output_shape)
 
-    input_shm = shared_memory.SharedMemory(create=True, size=input_bytes)
-    output_shm = shared_memory.SharedMemory(create=True, size=output_bytes)
+    input_shm = shared_memory.SharedMemory(create=True, size=input_bytes, track=False)
+    output_shm = shared_memory.SharedMemory(create=True, size=output_bytes, track=False)
 
     try:
         input_array = np.ndarray(
@@ -1175,8 +1233,8 @@ def current_size() -> tuple[int, int]:
 
     return input_width, input_height
 
-def plan_scaling( arg: float |tuple[int, int]               ,
-                  algorithm: Image.Resampling = main_scaler ) -> None:
+def plan_algorithm( arg: float |tuple[int, int]               ,
+                    algorithm: Image.Resampling = main_scaler ) -> None:
 
     in_width  , in_height  = current_size()
     out_width , out_height = ( arg if isinstance(arg, tuple)
@@ -1199,15 +1257,25 @@ def plan_realesrgan(settings: ModelSettings = settings.soft) -> None:
                                   out_width      ,
                                   out_height     ))
 
-def plan_phase_closure() -> None:
-    state.units.append(PhaseClosure())
+def plan_phase_forward() -> None:
+    state.units.append(PhaseForward())
 
+def plan_step_forward(first: bool = False, last:bool = False) -> None:
+    save = last + ( (first or last) and save_level >= SaveLevel.endpoints or
+                    save_level >= SaveLevel.all                            )
+    width, height  = current_size()
+    state.units.append(StepForward(save, width, height))
+    
 ########################################################################################
 # Planning - Input Phase
 ########################################################################################
 
-plan_scaling((base_main_width, base_main_height))
-plan_phase_closure()
+plan_step_forward(True, False)
+
+plan_algorithm((base_main_width, base_main_height))
+plan_step_forward()
+
+plan_phase_forward()
 
 ########################################################################################
 # Planning - Main Phase
@@ -1219,39 +1287,55 @@ factor = ( (total_main_multiplier / settings.soft.multiplier ** main_iterations)
 
 for _ in range(main_iterations - 1):
     plan_realesrgan()
-    plan_scaling(factor)
+    plan_step_forward()
+
+    plan_algorithm(factor)
+    plan_step_forward()
 
 if main_iterations != 0:
     plan_realesrgan()
+    plan_step_forward()
 
-plan_phase_closure()
+plan_phase_forward()
 
 ########################################################################################
 # Planning - Soft Phase
 ########################################################################################
 
 for _ in range(settings.soft.iterations):
-    plan_scaling((base_soft_width, base_soft_height))
-    plan_realesrgan()
 
-plan_phase_closure()
+    plan_algorithm((base_soft_width, base_soft_height))
+    plan_step_forward()
+
+    plan_realesrgan()
+    plan_step_forward()
+
+plan_phase_forward()
 
 ########################################################################################
 # Planning - Hard Phase
 ########################################################################################
 
 for _ in range(settings.hard.iterations):
-    plan_scaling((base_hard_width, base_hard_height))
-    plan_realesrgan(settings.hard)
 
-plan_phase_closure()
+    plan_algorithm((base_hard_width, base_hard_height))
+    plan_step_forward()
+
+    plan_realesrgan(settings.hard)
+    plan_step_forward()
+
+plan_phase_forward()
 
 ########################################################################################
 # Planning - Output Phase
 ########################################################################################
 
-plan_scaling((output_width, output_height), final_scaler)
-plan_phase_closure()
+plan_algorithm((output_width, output_height), final_scaler)
+plan_step_forward()
+
+plan_step_forward(False, True)
+
+plan_phase_forward()
 
 ########################################################################################
 # Planning Processing
@@ -1268,32 +1352,22 @@ log("the execution plan has been created")
 try:
     with ProgressBar(total_cost) as bar:
         for unit in state.units:
+            bar.new_unit(unit)
             if isinstance(unit, Scaling):
-                if unit.in_width != unit.out_width:
-                    bar.new_unit(cost(unit), True)
-                    run_algorithm( unit.algorithm                         ,
-                                   (unit.out_width, unit.out_height), bar )
-                step_forward()
+                run_algorithm( unit.algorithm                         ,
+                               (unit.out_width, unit.out_height), bar )
             elif isinstance(unit, ScalingAI):
-                bar.new_unit(cost(unit), False)
                 run_realesrgan( unit.model                           ,
                                 unit.out_width // unit.in_width, bar )
-                step_forward()
-            elif isinstance(unit, PhaseClosure):
-                phase_forward()
+            elif isinstance(unit, StepForward):
+                run_step_forward(bar)
+            elif isinstance(unit, PhaseForward):
+                run_phase_forward(bar)
 except KeyboardInterrupt:
     print()
     fail("interrupted by user", False)
 finally:
     bar.close()
-
-########################################################################################
-# Output Saving
-########################################################################################
-
-state.image.save(output_file)
-
-log("the output image has been saved")
 
 ########################################################################################
 # End
