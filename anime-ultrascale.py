@@ -9,6 +9,7 @@ import json
 import subprocess
 import atexit
 import re
+import pyvips
 
 # Standard Unqualified
 from os import getpid
@@ -22,14 +23,18 @@ from types import SimpleNamespace
 from time import perf_counter
 from threading import Event, Thread, Lock
 from subprocess import Popen, PIPE, STDOUT
-from multiprocessing import get_context, shared_memory
 
 # Custom Qualified
 from PIL import Image
-Image.MAX_IMAGE_PIXELS = None
 from psutil import Process
 from dacite import from_dict, Config
-import numpy as np
+from io import BytesIO
+
+########################################################################################
+# Libraries Configuration
+########################################################################################
+
+Image.MAX_IMAGE_PIXELS = None
 
 ########################################################################################
 # Constants
@@ -45,10 +50,12 @@ RENV_FOLDER      = "renv"
 SESSION_FILE     = "session.json"
 SETTINGS_FILE    = "settings.cfg"
 LOG_FILE         = "log.txt"
-TEMP_INPUT_FILE  = "in.bmp"
-TEMP_OUTPUT_FILE = "output.bmp"
+TEMP_INPUT_FILE  = "in.png"
+TEMP_OUTPUT_FILE = "output.png"
 RENV_FILE        = "realesrgan-ncnn-vulkan"
 INVOCATION_FILE  = "call.txt"
+NCNN_FILE        = "ncnn.txt"
+BAR_FILE         = "bar.txt"
 MAX_MPX          = 150000
 
 ########################################################################################
@@ -72,8 +79,18 @@ class SaveLevel(IntEnum):
 
     nothing   = 0
     text      = 1
-    endpoints = 2
-    all       = 3
+    error     = 2
+    endpoints = 3
+    research  = 4
+    debug     = 5
+
+def descriptor(level: SaveLevel):
+    if level == SaveLevel.error:
+        return "ERROR"
+    if level == SaveLevel.debug:
+        return "DEBUG"
+    else:
+        return "NORMAL"
 
 ########################################################################################
 # Type Variables
@@ -195,7 +212,7 @@ class Session:
 
 @dataclass
 class Scaling:
-    algorithm  : Image.Resampling
+    algorithm  : str
     in_width   : int
     in_height  : int
     out_width  : int
@@ -366,6 +383,12 @@ if save_level >= SaveLevel.text:
                                  f"Command: {' '.join(sys.argv)}\n"     )
 
 ########################################################################################
+# Time String
+########################################################################################
+
+def now() -> str: return datetime.now().strftime('on %Y/%m/%d at %H:%M:%S and %f')
+
+########################################################################################
 # Logging
 ########################################################################################
 
@@ -374,18 +397,17 @@ log_file = session_folder / LOG_FILE
 if save_level >= SaveLevel.text:
     log_handle = open(log_file, "w")
 
-def log(message: str, level: str = "NORMAL"):
-    if save_level >= SaveLevel.text:
-        log_handle.write( datetime.now().strftime('on %Y/%m/%d at %H:%M:%S') +
-                          f", level {level}: {message}\n"                    )
-        log_handle.flush()
+def log(message: str, level: SaveLevel = SaveLevel.text):
+    if save_level >= SaveLevel.text and save_level >= level:
+        log_handle.write( now() + f", level {descriptor(level)}: {message}\n"               )
+    log_handle.flush()
 
 if save_level >= SaveLevel.text:
 
     def close_log_file(): log_handle.close()
     atexit.register(close_log_file)
 
-log("the log system is operative")
+log("the main log system is operative")
 
 ########################################################################################
 # Error Reporting
@@ -394,7 +416,7 @@ log("the log system is operative")
 def fail( message   : str                              ,
           suggest   : bool = True                      ,
           exception : type[BaseException] = SystemExit ) -> NoReturn:
-    log(message, "ERROR")
+    log(message, SaveLevel.error)
     early_fail(message, suggest, exception)
 
 def assume( condition : bool                             ,
@@ -432,6 +454,8 @@ renv_folder      = parent_path    / RENV_FOLDER
 model_folder     = parent_path    / MODEL_FOLDER
 session_file     = session_folder / SESSION_FILE
 settings_file    = session_folder / SETTINGS_FILE
+ncnn_file        = session_folder / NCNN_FILE
+bar_file         = session_folder / BAR_FILE
 temp_input_file  = temp_folder    / TEMP_INPUT_FILE
 temp_output_file = temp_folder    / TEMP_OUTPUT_FILE
 renv_file        = renv_folder    / RENV_FILE
@@ -832,11 +856,9 @@ def make_bar(percentage: float, width: int = 40) -> str:
     full = int(units)
     fraction = int((units - full) * 8)
 
-    return (
-            "█" * full
-            + blocks[fraction]
-            + " " * max(0, width - full - 1)
-    )
+    return ( "█" * full                                       +
+             (blocks[fraction] if percentage < 100.0 else "") +
+             " " * max(0, width - full - 1)                   )
 
 class ProgressBar:
 
@@ -892,7 +914,7 @@ class ProgressBar:
             self.progress_average_speed = (
                 current_speed if self.progress_average_speed == 0.0
                               else ( 0.8 * self.progress_average_speed +
-                                     0.2 * current_speed      ) )
+                                     0.2 * current_speed               ) )
         self._old_progress(old_part)
         self._new_progress(new_part)
         self.render()
@@ -944,15 +966,20 @@ class ProgressBar:
 
         bar = make_bar(percentage)
 
-        print(
-            f"\r\033[K"
-            f" ◆{bar}◆"
-            f"{percentage:6.2f}% "
+        line = (
+            f" [{bar}]"
+            f" {percentage:6.2f}% "
             f"({self.total_cost_done:6.2f}/{self.total_cost:6.2f} Mpx), "
-            f"{self.refresh_average_speed:5.2f} Mpx/s",
-            end="",
-            flush=True,
+            f"{self.refresh_average_speed:5.2f} Mpx/s"
         )
+
+        print( f"\r\033[K" + line ,
+               end=""             ,
+               flush=True         )
+
+        if save_level >= SaveLevel.debug:
+            bar_handle.write(sys.modules[__name__].now() + ": " + line + "\n")
+            bar_handle.flush()
 
     def close(self) -> None:
         self.stop_event.set()
@@ -961,7 +988,6 @@ class ProgressBar:
         self.last_render_percentage = 100.0
         self.refresh_average_speed = 0.0
         self.render()
-        print()
 
     def _refresh_call(self) -> None:
         while not self.stop_event.wait(0.1):
@@ -993,7 +1019,7 @@ def step_forward():
     step         = steps[naming_state.j]
 
     if ( save_level >= SaveLevel.endpoints and (first_step() or last_step()) or
-         save_level >= SaveLevel.all                                          ):
+         save_level >= SaveLevel.research                                     ):
 
         file_name = "_".join((f"{(naming_state.k + 1):02}",
                               f"{phase}-phase",
@@ -1010,8 +1036,8 @@ def step_forward():
 
     if last_step():
         state.image.save(output_file)
-    log(f"the output image has been saved, {state.image.width}x"
-         f"{state.image.height}px PNG {OUTPUT_FORMAT}")
+        log(f"the output image has been saved, {state.image.width}x"
+            f"{state.image.height}px {OUTPUT_FORMAT} {OUTPUT_MODE}")
 
     naming_state.j = (naming_state.j + 1) % len(steps)
 
@@ -1021,7 +1047,20 @@ def phase_forward() -> None:
 
     naming_state.i += 1
     naming_state.j = 0
-    
+
+########################################################################################
+# NCNN Logging
+########################################################################################
+
+if save_level >= SaveLevel.debug:
+    ncnn_handle = open(ncnn_file, "w")
+
+if save_level >= SaveLevel.debug:
+    def close_ncnn_file(): ncnn_handle.close()
+    atexit.register(close_ncnn_file)
+
+log("the ncnn logging system is operative")
+
 ########################################################################################
 # Runners
 ########################################################################################
@@ -1033,6 +1072,8 @@ def run_phase_forward(bar: ProgressBar) -> None:
 def run_step_forward(bar: ProgressBar) -> None:
     step_forward()
     bar.progress(100)
+
+# TODO
 
 def run_realesrgan( model      : str         ,
                     multiplier : int         ,
@@ -1063,6 +1104,9 @@ def run_realesrgan( model      : str         ,
         fail("failed to capture Real ESRGAN's output")
 
     for line in process.stdout:
+        if save_level >= SaveLevel.debug:
+            ncnn_handle.write(now() + ": " + line)
+            ncnn_handle.flush()
         line = "".join(line.split())
         if re.search(r"^[0-9]+(\.[0-9]+)?%$", line):
             bar.progress(float(line[:-1]))
@@ -1074,147 +1118,84 @@ def run_realesrgan( model      : str         ,
     with Image.open(temp_output_file) as result:
         state.image = result.copy()
 
-# def run_algorithm( algorithm: Image.Resampling ,
-#                    size: tuple[int, int]       ,
-#                    bar: ProgressBar            ) -> None:
-#     state.image = state.image.resize(size, algorithm)
-#     bar.progress(100)
-
-# TODO
-
-def resize_worker(
-    input_shm_name: str,
-    output_shm_name: str,
-    input_size: tuple[int, int],
-    output_size: tuple[int, int],
-    algorithm: int,
-) -> None:
-
-    input_shm = shared_memory.SharedMemory(name=input_shm_name, track=False)
-    output_shm = shared_memory.SharedMemory(name=output_shm_name, track=False)
-
-    image: Image.Image | None = None
-    result: Image.Image | None = None
-
-    try:
-        # Zero-copy view of the input shared memory. The shared block must remain
-        # alive until this Image is closed.
-        image = Image.frombuffer(
-            OUTPUT_MODE,
-            input_size,
-            input_shm.buf,
-            "raw",
-            OUTPUT_MODE,
-            0,
-            1,
-        )
-
-        result = image.resize(
-            output_size,
-            Image.Resampling(algorithm),
-        )
-
-        output_array = np.ndarray(
-            (output_size[1], output_size[0], len(OUTPUT_MODE)),
-            dtype=np.uint8,
-            buffer=output_shm.buf,
-        )
-
-        # Copy directly from Pillow's result buffer into shared memory, without
-        # creating a full-size temporary bytes object.
-        np.copyto(output_array, np.asarray(result, dtype=np.uint8))
-        del output_array
-
-    finally:
-        if result is not None:
-            result.close()
-        if image is not None:
-            image.close()
-
-        input_shm.close()
-        output_shm.close()
-
-
 def run_algorithm(
     algorithm: Image.Resampling,
     size: tuple[int, int],
     bar: ProgressBar,
 ) -> None:
-
-    if state.image.width == size[0]:
+    
+    if state.image.size == size:
         bar.progress(100.0)
         return
 
-    input_size = state.image.size
-    channels = len(OUTPUT_MODE)
+    input_buffer = BytesIO()
+    state.image.save(input_buffer, format="BMP")
+    input_data = input_buffer.getvalue()
 
-    input_shape = (input_size[1], input_size[0], channels)
-    output_shape = (size[1], size[0], channels)
+    source = pyvips.Image.new_from_buffer(
+        input_data,
+        "",
+        access="sequential",
+    )
 
-    input_bytes = math.prod(input_shape)
-    output_bytes = math.prod(output_shape)
+    result = source.resize(
+        size[0] / source.width,
+        vscale=size[1] / source.height,
+        kernel=algorithm,
+    )
 
-    input_shm = shared_memory.SharedMemory(create=True, size=input_bytes, track=False)
-    output_shm = shared_memory.SharedMemory(create=True, size=output_bytes, track=False)
+    result.set_progress(True)
 
-    try:
-        input_array = np.ndarray(
-            input_shape,
-            dtype=np.uint8,
-            buffer=input_shm.buf,
-        )
+    last_percentage = -1.0
 
-        # Copy directly from the Pillow image into shared memory, avoiding
-        # Image.tobytes() and its extra full-size temporary allocation.
-        np.copyto(input_array, np.asarray(state.image, dtype=np.uint8))
-        del input_array
+    def on_progress(
+        _image: pyvips.Image,
+        progress: pyvips.Progress,
+    ) -> None:
+        nonlocal last_percentage
 
-        process = get_context("fork").Process(
-            target=resize_worker,
-            args=(
-                input_shm.name,
-                output_shm.name,
-                input_size,
-                size,
-                int(algorithm),
-            ),
-        )
+        percentage = int(progress.percent)
 
-        process.start()
-        process.join()
+        if percentage <= last_percentage:
+            return
 
-        assume(
-            process.exitcode == 0,
-            f"resizing failed with code {process.exitcode}",
-        )
+        last_percentage = percentage
+        bar.progress(percentage)
 
-        # frombytes intentionally performs one final copy, so state.image no
-        # longer depends on the lifetime of the shared-memory block.
-        old_image = state.image
-        state.image = Image.frombytes(
-            OUTPUT_MODE,
-            size,
-            output_shm.buf,
-        )
-        old_image.close()
+    result.signal_connect("eval", on_progress)
 
+    output_data = result.write_to_buffer(".bmp")
+
+    with Image.open(BytesIO(output_data)) as image:
+        new_image = image.convert(OUTPUT_MODE).copy()
+
+    state.image.close()
+    state.image = new_image
+
+    if last_percentage < 100.0:
         bar.progress(100.0)
-
-    finally:
-        input_shm.close()
-        input_shm.unlink()
-
-        output_shm.close()
-        output_shm.unlink()
 
 ########################################################################################
 # Scaling Algorithms
 ########################################################################################
 
-scalers = {"bicubic": Image.Resampling.BICUBIC, "lanczos": Image.Resampling.LANCZOS}
+scalers = {"bicubic": "cubic", "lanczos": "lanczos3"}
 
 main_scaler  = scalers[settings.scaling.main]
 final_scaler = scalers[settings.scaling.final]
+
+########################################################################################
+# Progress Bar Logging
+########################################################################################
+
+if save_level >= SaveLevel.debug:
+    bar_handle = open(bar_file, "w")
+
+if save_level >= SaveLevel.debug:
+    def close_bar_file(): bar_handle.close()
+    atexit.register(close_bar_file)
+
+log("the progress bar logging system is operative")
 
 ########################################################################################
 # Planners
@@ -1234,7 +1215,7 @@ def current_size() -> tuple[int, int]:
     return input_width, input_height
 
 def plan_algorithm( arg: float |tuple[int, int]               ,
-                    algorithm: Image.Resampling = main_scaler ) -> None:
+                    algorithm: str = main_scaler ) -> None:
 
     in_width  , in_height  = current_size()
     out_width , out_height = ( arg if isinstance(arg, tuple)
@@ -1262,7 +1243,7 @@ def plan_phase_forward() -> None:
 
 def plan_step_forward(first: bool = False, last:bool = False) -> None:
     save = last + ( (first or last) and save_level >= SaveLevel.endpoints or
-                    save_level >= SaveLevel.all                            )
+                    save_level >= SaveLevel.research                       )
     width, height  = current_size()
     state.units.append(StepForward(save, width, height))
     
@@ -1346,6 +1327,13 @@ total_cost = sum([cost(unit) for unit in state.units])
 log("the execution plan has been created")
 
 ########################################################################################
+# Newline at Exit
+########################################################################################
+
+def newline() -> None: print()
+atexit.register(newline)
+
+########################################################################################
 # Plan Execution
 ########################################################################################
 
@@ -1363,11 +1351,10 @@ try:
                 run_step_forward(bar)
             elif isinstance(unit, PhaseForward):
                 run_phase_forward(bar)
+        bar.close()
 except KeyboardInterrupt:
     print()
     fail("interrupted by user", False)
-finally:
-    bar.close()
 
 ########################################################################################
 # End
