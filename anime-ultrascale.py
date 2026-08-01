@@ -22,11 +22,13 @@ from types import SimpleNamespace
 from time import perf_counter
 from threading import Event, Thread
 from subprocess import Popen, PIPE, STDOUT
+from multiprocessing import get_context, shared_memory
 
 # Custom Qualified
 from PIL import Image
 from psutil import Process
 from dacite import from_dict, Config
+import numpy as np
 
 ########################################################################################
 # Constants
@@ -216,11 +218,12 @@ def cost(unit: Unit) -> float:
 
     if not isinstance(unit, (Scaling, ScalingAI)):
         return 0
-
-    if isinstance(unit, ScalingAI):
+    elif isinstance(unit, ScalingAI):
         return unit.in_width * unit.in_height * 1.0 / 1000000
-    else:
+    elif unit.in_width != unit.out_width:
         return unit.out_width * unit.out_height * 0.1 / 1000000
+    else:
+        return 0
 
 ########################################################################################
 # Error Reporting
@@ -810,50 +813,61 @@ class ProgressBar:
         self.total_cost = total_cost
         self.total_cost_done = 0.0
         self.unit_cost = 0.0
+        self.high_speed = False
         self.unit_cost_done = 0.0
-        self.average_speed = 0.0
+        self.progress_average_speed = 0.0
+        self.refresh_average_speed = 0.0
         self.bonus_cost_done = 0.0
-        self.last_instant = perf_counter()
-        self.bonus_instant = self.last_instant
-        self.last_percentage = 0.0
+        self.last_progress_instant = perf_counter()
+        self.last_render_instant = self.last_progress_instant
+        self.last_refresh_instant = self.last_progress_instant
+        self.last_progress_percentage = 0.0
+        self.last_render_percentage = 0.0
         self.stop_event = Event()
         self.refresh_thread = Thread( target = self.refresh_call ,
                                       daemon = True              )
         self.refresh_thread.start()
+        self.timespans = [1.0, 1,0]
+        self.costs = [1.0, 10.0]
 
-    def new_unit(self, current_cost: float) -> None:
-        cost_left = self.unit_cost - self.unit_cost_done
-        if self.unit_cost > 0:
-            self.progress(cost_left * 100 / self.unit_cost)
+    def new_unit(self, current_cost: float, high_speed: bool) -> None:
+        if self.unit_cost > 0.0:
+            self.progress(100.0)
+        self.high_speed = high_speed
+        self.progress_average_speed = ( self.costs[high_speed]     /
+                                        self.timespans[high_speed] )
         self.unit_cost = current_cost
-        self.unit_cost_done = 0
-        self.bonus_cost_done = 0
-        self.last_instant = perf_counter()
-        self.bonus_instant = perf_counter()
-        self.last_percentage = 0.0
+        self.unit_cost_done = 0.0
+        self.bonus_cost_done = 0.0
+        self.last_progress_instant = perf_counter()
+        self.last_refresh_instant = perf_counter()
+        self.last_progress_percentage = 0.0
 
     def progress(self, percentage: float) -> None:
-        delta = percentage - self.last_percentage
-        self.last_percentage = percentage
-        chunk_cost = self.unit_cost * delta / 100
+        delta = percentage - self.last_progress_percentage
+        self.last_progress_percentage = percentage
+        chunk_cost = self.unit_cost * delta / 100.0
         old_part = clamp(None, self.bonus_cost_done, chunk_cost)
         new_part = chunk_cost - old_part
         now = perf_counter()
-        delta = now - self.last_instant
-        self.last_instant = now
-        if delta > 0:
+        delta = now - self.last_progress_instant
+        self.last_progress_instant = now
+        self.timespans[self.high_speed] += delta
+        self.costs[self.high_speed] += chunk_cost
+        if delta > 0.0:
             current_speed = chunk_cost / delta
-            self.average_speed = ( current_speed if self.average_speed == 0
-                                                 else ( 0.8 * self.average_speed +
-                                                        0.2 * current_speed      ) )
-        self._old_progress(old_part)
-        self._new_progress(new_part)
+            self.progress_average_speed = (
+                current_speed if self.progress_average_speed == 0.0
+                              else ( 0.8 * self.progress_average_speed +
+                                     0.2 * current_speed      ) )
+        self.old_progress(old_part)
+        self.new_progress(new_part)
         self.render()
 
-    def _old_progress(self, chunk_cost: float) -> None:
+    def old_progress(self, chunk_cost: float) -> None:
         self.bonus_cost_done -= clamp(0, chunk_cost, None)
 
-    def _new_progress(self, chunk_cost: float) -> None:
+    def new_progress(self, chunk_cost: float) -> None:
         self.total_cost_done = clamp( None                              ,
                                       self.total_cost_done + chunk_cost ,
                                       self.total_cost                   )
@@ -863,10 +877,10 @@ class ProgressBar:
 
     def refresh(self) -> None:
         now = perf_counter()
-        delta = now - self.bonus_instant
-        self.bonus_instant = now
-        bonus_chunk_cost = clamp( 0,
-                                  delta * self.average_speed           ,
+        delta = now - self.last_refresh_instant
+        self.last_refresh_instant = now
+        bonus_chunk_cost = clamp( 0.0,
+                                  delta * self.progress_average_speed ,
                                   self.unit_cost - self.unit_cost_done )
         self.bonus_cost_done += bonus_chunk_cost
         self.total_cost_done = clamp( None,
@@ -878,18 +892,33 @@ class ProgressBar:
         self.render()
 
     def render(self) -> None:
-        percentage = 100 * ( 1 if self.total_cost == 0
-                               else self.total_cost_done / self.total_cost )
-        speed = self.average_speed or 0
+        now = perf_counter()
+        delta = now - self.last_render_instant
+        self.last_render_instant = now
+        percentage = 100.0 * ( 1.0 if self.total_cost == 0.0
+                                   else self.total_cost_done / self.total_cost )
+        if delta > 0.0:
+            speed = ( (percentage - self.last_render_percentage) *
+                      self.total_cost                            /
+                      (100 * delta)                              )
+            decay = math.exp(-delta / 0.4)
+            self.refresh_average_speed = (
+                speed if self.refresh_average_speed == 0.0
+                      else ( decay * self.refresh_average_speed +
+                             (1 - decay)* speed                 ) )
+        self.last_render_percentage = percentage
         print(f"\r\033[K"
               f"Progress: {percentage:6.2f}% ({self.total_cost_done:6.2f} Mpx), "
-              f"running at {speed:5.2f} Mpx/s.", end = "", flush = True)
+              f"running at {self.refresh_average_speed:5.2f} Mpx/s."              ,
+              end = ""                                                            ,
+              flush = True                                                        )
 
     def close(self) -> None:
         self.stop_event.set()
         self.refresh_thread.join()
         self.total_cost_done = self.total_cost
-        self.average_speed = 0
+        self.last_render_percentage = 100.0
+        self.refresh_average_speed = 0.0
         self.render()
         print()
 
@@ -970,9 +999,10 @@ def run_realesrgan( model      : str         ,
           "-j", "1:1:1"                                      ,
           "-s", str(multiplier)                              ],
 
-        stdout = PIPE,
-        stderr = STDOUT,
-        text = True
+        stdout  = PIPE   ,
+        stderr  = STDOUT ,
+        text    = True   ,
+        bufsize = 1
     )
 
     if process.stdout is None:
@@ -990,12 +1020,134 @@ def run_realesrgan( model      : str         ,
     with Image.open(temp_output_file) as result:
         state.image = result.copy()
 
-def run_algorithm( algorithm: Image.Resampling ,
-                   size: tuple[int, int]       ,
-                   bar: ProgressBar            ) -> None:
-    state.image = state.image.resize(size, algorithm)
-    bar.progress(100)
+# def run_algorithm( algorithm: Image.Resampling ,
+#                    size: tuple[int, int]       ,
+#                    bar: ProgressBar            ) -> None:
+#     state.image = state.image.resize(size, algorithm)
+#     bar.progress(100)
 
+# TODO
+
+def resize_worker(
+    input_shm_name: str,
+    output_shm_name: str,
+    input_size: tuple[int, int],
+    output_size: tuple[int, int],
+    algorithm: int,
+) -> None:
+
+    input_shm = shared_memory.SharedMemory(name=input_shm_name)
+    output_shm = shared_memory.SharedMemory(name=output_shm_name)
+
+    image: Image.Image | None = None
+    result: Image.Image | None = None
+
+    try:
+        # Zero-copy view of the input shared memory. The shared block must remain
+        # alive until this Image is closed.
+        image = Image.frombuffer(
+            OUTPUT_MODE,
+            input_size,
+            input_shm.buf,
+            "raw",
+            OUTPUT_MODE,
+            0,
+            1,
+        )
+
+        result = image.resize(
+            output_size,
+            Image.Resampling(algorithm),
+        )
+
+        output_array = np.ndarray(
+            (output_size[1], output_size[0], len(OUTPUT_MODE)),
+            dtype=np.uint8,
+            buffer=output_shm.buf,
+        )
+
+        # Copy directly from Pillow's result buffer into shared memory, without
+        # creating a full-size temporary bytes object.
+        np.copyto(output_array, np.asarray(result, dtype=np.uint8))
+        del output_array
+
+    finally:
+        if result is not None:
+            result.close()
+        if image is not None:
+            image.close()
+
+        input_shm.close()
+        output_shm.close()
+
+
+def run_algorithm(
+    algorithm: Image.Resampling,
+    size: tuple[int, int],
+    bar: ProgressBar,
+) -> None:
+
+    input_size = state.image.size
+    channels = len(OUTPUT_MODE)
+
+    input_shape = (input_size[1], input_size[0], channels)
+    output_shape = (size[1], size[0], channels)
+
+    input_bytes = math.prod(input_shape)
+    output_bytes = math.prod(output_shape)
+
+    input_shm = shared_memory.SharedMemory(create=True, size=input_bytes)
+    output_shm = shared_memory.SharedMemory(create=True, size=output_bytes)
+
+    try:
+        input_array = np.ndarray(
+            input_shape,
+            dtype=np.uint8,
+            buffer=input_shm.buf,
+        )
+
+        # Copy directly from the Pillow image into shared memory, avoiding
+        # Image.tobytes() and its extra full-size temporary allocation.
+        np.copyto(input_array, np.asarray(state.image, dtype=np.uint8))
+        del input_array
+
+        process = get_context("fork").Process(
+            target=resize_worker,
+            args=(
+                input_shm.name,
+                output_shm.name,
+                input_size,
+                size,
+                int(algorithm),
+            ),
+        )
+
+        process.start()
+        process.join()
+
+        assume(
+            process.exitcode == 0,
+            f"resizing failed with code {process.exitcode}",
+        )
+
+        # frombytes intentionally performs one final copy, so state.image no
+        # longer depends on the lifetime of the shared-memory block.
+        old_image = state.image
+        state.image = Image.frombytes(
+            OUTPUT_MODE,
+            size,
+            output_shm.buf,
+        )
+        old_image.close()
+
+        bar.progress(100.0)
+
+    finally:
+        input_shm.close()
+        input_shm.unlink()
+
+        output_shm.close()
+        output_shm.unlink()
 
 ########################################################################################
 # Scaling Algorithms
@@ -1117,18 +1269,23 @@ try:
     with ProgressBar(total_cost) as bar:
         for unit in state.units:
             if isinstance(unit, Scaling):
-                bar.new_unit(cost(unit))
-                run_algorithm(unit.algorithm, (unit.out_width, unit.out_height), bar)
+                if unit.in_width != unit.out_width:
+                    bar.new_unit(cost(unit), True)
+                    run_algorithm( unit.algorithm                         ,
+                                   (unit.out_width, unit.out_height), bar )
                 step_forward()
             elif isinstance(unit, ScalingAI):
-                bar.new_unit(cost(unit))
-                run_realesrgan(unit.model, unit.out_width // unit.in_width, bar)
+                bar.new_unit(cost(unit), False)
+                run_realesrgan( unit.model                           ,
+                                unit.out_width // unit.in_width, bar )
                 step_forward()
             elif isinstance(unit, PhaseClosure):
                 phase_forward()
 except KeyboardInterrupt:
     print()
-    fail("interrupted by user", False, SystemExit)
+    fail("interrupted by user", False)
+finally:
+    bar.close()
 
 ########################################################################################
 # Output Saving
