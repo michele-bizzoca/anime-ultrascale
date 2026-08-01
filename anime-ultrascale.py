@@ -251,17 +251,6 @@ def cost(unit: Unit) -> float:
     else:
         return 0
 
-def speed_guess(unit_class: type[Unit]) -> float:
-
-    if unit_class == Scaling:
-        return 10.0
-    elif unit_class == ScalingAI:
-        return 1.0
-    elif unit_class == StepForward:
-        return 3.33
-    else:
-        return 0
-
 ########################################################################################
 # Error Reporting
 ########################################################################################
@@ -882,16 +871,19 @@ class ProgressBar:
         self.refresh_thread = Thread( target = self._refresh_call ,
                                       daemon = True               )
         self.refresh_thread.start()
-        self.timespans = {k.__name__: 1 for k in unit_classes}
-        self.costs = {k.__name__: speed_guess(k) for k in unit_classes}
+        self.timespans = {k.__name__: 0 for k in unit_classes}
+        self.costs = {k.__name__: 0 for k in unit_classes}
+        self.started = {k.__name__: False for k in unit_classes}
         self._render()
 
     def new_unit(self, unit: Unit) -> None:
-        with self.lock:
+        with (self.lock):
             if self.unit_cost > 0.0:
                 self.progress(100.0)
-            self.progress_average_speed = ( self.costs[type(unit).__name__]     /
-                                            self.timespans[type(unit).__name__] )
+            self.progress_average_speed = (
+                self.costs[type(unit).__name__] / self.timespans[type(unit).__name__]
+                    if self.timespans[type(unit).__name__] != 0
+                    else 0 )
             self.unit_cost = cost(unit)
             self.unit_class_name = type(unit).__name__
             self.unit_cost_done = 0.0
@@ -900,26 +892,27 @@ class ProgressBar:
             self.last_refresh_instant = perf_counter()
             self.last_progress_percentage = 0.0
 
-        def progress(self, percentage: float) -> None:
-            delta = percentage - self.last_progress_percentage
-            self.last_progress_percentage = percentage
-            chunk_cost = self.unit_cost * delta / 100.0
-            old_part = clamp(None, self.bonus_cost_done, chunk_cost)
-            new_part = chunk_cost - old_part
-            now = perf_counter()
-            delta = now - self.last_progress_instant
-            self.last_progress_instant = now
+    def progress(self, percentage: float) -> None:
+        delta = percentage - self.last_progress_percentage
+        self.last_progress_percentage = percentage
+        chunk_cost = self.unit_cost * delta / 100.0
+        old_part = clamp(None, self.bonus_cost_done, chunk_cost)
+        new_part = chunk_cost - old_part
+        now = perf_counter()
+        delta = now - self.last_progress_instant
+        self.last_progress_instant = now
+        if self.started[self.unit_class_name] and delta > 0.0:
             self.timespans[self.unit_class_name] += delta
             self.costs[self.unit_class_name] += chunk_cost
-            if delta > 0.0:
-                current_speed = chunk_cost / delta
-                self.progress_average_speed = (
-                    current_speed if self.progress_average_speed == 0.0
-                                  else ( 0.8 * self.progress_average_speed +
-                                         0.2 * current_speed               ) )
-            self._old_progress(old_part)
-            self._new_progress(new_part)
-            self._render()
+            current_speed = chunk_cost / delta
+            self.progress_average_speed = (
+                current_speed if self.progress_average_speed == 0.0
+                              else ( 0.8 * self.progress_average_speed +
+                                     0.2 * current_speed               ) )
+        self.started[self.unit_class_name] = True
+        self._old_progress(old_part)
+        self._new_progress(new_part)
+        self._render()
 
     def _old_progress(self, chunk_cost: float) -> None:
         self.bonus_cost_done -= clamp(0, chunk_cost, None)
@@ -959,7 +952,7 @@ class ProgressBar:
             speed = ( (percentage - self.last_render_percentage) *
                       self.total_cost                            /
                       (100 * delta)                              )
-            decay = math.exp(-delta / 0.4)
+            decay = math.exp(-delta / 0.6)
             self.refresh_average_speed = (
                 speed if self.refresh_average_speed == 0.0
                       else ( decay * self.refresh_average_speed +
@@ -1123,7 +1116,7 @@ def run_realesrgan( model      : str         ,
         state.image = result.copy()
 
 def run_algorithm(
-    algorithm: Image.Resampling,
+    algorithm: str,
     size: tuple[int, int],
     bar: ProgressBar,
 ) -> None:
@@ -1132,14 +1125,14 @@ def run_algorithm(
         bar.progress(100.0)
         return
 
-    input_buffer = BytesIO()
-    state.image.save(input_buffer, format="BMP")
-    input_data = input_buffer.getvalue()
+    input_data = state.image.tobytes()
 
-    source = pyvips.Image.new_from_buffer(
+    source = pyvips.Image.new_from_memory(
         input_data,
-        "",
-        access="sequential",
+        state.image.width,
+        state.image.height,
+        len(OUTPUT_MODE),
+        "uchar",
     )
 
     result = source.resize(
@@ -1150,28 +1143,48 @@ def run_algorithm(
 
     result.set_progress(True)
 
-    last_percentage = -1.0
+    started = False
+    last_percentage = 0
+
+    def on_start(
+            _image: pyvips.Image,
+            _progress: pyvips.Progress,
+    ) -> None:
+        nonlocal started
+
+        if not started:
+            started = True
+            bar.progress(0.0)
 
     def on_progress(
-        _image: pyvips.Image,
-        progress: pyvips.Progress,
+            _image: pyvips.Image,
+            progress: pyvips.Progress,
     ) -> None:
         nonlocal last_percentage
 
         percentage = int(progress.percent)
 
-        if percentage <= last_percentage:
+        if not started or percentage <= last_percentage:
             return
 
         last_percentage = percentage
-        bar.progress(percentage)
+        bar.progress(float(percentage))
 
+    result.set_progress(True)
+    result.signal_connect("preeval", on_start)
     result.signal_connect("eval", on_progress)
 
-    output_data = result.write_to_buffer(".bmp")
+    output_data = result.write_to_memory()
 
-    with Image.open(BytesIO(output_data)) as image:
-        new_image = image.convert(OUTPUT_MODE).copy()
+    new_image = Image.frombytes(
+        OUTPUT_MODE,
+        size,
+        output_data,
+        "raw",
+        OUTPUT_MODE,
+        0,
+        1,
+    )
 
     state.image.close()
     state.image = new_image
