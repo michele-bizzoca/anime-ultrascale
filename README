@@ -1,0 +1,16 @@
+This program requires a python environment of version
+>= 3.10. You can check your python version running
+'python --version' in any terminal.
+
+The program also requires the pyvips runtime, which
+is contained in the apt package libvips42 that can be
+installed running 'sudo apt install libvips42' in any
+terminal.
+
+To use the core script 'anime-ultrascale.py', the
+python packages specified in "requirements.txt" have
+to be installed.
+
+To use 'anime-ultrascale' as a program available in
+any terminal, open a terminal at the current location
+and run 'chmod +x install.sh; source install.sh'.
