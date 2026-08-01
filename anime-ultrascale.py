@@ -884,40 +884,42 @@ class ProgressBar:
         self.refresh_thread.start()
         self.timespans = {k.__name__: 1 for k in unit_classes}
         self.costs = {k.__name__: speed_guess(k) for k in unit_classes}
+        self._render()
 
     def new_unit(self, unit: Unit) -> None:
-        if self.unit_cost > 0.0:
-            self.progress(100.0)
-        self.progress_average_speed = ( self.costs[type(unit).__name__]     /
-                                        self.timespans[type(unit).__name__] )
-        self.unit_cost = cost(unit)
-        self.unit_class_name = type(unit).__name__
-        self.unit_cost_done = 0.0
-        self.bonus_cost_done = 0.0
-        self.last_progress_instant = perf_counter()
-        self.last_refresh_instant = perf_counter()
-        self.last_progress_percentage = 0.0
+        with self.lock:
+            if self.unit_cost > 0.0:
+                self.progress(100.0)
+            self.progress_average_speed = ( self.costs[type(unit).__name__]     /
+                                            self.timespans[type(unit).__name__] )
+            self.unit_cost = cost(unit)
+            self.unit_class_name = type(unit).__name__
+            self.unit_cost_done = 0.0
+            self.bonus_cost_done = 0.0
+            self.last_progress_instant = perf_counter()
+            self.last_refresh_instant = perf_counter()
+            self.last_progress_percentage = 0.0
 
-    def progress(self, percentage: float) -> None:
-        delta = percentage - self.last_progress_percentage
-        self.last_progress_percentage = percentage
-        chunk_cost = self.unit_cost * delta / 100.0
-        old_part = clamp(None, self.bonus_cost_done, chunk_cost)
-        new_part = chunk_cost - old_part
-        now = perf_counter()
-        delta = now - self.last_progress_instant
-        self.last_progress_instant = now
-        self.timespans[self.unit_class_name] += delta
-        self.costs[self.unit_class_name] += chunk_cost
-        if delta > 0.0:
-            current_speed = chunk_cost / delta
-            self.progress_average_speed = (
-                current_speed if self.progress_average_speed == 0.0
-                              else ( 0.8 * self.progress_average_speed +
-                                     0.2 * current_speed               ) )
-        self._old_progress(old_part)
-        self._new_progress(new_part)
-        self.render()
+        def progress(self, percentage: float) -> None:
+            delta = percentage - self.last_progress_percentage
+            self.last_progress_percentage = percentage
+            chunk_cost = self.unit_cost * delta / 100.0
+            old_part = clamp(None, self.bonus_cost_done, chunk_cost)
+            new_part = chunk_cost - old_part
+            now = perf_counter()
+            delta = now - self.last_progress_instant
+            self.last_progress_instant = now
+            self.timespans[self.unit_class_name] += delta
+            self.costs[self.unit_class_name] += chunk_cost
+            if delta > 0.0:
+                current_speed = chunk_cost / delta
+                self.progress_average_speed = (
+                    current_speed if self.progress_average_speed == 0.0
+                                  else ( 0.8 * self.progress_average_speed +
+                                         0.2 * current_speed               ) )
+            self._old_progress(old_part)
+            self._new_progress(new_part)
+            self._render()
 
     def _old_progress(self, chunk_cost: float) -> None:
         self.bonus_cost_done -= clamp(0, chunk_cost, None)
@@ -931,22 +933,23 @@ class ProgressBar:
                                      self.unit_cost                    )
 
     def refresh(self) -> None:
-        now = perf_counter()
-        delta = now - self.last_refresh_instant
-        self.last_refresh_instant = now
-        bonus_chunk_cost = clamp( 0.0,
-                                  delta * self.progress_average_speed ,
-                                  self.unit_cost - self.unit_cost_done )
-        self.bonus_cost_done += bonus_chunk_cost
-        self.total_cost_done = clamp( None,
-                                      self.total_cost_done + bonus_chunk_cost ,
-                                      self.total_cost                         )
-        self.unit_cost_done = clamp( None                                   ,
-                                     self.unit_cost_done + bonus_chunk_cost ,
-                                     self.unit_cost                         )
-        self.render()
+        with self.lock:
+            now = perf_counter()
+            delta = now - self.last_refresh_instant
+            self.last_refresh_instant = now
+            bonus_chunk_cost = clamp( 0.0,
+                                      delta * self.progress_average_speed ,
+                                      self.unit_cost - self.unit_cost_done )
+            self.bonus_cost_done += bonus_chunk_cost
+            self.total_cost_done = clamp( None,
+                                          self.total_cost_done + bonus_chunk_cost ,
+                                          self.total_cost                         )
+            self.unit_cost_done = clamp( None                                   ,
+                                         self.unit_cost_done + bonus_chunk_cost ,
+                                         self.unit_cost                         )
+            self._render()
 
-    def render(self) -> None:
+    def _render(self) -> None:
         now = perf_counter()
         delta = now - self.last_render_instant
         self.last_render_instant = now
@@ -984,10 +987,11 @@ class ProgressBar:
     def close(self) -> None:
         self.stop_event.set()
         self.refresh_thread.join()
-        self.total_cost_done = self.total_cost
-        self.last_render_percentage = 100.0
-        self.refresh_average_speed = 0.0
-        self.render()
+        with self.lock:
+            self.total_cost_done = self.total_cost
+            self.last_render_percentage = 100.0
+            self.refresh_average_speed = 0.0
+            self._render()
 
     def _refresh_call(self) -> None:
         while not self.stop_event.wait(0.1):
@@ -1123,7 +1127,7 @@ def run_algorithm(
     size: tuple[int, int],
     bar: ProgressBar,
 ) -> None:
-    
+
     if state.image.size == size:
         bar.progress(100.0)
         return
