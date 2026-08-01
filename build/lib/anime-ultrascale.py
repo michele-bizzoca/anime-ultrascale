@@ -1524,11 +1524,10 @@ HELP = dedent("""\
     
     ┌── LICENSE
     ├── README
+    ├── anime-ultrascale
     ├── anime-ultrascale.py
-    ├── pyproject.toml
+    ├── requirements.txt
     ├── install.sh
-    ├── bin
-    │     └── anime-ultrascale
     ├── venv
     │     └── ·······
     ├── renv

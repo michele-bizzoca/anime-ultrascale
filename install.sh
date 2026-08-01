@@ -1,18 +1,18 @@
 #!/usr/bin/env bash
-set -euo pipefail
-
-python3 -m venv venv
-. venv/bin/activate
-
-python -m pip install --upgrade pip
-python -m pip install --ignore-installed --no-user pillow pyvips dacite psutil
+set -uo pipefail
 
 DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-
 BASHRC="$HOME/.bashrc"
-PATH_LINE="export PATH=\"\$PATH:$DIR\""
+PATH_LINE="export PATH=\"\$PATH:$DIR/bin\""
 
-chmod +x -- "$DIR/anime-ultrascale"
+cd "$DIR"
+
+python3 -m venv venv
+source venv/bin/activate
+venv/bin/python3 -m pip install --ignore-installed --no-user .
+rm -rf ./*.egg-info
+
+chmod +x -- "bin/anime-ultrascale"
 
 grep -Fqx -- "$PATH_LINE" "$BASHRC" ||
     printf '\n%s\n' "$PATH_LINE" >> "$BASHRC"
