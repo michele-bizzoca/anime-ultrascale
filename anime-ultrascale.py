@@ -1379,11 +1379,8 @@ except KeyboardInterrupt:
 ########################################################################################
 
 HELP = dedent("""\
-    To Add
-    multipliers and divisors apply to lengths, namely width and height.
-    
     Anime-Ultrascale
-    A workflow for extreme anime upscaling.
+    A Tool for Extreme Anime Upscaling.
     
     USAGE
     
@@ -1555,7 +1552,7 @@ HELP = dedent("""\
 
     LICENSE
 
-    Copyright (c) 2026 Michele Bizzoca.
+    Copyright (c) 2026 Michele Bizzoca
     Licensed under the MIT License.
 """)
 
