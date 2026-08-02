@@ -10,8 +10,8 @@ To install the program in Ubuntu in-place, you
 can open the terminal at the current location and
 run:
 
-chmod +x install.sh
-source install.sh'
+chmod +x install
+source install
 
 Only this program's folder and '~/.bashrc' will
 be altered. The program will be available as
