@@ -1552,6 +1552,11 @@ HELP = dedent("""\
     
     Concept -> https://github.com/michele-bizzoca/anime-upscaling
     Program -> https://github.com/michele-bizzoca/anime-ultrascale
+
+    LICENSE
+
+    Copyright (c) 2026 Michele Bizzoca.
+    Licensed under the MIT License.
 """)
 
 ########################################################################################

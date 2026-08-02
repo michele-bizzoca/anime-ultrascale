@@ -1,3 +1,8 @@
+Anime Ultrascale
+A Tool for Extreme Anime Upscaling
+
+--------------------------------------------------
+
 This program requires Python of version >= 3.10
 to be installed, and the python package 'venv' to
 be installed in it.
@@ -21,3 +26,8 @@ The core script 'anime-ultrascale.py' is
 self-contained and can be used in any system,
 as long as the python packages specified in
 "pyproject.toml" are installed.
+
+--------------------------------------------------
+
+Copyright (c) 2026 Michele Bizzoca.
+Licensed under the MIT License.
