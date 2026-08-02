@@ -10,7 +10,7 @@ cd "$DIR"
 python3 -m venv venv
 source venv/bin/activate
 venv/bin/python3 -m pip install --ignore-installed --no-user .
-rm -rf ./*.egg-info
+rm -rf -- "$DIR/build" "$DIR/dist" "$DIR"/*.egg-info "$DIR/.tmp"
 
 chmod +x -- "bin/anime-ultrascale"
 
