@@ -1526,7 +1526,7 @@ HELP = dedent("""\
     ├── README
     ├── anime-ultrascale.py
     ├── pyproject.toml
-    ├── install.sh
+    ├── install
     ├── bin
     │     └── anime-ultrascale
     ├── venv

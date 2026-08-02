@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name            = "anime-ultrascale"
 version         = "1.0"
-description     = "A workflow for extreme anime upscaling."
+description     = "A tool for extreme anime upscaling."
 requires-python = ">= 3.10"
 
 dependencies = [ "Pillow >= 10.0.0" ,
