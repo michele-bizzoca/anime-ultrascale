@@ -30,10 +30,10 @@ following istructions:
 chmod +x install
 source ./install
 
-Only this folder and '~/.bashrc' will be
-altered. The program will be available in all new
-bash terminals of the current user, and in the
-current terminal as well.
+Only this folder and '~/.bashrc' will be altered.
+The program will be available as 'anime-ultrascale'
+in both the installation terminal and all new bash
+terminals of the current user.
 
 ----------------------------------------------------
 
