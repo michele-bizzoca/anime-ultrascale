@@ -179,11 +179,12 @@ HELP = dedent("""\
     ┌── LICENSE
     ├── README
     ├── anime-ultrascale.py
+    ├── anime-ultrascale
     ├── pyproject.toml
     ├── install
-    ├── bin
+    ├── .bin
     │     └── anime-ultrascale
-    ├── venv
+    ├── .venv
     │     └── ·······
     ├── renv
     │     └── realesrgan-ncnn-vulkan

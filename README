@@ -24,8 +24,8 @@ following istructions:
 2) install the pyvips runtime, e.g. 'sudo apt
    install -y libvips42'.
 
-3) Open a terminal at the current location and
-   run:
+3) Open a bash terminal at the current location
+   and run:
 
 chmod +x install
 source ./install

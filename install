@@ -5,16 +5,14 @@ DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 PATH_LINE="export PATH=\"\$PATH:$DIR/.bin\""
 BASHRC="$HOME/.bashrc"
 
-cd "$DIR"
-
-python3 -m venv .venv
-source ".venv/bin/activate"
-.venv/bin/python3 -m pip install --ignore-installed --no-user .
+python3 -m venv $DIR/.venv
+source $DIR/.venv/bin/activate
+$DIR/.venv/bin/python3 -m pip install --ignore-installed --no-user $DIR
 rm -rf -- "$DIR/build" "$DIR/dist" "$DIR"/*.egg-info "$DIR/.tmp"
 
-mkdir .bin
-cp anime-ultrascale .bin
-chmod +x ".bin/anime-ultrascale"
+mkdir $DIR/.bin
+cp $DIR/anime-ultrascale $DIR/.bin
+chmod +x "$DIR/.bin/anime-ultrascale"
 
 grep -Fqx -- "$PATH_LINE" "$BASHRC" ||
     printf '\n%s\n' "$PATH_LINE" >> "$BASHRC"
