@@ -32,6 +32,188 @@ from dacite import from_dict, Config
 from io import BytesIO
 
 ########################################################################################
+# Help
+########################################################################################
+
+HELP = dedent("""\
+    Anime-Ultrascale
+    A Tool for Extreme Anime Upscaling.
+
+    USAGE
+
+    anime-ultrascale INPUT OUTPUT.png
+        MAIN_DIVISOR MAIN_MULTIPLIER
+        SOFT_MODEL SOFT_DIVISOR SOFT_MULTIPLIER SOFT_ITERATIONS
+        HARD_MODEL HARD_DIVISOR HARD_MULTIPLIER HARD_ITERATIONS
+        MAIN_SCALER FINAL_SCALER
+        [OPTIONS]
+
+    anime-ultrascale INPUT OUTPUT.png
+                     {SESSION.json│SETTINGS.cfg}
+                     [OPTIONS]
+
+    anime-ultrascale {-h│--help}
+
+    anime-ultrascale {-v│--version}
+
+    POSITIONAL ARGUMENTS
+
+    INPUT (str)
+        Input image in any format supported by Python's Pillow.
+
+    OUTPUT.png (str)
+        Output image in PNG RGBA format.
+
+    MAIN_DIVISOR (float)
+        Main-phase downscaling divisor. Use it to revert an upscaling
+        already present in the input image.
+
+    MAIN_MULTIPLIER (float)
+        Main-phase upscaling multiplier. It determines the output
+        width and height, namely output = (input / MAIN_DIVISOR) *
+        MAIN_MULTIPLIER.
+
+    SOFT_MODEL (str)
+        Real ESRGAN model specialized in preserving detail (basename).
+
+    SOFT_DIVISOR (float)
+        Soft-phase downscaling divisor. Use it to cut high frequencies
+        before the successive upscaling.
+
+    SOFT_MULTIPLIER (int)
+        Soft-phase upscaling multiplier. It has to be supported by
+        SOFT_MODEL.
+
+    SOFT_ITERATIONS (int)
+        Soft-phase downscaling/upscaling iterations.
+
+    HARD_MODEL (str)
+        Real ESRGAN model specialized in enhancing detail (basename).
+
+    HARD_DIVISOR (float)
+        Hard-phase downscaling divisor. Use it to cut high frequencies
+        before the successive upscaling.
+
+    HARD_MULTIPLIER (int)
+        Hard-phase upscaling multiplier. It has to be supported by
+        SOFT_MODEL.
+
+    HARD_ITERATIONS (int)
+        Hard-phase downscaling/upscaling iterations.
+
+    MAIN_SCALER (str)
+        The resizing algorithm used in all intermediate steps.
+
+    FINAL_SCALER (str)
+        The resizing algorithm used in the final step.
+
+    {SESSION.json│SETTINGS.cfg} (str)
+        A session or settings file to import settings from.
+
+    {-h│--help}
+        Shows this help message.
+
+    {-v│--version}
+        Shows the program's version.
+
+    CONSTRAINTS
+
+        MAIN_DIVISOR    >= 1
+        MAIN_MULTIPLIER >= 1
+
+        SOFT_MULTIPLIER >= 2
+        SOFT_DIVISOR    >= 1
+        SOFT_DIVISOR    <= SOFT_MULTIPLIER
+        SOFT_ITERATIONS >= 0
+
+        HARD_MULTIPLIER >= 1
+        HARD_DIVISOR    >= 1
+        HARD_DIVISOR    <= HARD_MULTIPLIER
+        HARD_ITERATIONS >= 0
+
+        MAIN_SCALER     in ['bicubic', 'lanczos']
+        FINAL_SCALER    in ['bicubic', 'lanczos']
+
+    OPTIONS
+
+    {-t│--tile} (int)
+        The width/height of the square used to tile the total area.
+            0            -> automatic selection
+            1 <= n <= 16 -> n * 64px
+
+    {-s│--save} (str)
+        Determines the session data that is saved.
+            nothing   -> nothing
+            text      -> basic textual data
+            endpoints -> as 'text' + input/output
+            research  -> as 'endpoints' + intermediate images
+            debug     -> as 'research'' + debug textual data
+
+    DESCRIPTION
+
+    Anime-Ultrascale performs extreme image enlargement by controlled 
+    alternation of downscaling and AI upscaling, where downscaling is
+    performed by the bicubic and lanczos algorithms, and AI upscaling
+    is performed using Real ESRGAN models.
+
+    Knowledge of the three phases (main, soft, hard) is required for
+    correct usage. These are described in a dedicated article, see
+    the repositories section.
+
+    DIRECTORY TREE
+
+    Real ESRGAN models, following the usual .bin/.param convention,
+    have to be stored in the 'models' folder.
+
+    The official Real ESRGAN executable, 'realesrgan-ncnn-vulkan',
+    has to be stored in the 'renv' folder.
+
+    Useful additional data, determined by the 'save' option, will
+    be stored in the 'sessions' folder.
+
+    Temporary data will be stored in the 'temp' folder.
+
+    If this program has been installed from the official repository
+    using 'install.sh', the program's folder will contain:
+
+    ┌── LICENSE
+    ├── README
+    ├── anime-ultrascale.py
+    ├── pyproject.toml
+    ├── install
+    ├── bin
+    │     └── anime-ultrascale
+    ├── venv
+    │     └── ·······
+    ├── renv
+    │     └── realesrgan-ncnn-vulkan
+    ├── models
+    │     ├── <model>.bin
+    │     ├── <model>.param
+    │     └── ·······
+    ├── sessions
+    │     ├── <date>
+    │     │      ├── <time+pid>
+    │     │      │        └── ·······
+    │     │      └── ·······
+    │     └── ·······
+    └── temp
+          ├── <date+time+pid>
+          │      └── ·······
+          └── ·······
+
+    REPOSITORIES
+
+    Concept -> https://github.com/michele-bizzoca/anime-upscaling
+    Program -> https://github.com/michele-bizzoca/anime-ultrascale
+
+    LICENSE
+
+    Copyright (c) 2026 Michele Bizzoca
+    Licensed under the MIT License.
+""")
+
+########################################################################################
 # Libraries Configuration
 ########################################################################################
 
@@ -275,7 +457,7 @@ def early_assume( condition : bool                            ,
 
 if len(sys.argv) == 2:
     if sys.argv[1] in ["-h", "--help"]:
-        print(help)
+        print(HELP, end = "")
         exit()
     elif sys.argv[1] in ["-v", "--version"]:
         print(SOFTWARE_VERSION)
@@ -1385,188 +1567,6 @@ try:
 except KeyboardInterrupt:
     print()
     fail("interrupted by user", False)
-
-########################################################################################
-# Help
-########################################################################################
-
-help = dedent("""\
-    Anime-Ultrascale
-    A Tool for Extreme Anime Upscaling.
-    
-    USAGE
-    
-    anime-ultrascale INPUT OUTPUT.png
-        MAIN_DIVISOR MAIN_MULTIPLIER
-        SOFT_MODEL SOFT_DIVISOR SOFT_MULTIPLIER SOFT_ITERATIONS
-        HARD_MODEL HARD_DIVISOR HARD_MULTIPLIER HARD_ITERATIONS
-        MAIN_SCALER FINAL_SCALER
-        [OPTIONS]
-    
-    anime-ultrascale INPUT OUTPUT.png
-                     {SESSION.json│SETTINGS.cfg}
-                     [OPTIONS]
-    
-    anime-ultrascale {-h│--help}
-    
-    anime-ultrascale {-v│--version}
-    
-    POSITIONAL ARGUMENTS
-    
-    INPUT (str)
-        Input image in any format supported by Python's Pillow.
-    
-    OUTPUT.png (str)
-        Output image in PNG RGBA format.
-    
-    MAIN_DIVISOR (float)
-        Main-phase downscaling divisor. Use it to revert an upscaling
-        already present in the input image.
-    
-    MAIN_MULTIPLIER (float)
-        Main-phase upscaling multiplier. It determines the output
-        width and height, namely output = (input / MAIN_DIVISOR) *
-        MAIN_MULTIPLIER.
-    
-    SOFT_MODEL (str)
-        Real ESRGAN model specialized in preserving detail (basename).
-    
-    SOFT_DIVISOR (float)
-        Soft-phase downscaling divisor. Use it to cut high frequencies
-        before the successive upscaling.
-    
-    SOFT_MULTIPLIER (int)
-        Soft-phase upscaling multiplier. It has to be supported by
-        SOFT_MODEL.
-    
-    SOFT_ITERATIONS (int)
-        Soft-phase downscaling/upscaling iterations.
-    
-    HARD_MODEL (str)
-        Real ESRGAN model specialized in enhancing detail (basename).
-    
-    HARD_DIVISOR (float)
-        Hard-phase downscaling divisor. Use it to cut high frequencies
-        before the successive upscaling.
-    
-    HARD_MULTIPLIER (int)
-        Hard-phase upscaling multiplier. It has to be supported by
-        SOFT_MODEL.
-    
-    HARD_ITERATIONS (int)
-        Hard-phase downscaling/upscaling iterations.
-    
-    MAIN_SCALER (str)
-        The resizing algorithm used in all intermediate steps.
-    
-    FINAL_SCALER (str)
-        The resizing algorithm used in the final step.
-    
-    {SESSION.json│SETTINGS.cfg} (str)
-        A session or settings file to import settings from.
-    
-    {-h│--help}
-        Shows this help message.
-    
-    {-v│--version}
-        Shows the program's version.
-    
-    CONSTRAINTS
-    
-        MAIN_DIVISOR    >= 1
-        MAIN_MULTIPLIER >= 1
-    
-        SOFT_MULTIPLIER >= 2
-        SOFT_DIVISOR    >= 1
-        SOFT_DIVISOR    <= SOFT_MULTIPLIER
-        SOFT_ITERATIONS >= 0
-    
-        HARD_MULTIPLIER >= 1
-        HARD_DIVISOR    >= 1
-        HARD_DIVISOR    <= HARD_MULTIPLIER
-        HARD_ITERATIONS >= 0
-    
-        MAIN_SCALER     in ['bicubic', 'lanczos']
-        FINAL_SCALER    in ['bicubic', 'lanczos']
-    
-    OPTIONS
-    
-    {-t│--tile} (int)
-        The width/height of the square used to tile the total area.
-            0            -> automatic selection
-            1 <= n <= 16 -> n * 64px
-    
-    {-s│--save} (str)
-        Determines the session data that is saved.
-            nothing   -> nothing
-            text      -> basic textual data
-            endpoints -> as 'text' + input/output
-            research  -> as 'endpoints' + intermediate images
-            debug     -> as 'research'' + debug textual data
-    
-    DESCRIPTION
-    
-    Anime-Ultrascale performs extreme image enlargement by controlled 
-    alternation of downscaling and AI upscaling, where downscaling is
-    performed by the bicubic and lanczos algorithms, and AI upscaling
-    is performed using Real ESRGAN models.
-    
-    Knowledge of the three phases (main, soft, hard) is required for
-    correct usage. These are described in a dedicated article, see
-    the repositories section.
-    
-    DIRECTORY TREE
-    
-    Real ESRGAN models, following the usual .bin/.param convention,
-    have to be stored in the 'models' folder.
-    
-    The official Real ESRGAN executable, 'realesrgan-ncnn-vulkan',
-    has to be stored in the 'renv' folder.
-    
-    Useful additional data, determined by the 'save' option, will
-    be stored in the 'sessions' folder.
-    
-    Temporary data will be stored in the 'temp' folder.
-    
-    If this program has been installed from the official repository
-    using 'install.sh', the program's folder will contain:
-    
-    ┌── LICENSE
-    ├── README
-    ├── anime-ultrascale.py
-    ├── pyproject.toml
-    ├── install
-    ├── bin
-    │     └── anime-ultrascale
-    ├── venv
-    │     └── ·······
-    ├── renv
-    │     └── realesrgan-ncnn-vulkan
-    ├── models
-    │     ├── <model>.bin
-    │     ├── <model>.param
-    |     └── ·······
-    ├── sessions
-    │     ├── <date>
-    │     │      ├── <time+pid>
-    │     │      │        └── ·······
-    │     │      └── ·······
-    │     └── ·······
-    └── temp
-          ├── <date+time+pid>
-          │      └── ·······
-          └── ·······
-    
-    REPOSITORIES
-    
-    Concept -> https://github.com/michele-bizzoca/anime-upscaling
-    Program -> https://github.com/michele-bizzoca/anime-ultrascale
-
-    LICENSE
-
-    Copyright (c) 2026 Michele Bizzoca
-    Licensed under the MIT License.
-""")
 
 ########################################################################################
 # End
