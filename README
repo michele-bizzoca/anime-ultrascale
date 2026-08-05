@@ -1,33 +1,41 @@
 Anime Ultrascale
 A Tool for Extreme Anime Upscaling.
 
---------------------------------------------------
+-----------------------------------------------------
 
-This program requires Python of version >= 3.10
-to be installed, and the python package 'venv' to
-be installed in it.
+This README is dedicated to installation. For
+usage information, run the program with '--help'.
+For version information, refer to 'pyproject.toml'.
 
-The program also requires the pyvips runtime.
-Ubuntu users can find this runtime in the apt
-package libvips42.
+The program resides in the Python file
+'anime-ultrascale.py', which can be used in any
+system as long as a Python environment satisfying
+"pyproject.toml" is installed.
 
-To install the program in Ubuntu in-place, you
-can open the terminal at the current location and
-run:
+An Ubuntu in-place installer is provided. To
+install the program in Ubuntu, please follow the
+following istructions:
+
+1) Install Python >= 3.10
+
+2) Install the python package 'venv', e.g. 'pip
+   install venv'.
+
+2) install the pyvips runtime, e.g. 'sudo apt
+   install -y libvips42'.
+
+3) Open the terminal at the current location
+   and run:
 
 chmod +x install
 source install
 
-Only this program's folder and '~/.bashrc' will
-be altered. The program will be available as
-the command 'anime-ultrascale' in any terminal.
+Only this folder and '~/.bashrc' will be
+altered. The program will be available in all new
+bash terminals of the current user, and in the
+current terminal as well.
 
-The core script 'anime-ultrascale.py' is
-self-contained and can be used in any system,
-as long as the python packages specified in
-"pyproject.toml" are installed.
-
---------------------------------------------------
+----------------------------------------------------
 
 Copyright (c) 2026 Michele Bizzoca
 Licensed under the MIT License.

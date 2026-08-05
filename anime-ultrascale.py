@@ -270,6 +270,18 @@ def early_assume( condition : bool                            ,
         early_fail(message, suggest, exception)
 
 ########################################################################################
+# Help and Version
+########################################################################################
+
+if len(sys.argv) == 2:
+    if sys.argv[1] in ["-h", "--help"]:
+        print(help)
+        exit()
+    elif sys.argv[1] in ["-v", "--version"]:
+        print(SOFTWARE_VERSION)
+        exit()
+
+########################################################################################
 # Options Sorting
 ########################################################################################
 
@@ -1378,7 +1390,7 @@ except KeyboardInterrupt:
 # Help
 ########################################################################################
 
-HELP = dedent("""\
+help = dedent("""\
     Anime-Ultrascale
     A Tool for Extreme Anime Upscaling.
     
