@@ -4,5 +4,5 @@ set -euo pipefail
 DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
 cd "$DIR/.."
-source "venv/bin/activate"
-./venv/bin/python3 "anime-ultrascale.py" "$@"
+source ".venv/bin/activate"
+.venv/bin/python3 "anime-ultrascale.py" "$@"
