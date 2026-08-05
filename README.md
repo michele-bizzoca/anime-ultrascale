@@ -8,8 +8,8 @@ What you downloaded and its original version are separated by *information loss*
 
 While it is impossible to reconstruct the original version from the final, nowadays it is possible to get a could-be original version, namely a picture of the same size and detail level of the original which, when downscaled, turns into the picture you downloaded. This is possible thanks to artificial intelligence models.
 
-With the purpose of bridging the gap between AI technology and user experience, I devised a workflow for extreme restoration of anime images, which can be executed with freely available and simple-to-use tools. It is presented, with an example of 170x resolution increase, in the article [**Anime Upscaling**](https://github.com/michele-bizzoca/anime-upscaling), which can be [**Read Online**](https://michele-bizzoca.github.io/anime-upscaling/).
+With the purpose of bridging the gap between AI technology and user experience, I devised a workflow for extreme restoration of anime images, which can be executed with freely available and simple-to-use tools. It is presented, with an example of 170x resolution increase, in the article [**Anime Upscaling**](https://github.com/michele-bizzoca/anime-upscaling), which you can [**Read Online**](https://michele-bizzoca.github.io/anime-upscaling/).
 
-Later, i turned Anime Upscaling into a fully automatic program with useful features like a progress bar, save & playback, and advanced logging. Its name is [**Anime Ultrascale**](https://github.com/michele-bizzoca/anime-ultrascale). It is written as a single python file which can be run anywhere, and installation files for Ubuntu are available.
+Later, I turned Anime Upscaling into a fully automatic program with useful features like a progress bar, save & playback, and advanced logging. Its name is [**Anime Ultrascale**](https://github.com/michele-bizzoca/anime-ultrascale). It is written as a single python file which can be run anywhere. Installation is available for Ubuntu.
 
 
