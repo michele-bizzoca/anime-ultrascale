@@ -31,7 +31,7 @@ rm -rf -- "$DIR/build" "$DIR/dist" "$DIR"/*.egg-info "$DIR/.tmp"
 ################################################################################
 
 mkdir $DIR/.bin
-cp $DIR/assets/anime-ultrascale $DIR/.bin
+cp $DIR/setup-files/anime-ultrascale $DIR/.bin
 chmod +x "$DIR/.bin/anime-ultrascale"
 
 ################################################################################
