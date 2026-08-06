@@ -1,6 +1,6 @@
 <h1 align="center">Anime Ultrascale<br>A Tool for Extreme Anime Upscaling</h1>
 
-Have you ever thought how an anime image's lifecycle can impact its quality? 
+Ever thought how an anime image's lifecycle can impact its quality? 
 
 For example, an enthusiast creates an image and publishes it on a platform. The platform requires downscaling and conversion to JPG. The image travels across the WWW, until someone uses it on their own website, prior upscaling and export to JPG. Finally, you see the image, and download it.
 
