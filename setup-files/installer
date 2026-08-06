@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+
+################################################################################
+# Program Directory
+################################################################################
+
+DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/.."
+
+################################################################################
+# File Deployment
+################################################################################
+
+mkdir $DIR/.bin $DIR/.venv $DIR/renv $DIR/models $DIR/sessions $DIR/temp
+
+cp $DIR/setup-files/launcher                      $DIR/.bin/anime-ultrascale
+cp $DIR/third-party/realesrgan-ncnn-vulkan        $DIR/renv
+cp $DIR/third-party/4xHFA2k.bin                   $DIR/models
+cp $DIR/third-party/4xHFA2k.param                 $DIR/models
+cp $DIR/third-party/realesrgan-x4plus-anime.bin   $DIR/models
+cp $DIR/third-party/realesrgan-x4plus-anime.param $DIR/models
+
+chmod +x $DIR/.bin/anime-ultrascale $DIR/renv/realesrgan-ncnn-vulkan
+
+################################################################################
+# Venv Creation
+################################################################################
+
+python3 -m venv $DIR/.venv
+$DIR/.venv/bin/python3 -m pip install --ignore-installed --no-user $DIR
+rm -rf -- "$DIR/build" "$DIR/dist" "$DIR"/*.egg-info "$DIR/.tmp"
+
+################################################################################
+# Bashrc Update
+################################################################################
+
+BASHRC="$HOME/.bashrc"
+COMMAND="export PATH=\"\$PATH:$DIR/.bin\""
+
+grep -Fqx -- "$COMMAND" "$BASHRC" ||
+    printf '\n%s\n' "$COMMAND" >> "$BASHRC"
+
+################################################################################
+# Bashrc Activation
+################################################################################
+
+source "$BASHRC"
