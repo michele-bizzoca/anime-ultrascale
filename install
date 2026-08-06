@@ -20,7 +20,7 @@ python3 -m venv $DIR/.venv
 source $DIR/.venv/bin/activate
 
 ################################################################################
-# Python Packages Installation
+# Venv Packages Installation
 ################################################################################
 
 $DIR/.venv/bin/python3 -m pip install --ignore-installed --no-user $DIR
