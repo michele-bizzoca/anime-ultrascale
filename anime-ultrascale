@@ -1,7 +1,0 @@
-#!/usr/bin/env bash
-set -euo pipefail
-
-DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/.."
-
-source "$DIR/.venv/bin/activate"
-$DIR/.venv/bin/python3 "$DIR/anime-ultrascale.py" "$@"
