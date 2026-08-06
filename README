@@ -1,41 +1,43 @@
-Anime Ultrascale
-A Tool for Extreme Anime Upscaling.
-
------------------------------------------------------
+=============================================
+              Anime Ultrascale
+     A Tool for Extreme Anime Upscaling
+=============================================
 
 This README is dedicated to installation. For
-usage information, run the program with '--help'.
-For version information, refer to 'pyproject.toml'.
+usage   information,  run  the  program  with
+'--help'.  For  version information, refer to
+'pyproject.toml'.
 
-The program resides in the Python file
-'anime-ultrascale.py', which can be used in any
-system as long as a Python environment satisfying
-"pyproject.toml" is installed.
+The   program  resides  in  the  Python  file
+'anime-ultrascale.py',  which  can be used on
+any  system  as  long as a Python environment
+satisfying 'pyproject.toml' is installed.
 
-An Ubuntu in-place installer is provided. To
-install the program in Ubuntu, please follow the
-following istructions:
+An  Ubuntu in-place installer is provided. To
+install  the program in Ubuntu, please follow
+these instructions:
 
 1) Install Python, version 3.10 or later.
 
-2) Install the python package 'venv', e.g. 'pip
-   install venv'.
+2) Install  the  Python  package 'venv', e.g.
+   'pip install venv'.
 
-2) install the pyvips runtime, e.g. 'sudo apt
+3) Install the pyvips runtime, e.g. 'sudo apt
    install -y libvips42'.
 
-3) Open a bash terminal at the current location
-   and run:
+4) Open   a  Bash  terminal  at  the  current
+   location and run:
 
-chmod +x install
-source ./install
+   chmod +x install
+   source ./install
 
-Only this folder and '~/.bashrc' will be altered.
-The program will be available as 'anime-ultrascale'
-in both the installation terminal and all new bash
-terminals of the current user.
+Only  this  folder  and  '~/.bashrc'  will be
+altered.  The  program  will  be available as
+'anime-ultrascale'  in  both the installation
+terminal  and  all  new Bash terminals of the
+current user.
 
-----------------------------------------------------
-
-Copyright (c) 2026 Michele Bizzoca
-Licensed under the MIT License.
+=============================================
+     Copyright (c) 2026 Michele Bizzoca
+       Licensed under the MIT License
+=============================================
