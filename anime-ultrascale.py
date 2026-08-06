@@ -2,46 +2,39 @@
 # Imports
 ########################################################################################
 
-# Standard Qualified
+# Qualified
+import types
 import sys
-import math
-import json
-import subprocess
+import os
+import time
 import atexit
 import re
+import math
+import json
+import dacite
 import pyvips
+import textwrap
 
-# Standard Unqualified
-from os import getpid
+# Unqualified
 from pathlib import Path
 from enum import IntEnum
 from datetime import datetime
-from dataclasses import dataclass, asdict
-from termios import TIOCPKT_DOSTOP
-from typing import cast, Callable, TypeVar, NoReturn, TypeAlias
-from types import SimpleNamespace
-from time import perf_counter
+from dataclasses import dataclass
 from threading import Event, Thread, Lock
-from subprocess import Popen, PIPE, STDOUT
-from textwrap import dedent
-
-# Custom Qualified
-from PIL import Image
-from psutil import Process
-from dacite import from_dict, Config
-from io import BytesIO
+from typing import ( cast, Callable, TypeVar ,
+                     NoReturn, TypeAlias     )
 
 ########################################################################################
 # Help
 ########################################################################################
 
-HELP = dedent("""\
+HELP = textwrap.dedent("""\
     Anime-Ultrascale
     A Tool for Extreme Anime Upscaling.
 
     USAGE
 
-    anime-ultrascale INPUT OUTPUT.png
+    anime-ultrascale INPUT OUTPUT
         MAIN_DIVISOR MAIN_MULTIPLIER
         SOFT_MODEL SOFT_DIVISOR SOFT_MULTIPLIER SOFT_ITERATIONS
         HARD_MODEL HARD_DIVISOR HARD_MULTIPLIER HARD_ITERATIONS
@@ -52,17 +45,17 @@ HELP = dedent("""\
                      {SESSION.json│SETTINGS.cfg}
                      [OPTIONS]
 
-    anime-ultrascale {-h│--help}
-
-    anime-ultrascale {-v│--version}
+    anime-ultrascale {-h│--help│-v│--version}
 
     POSITIONAL ARGUMENTS
 
     INPUT (str)
-        Input image in any format supported by Python's Pillow.
+        Input image in any of the following formats: PNG, JPG/JPEG,
+        BMP, TIF/TIFF.
 
     OUTPUT.png (str)
-        Output image in PNG RGBA format.
+        Output image in any of the following formats: PNG (RGBA), 
+        JPG/JPEG (RGB), BMP (RGB), TIF/TIFF (RGBA). 
 
     MAIN_DIVISOR (float)
         Main-phase downscaling divisor. Use it to revert an upscaling
@@ -74,38 +67,37 @@ HELP = dedent("""\
         MAIN_MULTIPLIER.
 
     SOFT_MODEL (str)
-        Real ESRGAN model specialized in preserving detail (basename).
+        Real ESRGAN model specialized in preserving detail (basename
+        only).
 
     SOFT_DIVISOR (float)
-        Soft-phase downscaling divisor. Use it to cut high frequencies
-        before the successive upscaling.
+        Soft-phase downscaling divisor. Use it to lose detail.
 
     SOFT_MULTIPLIER (int)
-        Soft-phase upscaling multiplier. It has to be supported by
-        SOFT_MODEL.
-
+        Soft-phase upscaling multiplier. Use it to restore detail. It 
+        has to be supported by the model SOFT_MODEL.
+        
     SOFT_ITERATIONS (int)
-        Soft-phase downscaling/upscaling iterations.
+        Soft-phase iterations.
 
     HARD_MODEL (str)
-        Real ESRGAN model specialized in enhancing detail (basename).
+        Real ESRGAN model specialized in adding detail (basename only).
 
     HARD_DIVISOR (float)
-        Hard-phase downscaling divisor. Use it to cut high frequencies
-        before the successive upscaling.
+        Hard-phase downscaling divisor. Use it to lose detail.
 
     HARD_MULTIPLIER (int)
-        Hard-phase upscaling multiplier. It has to be supported by
-        SOFT_MODEL.
+        Hard-phase upscaling multiplier. Use it to enhance detail. It 
+        has to be supported by the model SOFT_MODEL.
 
     HARD_ITERATIONS (int)
-        Hard-phase downscaling/upscaling iterations.
+        Hard-phase iterations.
 
     MAIN_SCALER (str)
-        The resizing algorithm used in all intermediate steps.
+        The downscaling algorithm used in intermediate steps.
 
     FINAL_SCALER (str)
-        The resizing algorithm used in the final step.
+        The downscaling algorithm used in the final step.
 
     {SESSION.json│SETTINGS.cfg} (str)
         A session or settings file to import settings from.
@@ -114,7 +106,7 @@ HELP = dedent("""\
         Shows this help message.
 
     {-v│--version}
-        Shows the program's version.
+        Shows this program's version.
 
     CONSTRAINTS
 
@@ -126,7 +118,7 @@ HELP = dedent("""\
         SOFT_DIVISOR    <= SOFT_MULTIPLIER
         SOFT_ITERATIONS >= 0
 
-        HARD_MULTIPLIER >= 1
+        HARD_MULTIPLIER >= 2
         HARD_DIVISOR    >= 1
         HARD_DIVISOR    <= HARD_MULTIPLIER
         HARD_ITERATIONS >= 0
@@ -145,9 +137,9 @@ HELP = dedent("""\
         Determines the session data that is saved.
             nothing   -> nothing
             text      -> basic textual data
-            endpoints -> as 'text' + input/output
+            endpoints -> as 'text' + input/output images
             research  -> as 'endpoints' + intermediate images
-            debug     -> as 'research'' + debug textual data
+            debug     -> as 'research' + debug textual data
 
     DESCRIPTION
 
@@ -174,7 +166,7 @@ HELP = dedent("""\
     Temporary data will be stored in the 'temp' folder.
 
     If this program has been installed from the official repository
-    using 'install.sh', the program's folder will contain:
+    using 'install.sh', the repository's folder will contain:
 
     ┌── LICENSE
     ├── README
