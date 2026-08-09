@@ -17,6 +17,7 @@ import textwrap
 import psutil
 import dataclasses
 import subprocess
+import traceback
 
 # Unqualified
 from pathlib import Path
@@ -51,8 +52,9 @@ TEMP_INPUT_FILE  : Final = "in.png"
 TEMP_OUTPUT_FILE : Final = "output.png"
 RENV_FILE        : Final = "realesrgan-ncnn-vulkan"
 INVOCATION_FILE  : Final = "invocation.txt"
-NCNN_FILE        : Final = "ncnn.txt"
+AI_FILE          : Final = "ai.txt"
 PROGRESS_FILE    : Final = "progress.txt"
+EXIT_FILE        : Final = "exit.txt"
 MAX_MPX          : Final = 200
 MAX_TILING       : Final = 16
 MAX_ITERATIONS   : Final = 16
@@ -63,18 +65,12 @@ MAX_ITERATIONS   : Final = 16
 
 PHASES : Final = [
 
-    ( "input"     , ["export"      , "downscaling" ]) ,
+    ( "input"     , ["import"      , "downscaling" ]) ,
     ( "main"      , ["upscaling"   , "downscaling" ]) ,
     ( "soft"      , ["downscaling" , "upscaling"   ]) ,
     ( "hard"      , ["downscaling" , "upscaling"   ]) ,
     ( "output"    , ["downscaling" , "export"      ])
 ]
-
-########################################################################################
-# Scalers
-########################################################################################
-
-SCALERS : Final = ['bicubic', 'lanczos']
 
 ########################################################################################
 # Invocation Data
@@ -112,8 +108,9 @@ INVOCATION_FILE_PATH  : Final = SESSION_FOLDER_PATH / INVOCATION_FILE
 LOG_FILE_PATH         : Final = SESSION_FOLDER_PATH / LOG_FILE
 SESSION_FILE_PATH     : Final = SESSION_FOLDER_PATH / SESSION_FILE
 SETTINGS_FILE_PATH    : Final = SESSION_FOLDER_PATH / SETTINGS_FILE
-NCNN_FILE_PATH        : Final = SESSION_FOLDER_PATH / NCNN_FILE
+AI_FILE_PATH          : Final = SESSION_FOLDER_PATH / AI_FILE
 PROGRESS_FILE_PATH    : Final = SESSION_FOLDER_PATH / PROGRESS_FILE
+EXIT_FILE_PATH        : Final = SESSION_FOLDER_PATH / EXIT_FILE
 TEMP_INPUT_FILE_PATH  : Final = TEMP_FOLDER_PATH    / TEMP_INPUT_FILE
 TEMP_OUTPUT_FILE_PATH : Final = TEMP_FOLDER_PATH    / TEMP_OUTPUT_FILE
 RENV_FILE_PATH        : Final = RENV_FOLDER_PATH    / RENV_FILE
@@ -128,8 +125,8 @@ class SaveLevel(IntEnum):
     text      = 1
     error     = 2
     endpoints = 3
-    research  = 4
-    debug     = 5
+    debug     = 4
+    research  = 5
 
 def descriptor(level: SaveLevel):
     if level == SaveLevel.error:
@@ -139,6 +136,23 @@ def descriptor(level: SaveLevel):
     else:
         return "NORMAL"
 
+########################################################################################
+# Scaler
+########################################################################################
+
+class Scaler(IntEnum):
+
+    bicubic = 0
+    lanczos = 1
+
+########################################################################################
+# Model
+########################################################################################
+
+class Model(IntEnum):
+
+    soft = 0
+    hard = 1
 
 ########################################################################################
 # Arguments
@@ -156,16 +170,17 @@ class PathOption(IntEnum):
 class CoreOption(IntEnum):
     main_divisor      = 0
     main_multiplier   = 1
-    soft_model        = 2
-    soft_divisor      = 3
-    soft_multiplier   = 4
-    soft_iterations   = 5
-    hard_model        = 6
-    hard_divisor      = 7
-    hard_multiplier   = 8
-    hard_iterations   = 9
-    main_scaler       = 10
-    final_scaler      = 11
+    main_scaler       = 2
+    soft_model        = 3
+    soft_divisor      = 4
+    soft_multiplier   = 5
+    soft_iterations   = 6
+    soft_scaler       = 7
+    hard_model        = 8
+    hard_divisor      = 9
+    hard_multiplier   = 10
+    hard_iterations   = 11
+    hard_scaler       = 12
 
 @dataclass
 class FlexOption:
@@ -204,6 +219,7 @@ class MainSettings:
 
     divisor      : float
     multiplier   : float
+    scaler       : str
 
 @dataclass
 class ModelSettings:
@@ -212,12 +228,7 @@ class ModelSettings:
     divisor    : float
     multiplier : int
     iterations : int
-
-@dataclass
-class ScalerSettings:
-
-    main  : str
-    final : str
+    scaler     : str
 
 @dataclass
 class Settings:
@@ -225,7 +236,6 @@ class Settings:
     main    : MainSettings
     soft    : ModelSettings
     hard    : ModelSettings
-    scaling : ScalerSettings
 
 @dataclass
 class Session:
@@ -428,6 +438,27 @@ def create_invocation_file() -> None:
                                           f"Command: {' '.join(sys.argv)}\n" )
 
 ########################################################################################
+# Exit Message
+########################################################################################
+
+exit_file_handle: TextIO
+
+def create_exit_file() -> None:
+
+    global exit_file_handle
+
+    if save_level() >= SaveLevel.debug:
+        exit_file_handle = open(EXIT_FILE_PATH, "w")
+        def close_exit_file(): exit_file_handle.close()
+        atexit.register(close_exit_file)
+        log("the exit system is operative")
+
+def exit_message(message: str) -> None:
+
+    exit_file_handle.write(message + "\n")
+    exit_file_handle.flush()
+
+########################################################################################
 # Logging
 ########################################################################################
 
@@ -449,6 +480,7 @@ def log(message: str, level: SaveLevel = SaveLevel.text):
         message = f"{now()}, level {descriptor(level)}: {message}"
         log_file_handle.write(message + "\n")
         log_file_handle.flush()
+
 
 ########################################################################################
 # Error Reporting
@@ -744,26 +776,24 @@ def settings_from_core_options() -> Settings:
 
         MainSettings(
             float_from_core_options(CoreOption.main_divisor),
-            float_from_core_options(CoreOption.main_multiplier)
+            float_from_core_options(CoreOption.main_multiplier),
+            str_from_core_options(CoreOption.main_scaler)
         ),
 
         ModelSettings(
             str_from_core_options(CoreOption.soft_model),
             float_from_core_options(CoreOption.soft_divisor),
             int_from_core_options(CoreOption.soft_multiplier),
-            int_from_core_options(CoreOption.soft_iterations)
+            int_from_core_options(CoreOption.soft_iterations),
+            str_from_core_options(CoreOption.soft_scaler)
         ),
 
         ModelSettings(
             str_from_core_options(CoreOption.hard_model),
             float_from_core_options(CoreOption.hard_divisor),
             int_from_core_options(CoreOption.hard_multiplier),
-            int_from_core_options(CoreOption.hard_iterations)
-        ),
-
-        ScalerSettings(
-            str_from_core_options(CoreOption.main_scaler),
-            str_from_core_options(CoreOption.final_scaler)
+            int_from_core_options(CoreOption.hard_iterations),
+            str_from_core_options(CoreOption.hard_scaler)
         )
     )
 
@@ -774,6 +804,8 @@ def settings_from_core_options() -> Settings:
 settings: Settings
 
 def load_settings() -> None:
+
+    global settings
 
     if len(positional_options) == len(PathOption):
         settings = settings_from_path_options()
@@ -818,11 +850,14 @@ def disjoint_settings_validation() -> None:
     assume( (MODEL_FOLDER_PATH / (settings.hard.model + ".param")).is_file() ,
             "missing hard-phase model parameters (.param)"                   )
 
-    assume ( settings.scaling.main in SCALERS ,
-            "unknown scaling algorithm"       )
+    assume ( settings.main.scaler in Scaler.__members__ ,
+            "unknown scaling algorithm"                 )
 
-    assume ( settings.scaling.final in SCALERS ,
-            "unknown scaling algorithm"        )
+    assume ( settings.soft.scaler in Scaler.__members__ ,
+            "unknown scaling algorithm"                 )
+
+    assume ( settings.hard.scaler in Scaler.__members__ ,
+            "unknown scaling algorithm"                 )
 
     log("the settings have passed disjoint validation")
 
@@ -868,15 +903,28 @@ def combined_settings_validation() -> None:
     assume ( settings.hard.multiplier >= settings.hard.divisor ,
              "hard-phase divisor exceeds multiplier"            )
 
-    assume (input_min_length() >= settings.main.divisor and
-            output_min_length() >= settings.soft.divisor and
-            output_min_length() >= settings.hard.divisor,
+    assume ( input_min_length() >= settings.main.divisor  and
+             output_min_length() >= settings.soft.divisor and
+             output_min_length() >= settings.hard.divisor   ,
              "attempt to generate an empty intermediate image")
 
     assume( input_mpx() * total_factor() ** 2 < MAX_MPX                            ,
             f"attempt to generate an intermediate image larger than {MAX_MPX} Mpx" )
 
     log("the settings have passed combined validation")
+
+########################################################################################
+# Settings Recording
+########################################################################################
+
+def create_settings_file() -> None:
+
+    if save_level() >= SaveLevel.text:
+
+        with open(SETTINGS_FILE_PATH, "w") as settings_handle:
+            settings_handle.write(export_settings(settings))
+
+        log("the settings file has been written")
 
 ########################################################################################
 # Session Construction
@@ -900,7 +948,7 @@ def create_session() -> None:
 # Session Recording
 ########################################################################################
 
-def record_session() -> None:
+def create_session_file() -> None:
 
     if save_level() >= SaveLevel.text:
 
@@ -908,19 +956,6 @@ def record_session() -> None:
             session_handle.write(export_session(session))
 
         log("the session file has been written")
-
-########################################################################################
-# Settings Recording
-########################################################################################
-
-def record_settings() -> None:
-
-    if save_level() >= SaveLevel.text:
-
-        with open(SETTINGS_FILE_PATH, "w") as settings_handle:
-            settings_handle.write(export_settings(settings))
-
-        log("the settings file has been written")
 
 # ########################################################################################
 # # Progress Bar
@@ -1073,7 +1108,7 @@ def record_settings() -> None:
 #             bar_handle.write(sys.modules[__name__].now() + ": " + line + "\n")
 #             bar_handle.flush()
 #
-#     def close(self) -> None:
+#     def complete(self) -> None:
 #         self.stop_event.set()
 #         self.refresh_thread.join()
 #         with self.lock:
@@ -1107,7 +1142,7 @@ class ProgressBar:
     def refresh(self) -> None:
         pass
 
-    def close(self) -> None:
+    def complete(self) -> None:
         pass
 
     def __enter__(self) -> "ProgressBar":
@@ -1117,8 +1152,22 @@ class ProgressBar:
         pass
 
 ########################################################################################
-# Image Transformations
+# Run System
 ########################################################################################
+
+forward_i: int
+forward_j: int
+forward_k: int
+
+def init_run_system() -> None:
+
+    global forward_i
+    global forward_j
+    global forward_k
+
+    forward_i = 0
+    forward_j = 0
+    forward_k = 0
 
 def save(unit: StepForward, path: Path, bar: ProgressBar) -> None:
 
@@ -1153,12 +1202,11 @@ def save(unit: StepForward, path: Path, bar: ProgressBar) -> None:
 
         image.write_to_file(str(path))
 
-        if last_percentage < 100.0:
-            bar.progress(100.0)
-
 def scale(unit: Scaling, bar: ProgressBar) -> None:
 
     global current_image
+
+    bar.new_unit(unit)
 
     kernels         = {"lanczos": "lanczos3", "bicubic": "cubic"}
     kernel          = kernels.get(unit.algorithm)
@@ -1190,10 +1238,9 @@ def scale(unit: Scaling, bar: ProgressBar) -> None:
 
     current_image = image.copy_memory()
 
-    if last_percentage < 100.0:
-        bar.progress(100.0)
-
 def scale_ai(unit: ScalingAI, bar: ProgressBar) -> None:
+
+    global current_image
 
     step_forward_unit = StepForward(True, unit.in_width, unit.in_height)
     pure_sai_unit     = PureSAI(** vars(unit))
@@ -1226,8 +1273,8 @@ def scale_ai(unit: ScalingAI, bar: ProgressBar) -> None:
 
     for line in process.stdout:
         if save_level() >= SaveLevel.debug:
-            ncnn_file_handle.write(now() + ": " + line)
-            ncnn_file_handle.flush()
+            ai_file_handle.write(now() + ": " + line)
+            ai_file_handle.flush()
         line = "".join(line.split())
         if re.search(r"^[0-9]+(\.[0-9]+)?%$", line):
             bar.progress(float(line[:-1]))
@@ -1238,28 +1285,7 @@ def scale_ai(unit: ScalingAI, bar: ProgressBar) -> None:
 
     current_image = load(TEMP_OUTPUT_FILE_PATH)
 
-########################################################################################
-# Export System
-########################################################################################
-
-forward_i: int
-forward_j: int
-forward_k: int
-
-def init_export_system() -> None:
-
-    global forward_i
-    global forward_j
-    global forward_k
-
-    forward_i = 0
-    forward_j = 0
-    forward_k = 0
-
-def first_step() -> bool:
-    return forward_i == 0 and forward_j == 0
-
-def run_step_forward(unit: StepForward, bar: ProgressBar):
+def step_forward(unit: StepForward, bar: ProgressBar):
 
     global forward_j
     global forward_k
@@ -1269,22 +1295,29 @@ def run_step_forward(unit: StepForward, bar: ProgressBar):
 
     if unit.save:
 
-        file_name = "_".join((f"{(forward_k + 1):02}",
-                              f"{phase}-phase",
-                              f"{step}-step",
-                              f"{unit.width}x{unit.height}.png"))
-        file_path = SESSION_FOLDER_PATH / file_name
-        export(unit, file_path, bar)
+        if step == "export":
+            save(unit, output_file_path(), bar)
+        else:
+            file_name = "_".join((f"{(forward_k + 1):02}",
+                                  f"{phase}-phase",
+                                  f"{step}-step",
+                                  f"{unit.width}x{unit.height}.png"))
+            file_path = SESSION_FOLDER_PATH / file_name
+            save(unit, file_path, bar)
+
+        log(f"a{'n' if step[0] in 'aeiou' else ''} {step} "
+            f"step in the {phase} phase has been completed "
+            f"with output size {unit.width}x{unit.height}")
+
+        if step == "export":
+            log(f"the output image has been saved, {current_width()}x"
+                f"{current_height()}px {OUTPUT_FORMAT} {OUTPUT_MODE}")
 
         forward_k += 1
 
-    log( f"a{'n' if step[0] in 'aeiou' else ''} {step} "
-         f"step in the {phase} phase has been completed "
-         f"with output size {unit.width}x{unit.height}" )
-
     forward_j = (forward_j + 1) % len(steps)
 
-def run_phase_forward(unit : PhaseForward, bar: ProgressBar) -> None:
+def phase_forward(unit : PhaseForward, bar: ProgressBar) -> None:
 
     global forward_i
     global forward_j
@@ -1294,542 +1327,415 @@ def run_phase_forward(unit : PhaseForward, bar: ProgressBar) -> None:
     forward_i += 1
     forward_j = 0
 
-def run_input_export(unit: InputExport, bar: ProgressBar) -> None:
-
-    global forward_k
-
-    if unit.save:
-
-        file_name = "_".join((f"{(forward_k + 1):02}",
-                              f"{PHASES[forward_i][0]}-phase",
-                              f"export-step",
-                              f"{unit.width}x{unit.height}.png"))
-        file_path = SESSION_FOLDER_PATH / file_name
-        export(unit, file_path, bar)
-
-        forward_k += 1
-
-def run_output_export(unit: OutputExport, bar: ProgressBar) -> None:
-
-    global forward_k
-
-    if unit.save:
-
-        file_name = "_".join((f"{(forward_k + 1):02}",
-                              f"{PHASES[forward_i][0]}-phase",
-                              f"export-step",
-                              f"{unit.width}x{unit.height}.png"))
-        file_path = SESSION_FOLDER_PATH / file_name
-        export(unit, file_path, bar)
-
-        forward_k += 1
-
-# def run_step_forward(bar: ProgressBar):
-#
-#     global forward_j
-#     global forward_k
-#
-#     phase, steps = PHASES[forward_i]
-#     step         = steps[forward_j]
-#
-#     if ( save_level() >= SaveLevel.endpoints and (first_step() or last_step()) or
-#          save_level() >= SaveLevel.research                                     ):
-#
-#         file_name = "_".join((f"{(forward_k + 1):02}",
-#                               f"{phase}-phase",
-#                               f"{step}-step",
-#                               f"{current_width()}x{current_height()}.png"))
-#         file_path = SESSION_FOLDER_PATH / file_name
-#         current_image.write_to_file(str(file_path))
-#
-#         forward_k += 1
-#
-#     log( f"a{'n' if step[0] in 'aeiou' else ''} {step} step in the {phase}"
-#          f" phase has been completed with output size {current_width()}x"
-#          f"{current_height()}" )
-#
-#     if last_step():
-#         current_image.write_to_file(str(output_file_path()))
-#         log(f"the output image has been saved, {current_width()}x"
-#             f"{current_height()}px {OUTPUT_FORMAT} {OUTPUT_MODE}")
-#
-#     forward_j = (forward_j + 1) % len(steps)
-
 ########################################################################################
 # NCNN Logging
 ########################################################################################
 
-ncnn_file_handle: TextIO
+ai_file_handle: TextIO
 
-def create_ncnn_file() -> None:
+def create_ai_file() -> None:
 
-    global ncnn_file_handle
+    global ai_file_handle
 
     if save_level() >= SaveLevel.debug:
-        ncnn_file_handle = open(NCNN_FILE_PATH, "w")
-        def close_ncnn_file(): ncnn_file_handle.close()
-        atexit.register(close_ncnn_file)
-        log("the ncnn logging system is operative")
+        ai_file_handle = open(AI_FILE_PATH, "w")
+        def close_ai_file(): ai_file_handle.close()
+        atexit.register(close_ai_file)
+        log("the AI logging system is operative")
 
 ########################################################################################
-# Runners
+# Progress Bar Logging
 ########################################################################################
 
+progress_file_handle: TextIO
 
-def run_algorithm(
-    algorithm: str,
-    size: tuple[int, int],
-    bar: ProgressBar,
-) -> None:
+def create_progress_file() -> None:
 
-    if state.image.size == size:
-        bar.progress(100.0)
-        return
+    global progress_file_handle
 
-    input_data = state.image.tobytes()
+    if save_level() >= SaveLevel.debug:
+        progress_file_handle = open(PROGRESS_FILE_PATH, "w")
+        def close_progress_file(): progress_file_handle.close()
+        atexit.register(close_progress_file)
+        log("the progress bar logging system is operative")
 
-    source = pyvips.Image.new_from_memory(
-        input_data,
-        state.image.width,
-        state.image.height,
-        len(OUTPUT_MODE),
-        "uchar",
-    )
+########################################################################################
+# Planners
+########################################################################################
 
-    result = source.resize(
-        size[0] / source.width,
-        vscale=size[1] / source.height,
-        kernel=algorithm,
-    )
+execution_plan: list[Unit]
 
-    result.set_progress(True)
+def current_size() -> tuple[int, int]:
 
-    started = False
-    last_percentage = 0
+    for i in range(len(execution_plan) - 1, -1, -1):
 
-    def on_start(
-            _image: pyvips.Image,
-            _progress: pyvips.Progress,
-    ) -> None:
-        nonlocal started
+        unit = execution_plan[i]
 
-        if not started:
-            started = True
-            bar.progress(0.0)
+        if isinstance(unit, (Scaling, ScalingAI)):
+            return unit.out_width, unit.out_height
+        else:
+            continue
 
-    def on_progress(
-            _image: pyvips.Image,
-            progress: pyvips.Progress,
-    ) -> None:
-        nonlocal last_percentage
+    return input_width(), input_height()
 
-        percentage = int(progress.percent)
+def plan_scaling(scaler: str, arg: float |tuple[int, int]) -> None:
 
-        if not started or percentage <= last_percentage:
-            return
+    in_width  , in_height  = current_size()
+    out_width , out_height = ( arg if isinstance(arg, tuple)
+                                   else [int(in_width  * arg),
+                                         int(in_height * arg)] )
+    unit = Scaling(scaler, in_width, in_height, out_width, out_height)
+    execution_plan.append(unit)
 
-        last_percentage = percentage
-        bar.progress(float(percentage))
+def plan_scaling_ai(model: str, multiplier: int) -> None:
 
-    result.set_progress(True)
-    result.signal_connect("preeval", on_start)
-    result.signal_connect("eval", on_progress)
+    in_width  , in_height  = current_size()
+    out_width , out_height = ( int(in_width  * multiplier) ,
+                               int(in_height * multiplier) )
+    unit = ScalingAI(model, multiplier, in_width, in_height, out_width, out_height)
+    execution_plan.append(unit)
 
-    output_data = result.write_to_memory()
+def plan_phase_forward() -> None:
+    execution_plan.append(PhaseForward())
 
-    new_image = Image.frombytes(
-        OUTPUT_MODE,
-        size,
-        output_data,
-        "raw",
-        OUTPUT_MODE,
-        0,
-        1,
-    )
+def plan_step_forward(save_level_: SaveLevel) -> None:
+    width, height = current_size()
+    execution_plan.append(StepForward(save_level() >= save_level_, width, height))
 
-    state.image.close()
-    state.image = new_image
+########################################################################################
+# Planning - Input Phase
+########################################################################################
 
-    if last_percentage < 100.0:
-        bar.progress(100.0)
+def plan_input_phase() -> None:
 
-# ########################################################################################
-# # Scaling Algorithms
-# ########################################################################################
-#
-# scalers = {"bicubic": "cubic", "lanczos": "lanczos3"}
-#
-# main_scaler  = scalers[settings.scaling.main]
-# final_scaler = scalers[settings.scaling.final]
-#
-# ########################################################################################
-# # Progress Bar Logging
-# ########################################################################################
-#
-# if save_level >= SaveLevel.debug:
-#     bar_handle = open(bar_file, "w")
-#
-# if save_level >= SaveLevel.debug:
-#     def close_bar_file(): bar_handle.close()
-#     atexit.register(close_bar_file)
-#
-# log("the progress bar logging system is operative")
-#
-# ########################################################################################
-# # Planners
-# ########################################################################################
-#
-# def current_size() -> tuple[int, int]:
-#
-#     for i in range(len(state.units) - 1, -1, -1):
-#
-#         unit = state.units[i]
-#
-#         if isinstance(unit, (Scaling, ScalingAI)):
-#             return unit.out_width, unit.out_height
-#         else:
-#             continue
-#
-#     return input_width, input_height
-#
-# def plan_algorithm( arg: float |tuple[int, int]               ,
-#                     algorithm: str = main_scaler ) -> None:
-#
-#     in_width  , in_height  = current_size()
-#     out_width , out_height = ( arg if isinstance(arg, tuple)
-#                                    else [int(in_width  * arg),
-#                                          int(in_height * arg)] )
-#     state.units.append(Scaling( algorithm  ,
-#                                 in_width   ,
-#                                 in_height  ,
-#                                 out_width  ,
-#                                 out_height ))
-#
-# def plan_realesrgan(settings: ModelSettings = settings.soft) -> None:
-#
-#     in_width  , in_height  = current_size()
-#     out_width , out_height = ( int(in_width  * settings.multiplier) ,
-#                                int(in_height * settings.multiplier) )
-#     state.units.append(ScalingAI( settings.model ,
-#                                   in_width       ,
-#                                   in_height      ,
-#                                   out_width      ,
-#                                   out_height     ))
-#
-# def plan_phase_forward() -> None:
-#     state.units.append(PhaseForward())
-#
-# def plan_step_forward(first: bool = False, last:bool = False) -> None:
-#     save = last + ( (first or last) and save_level >= SaveLevel.endpoints or
-#                     save_level >= SaveLevel.research                       )
-#     width, height  = current_size()
-#     state.units.append(StepForward(save, width, height))
-#
-# ########################################################################################
-# # Planning - Input Phase
-# ########################################################################################
-#
-# plan_step_forward(True, False)
-#
-# plan_algorithm((base_main_width, base_main_height))
-# plan_step_forward()
-#
-# plan_phase_forward()
-#
-# ########################################################################################
-# # Planning - Main Phase
-# ########################################################################################
-#
-# main_iterations = math.ceil(math.log(total_main_multiplier, settings.soft.multiplier))
-# factor = ( (total_main_multiplier / settings.soft.multiplier ** main_iterations) **
-#            (1 / (main_iterations - 1) if main_iterations != 1 else 0)             )
-#
-# for _ in range(main_iterations - 1):
-#     plan_realesrgan()
-#     plan_step_forward()
-#
-#     plan_algorithm(factor)
-#     plan_step_forward()
-#
-# if main_iterations != 0:
-#     plan_realesrgan()
-#     plan_step_forward()
-#
-# plan_phase_forward()
-#
-# ########################################################################################
-# # Planning - Soft Phase
-# ########################################################################################
-#
-# for _ in range(settings.soft.iterations):
-#
-#     plan_algorithm((base_soft_width, base_soft_height))
-#     plan_step_forward()
-#
-#     plan_realesrgan()
-#     plan_step_forward()
-#
-# plan_phase_forward()
-#
-# ########################################################################################
-# # Planning - Hard Phase
-# ########################################################################################
-#
-# for _ in range(settings.hard.iterations):
-#
-#     plan_algorithm((base_hard_width, base_hard_height))
-#     plan_step_forward()
-#
-#     plan_realesrgan(settings.hard)
-#     plan_step_forward()
-#
-# plan_phase_forward()
-#
-# ########################################################################################
-# # Planning - Output Phase
-# ########################################################################################
-#
-# plan_algorithm((output_width, output_height), final_scaler)
-# plan_step_forward()
-#
-# plan_step_forward(False, True)
-#
-# plan_phase_forward()
-#
-# ########################################################################################
-# # Planning Processing
-# ########################################################################################
-#
-# total_cost = sum([cost(unit) for unit in state.units])
-#
-# log("the execution plan has been created")
-#
-# ########################################################################################
-# # Newline at Exit
-# ########################################################################################
-#
-# def newline() -> None: print()
-# atexit.register(newline)
-#
-# ########################################################################################
-# # Plan Execution
-# ########################################################################################
-#
-# try:
-#     with ProgressBar(total_cost) as bar:
-#         for unit in state.units:
-#             bar.new_unit(unit)
-#             if isinstance(unit, Scaling):
-#                 run_algorithm( unit.algorithm                         ,
-#                                (unit.out_width, unit.out_height), bar )
-#             elif isinstance(unit, ScalingAI):
-#                 run_realesrgan( unit.model                           ,
-#                                 unit.out_width // unit.in_width, bar )
-#             elif isinstance(unit, StepForward):
-#                 run_step_forward(bar)
-#             elif isinstance(unit, PhaseForward):
-#                 run_phase_forward(bar)
-#         bar.close()
-# except KeyboardInterrupt:
-#     print()
-#     fail("interrupted by user", False)
-#
-# ########################################################################################
-# # Main
-# ########################################################################################
-#
-# def main():
-#     pass
-#
-# ########################################################################################
-# # Help
-# ########################################################################################
-#
-# HELP = textwrap.dedent("""\
-#     Anime-Ultrascale
-#     A Tool for Extreme Anime Upscaling.
-#
-#     USAGE
-#
-#     anime-ultrascale INPUT OUTPUT
-#         MAIN_DIVISOR MAIN_MULTIPLIER
-#         SOFT_MODEL SOFT_DIVISOR SOFT_MULTIPLIER SOFT_ITERATIONS
-#         HARD_MODEL HARD_DIVISOR HARD_MULTIPLIER HARD_ITERATIONS
-#         MAIN_SCALER FINAL_SCALER
-#         [OPTIONS]
-#
-#     anime-ultrascale INPUT OUTPUT.png
-#                      {SESSION.json│SETTINGS.cfg}
-#                      [OPTIONS]
-#
-#     anime-ultrascale {-h│--help│-v│--version}
-#
-#     POSITIONAL ARGUMENTS
-#
-#     INPUT (str)
-#         Input image in any of the following formats: PNG, JPG/JPEG,
-#         BMP, TIF/TIFF.
-#
-#     OUTPUT.png (str)
-#         Output image in any of the following formats: PNG (RGBA),
-#         JPG/JPEG (RGB), BMP (RGB), TIF/TIFF (RGBA).
-#
-#     MAIN_DIVISOR (float)
-#         Main-phase downscaling divisor. Use it to revert an upscaling
-#         already present in the input image.
-#
-#     MAIN_MULTIPLIER (float)
-#         Main-phase upscaling multiplier. It determines the output
-#         width and height, namely output = (input / MAIN_DIVISOR) *
-#         MAIN_MULTIPLIER.
-#
-#     SOFT_MODEL (str)
-#         Real ESRGAN model specialized in preserving detail (basename
-#         only).
-#
-#     SOFT_DIVISOR (float)
-#         Soft-phase downscaling divisor. Use it to lose detail.
-#
-#     SOFT_MULTIPLIER (int)
-#         Soft-phase upscaling multiplier. Use it to restore detail. It
-#         has to be supported by the model SOFT_MODEL.
-#
-#     SOFT_ITERATIONS (int)
-#         Soft-phase iterations.
-#
-#     HARD_MODEL (str)
-#         Real ESRGAN model specialized in adding detail (basename only).
-#
-#     HARD_DIVISOR (float)
-#         Hard-phase downscaling divisor. Use it to lose detail.
-#
-#     HARD_MULTIPLIER (int)
-#         Hard-phase upscaling multiplier. Use it to enhance detail. It
-#         has to be supported by the model SOFT_MODEL.
-#
-#     HARD_ITERATIONS (int)
-#         Hard-phase iterations.
-#
-#     MAIN_SCALER (str)
-#         The downscaling algorithm used in intermediate steps.
-#
-#     FINAL_SCALER (str)
-#         The downscaling algorithm used in the final step.
-#
-#     {SESSION.json│SETTINGS.cfg} (str)
-#         A session or settings file to import settings from.
-#
-#     {-h│--help}
-#         Shows this help message.
-#
-#     {-v│--version}
-#         Shows this program's version.
-#
-#     CONSTRAINTS
-#
-#         MAIN_DIVISOR    >= 1
-#         MAIN_MULTIPLIER >= 1
-#
-#         SOFT_MULTIPLIER >= 2
-#         SOFT_DIVISOR    >= 1
-#         SOFT_DIVISOR    <= SOFT_MULTIPLIER
-#         SOFT_ITERATIONS >= 0
-#
-#         HARD_MULTIPLIER >= 2
-#         HARD_DIVISOR    >= 1
-#         HARD_DIVISOR    <= HARD_MULTIPLIER
-#         HARD_ITERATIONS >= 0
-#
-#         MAIN_SCALER     in ['bicubic', 'lanczos']
-#         FINAL_SCALER    in ['bicubic', 'lanczos']
-#
-#     OPTIONS
-#
-#     {-t│--tile} (int)
-#         The width/height of the square used to tile the total area.
-#             0            -> automatic selection
-#             1 <= n <= 16 -> n * 64px
-#
-#     {-s│--save} (str)
-#         Determines the session data that is saved.
-#             nothing   -> nothing
-#             text      -> basic textual data
-#             endpoints -> as 'text' + input/output images
-#             research  -> as 'endpoints' + intermediate images
-#             debug     -> as 'research' + debug textual data
-#
-#     DESCRIPTION
-#
-#     Anime-Ultrascale performs extreme image enlargement by controlled
-#     alternation of downscaling and AI upscaling, where downscaling is
-#     performed by the bicubic and lanczos algorithms, and AI upscaling
-#     is performed using Real ESRGAN models.
-#
-#     Knowledge of the three phases (main, soft, hard) is required for
-#     correct usage. These are described in a dedicated article, see
-#     the repositories section.
-#
-#     DIRECTORY TREE
-#
-#     Real ESRGAN models, following the usual .bin/.param convention,
-#     have to be stored in the 'models' folder.
-#
-#     The official Real ESRGAN executable, 'realesrgan-ncnn-vulkan',
-#     has to be stored in the 'renv' folder.
-#
-#     Useful additional data, determined by the 'save' option, will
-#     be stored in the 'sessions' folder.
-#
-#     Temporary data will be stored in the 'temp' folder.
-#
-#     If this program has been installed from the official repository
-#     using 'install.sh', the repository's folder will contain:
-#
-#     ┌── LICENSE
-#     ├── README
-#     ├── anime-ultrascale.py
-#     ├── anime-ultrascale
-#     ├── pyproject.toml
-#     ├── install
-#     ├── .bin
-#     │     └── anime-ultrascale
-#     ├── .venv
-#     │     └── ·······
-#     ├── renv
-#     │     └── realesrgan-ncnn-vulkan
-#     ├── models
-#     │     ├── <model>.bin
-#     │     ├── <model>.param
-#     │     └── ·······
-#     ├── sessions
-#     │     ├── <date>
-#     │     │      ├── <time+pid>
-#     │     │      │        └── ·······
-#     │     │      └── ·······
-#     │     └── ·······
-#     └── temp
-#           ├── <date+time+pid>
-#           │      └── ·······
-#           └── ·······
-#
-#     REPOSITORIES
-#
-#     Concept -> https://github.com/michele-bizzoca/anime-upscaling
-#     Program -> https://github.com/michele-bizzoca/anime-ultrascale
-#
-#     LICENSE
-#
-#     Copyright (c) 2026 Michele Bizzoca
-#     Licensed under the MIT License.
-# """)
-#
-# ########################################################################################
-# # Main Call
-# ########################################################################################
-#
-# if __name__ == "__main__":
-#     main()
-#
-# ########################################################################################
-# # End
-# ########################################################################################
+    plan_step_forward(SaveLevel.endpoints)
+
+    plan_scaling(settings.soft.scaler, (base_main_width(), base_main_height()))
+    plan_step_forward(SaveLevel.research)
+
+    plan_phase_forward()
+
+########################################################################################
+# Planning - Main Phase
+########################################################################################
+
+def plan_main_phase() -> None:
+
+    main_iterations = math.ceil(math.log(main_scaling(), settings.soft.multiplier))
+    factor = ( (main_scaling() / settings.soft.multiplier ** main_iterations) **
+               (1 / (main_iterations - 1) if main_iterations != 1 else 0)      )
+
+    for _ in range(main_iterations - 1):
+        plan_scaling_ai(settings.soft.model, settings.soft.multiplier)
+        plan_step_forward(SaveLevel.research)
+
+        plan_scaling(settings.soft.scaler, factor)
+        plan_step_forward(SaveLevel.research)
+
+    if main_iterations != 0:
+        plan_scaling_ai(settings.soft.model, settings.soft.multiplier)
+        plan_step_forward(SaveLevel.research)
+
+    plan_phase_forward()
+
+########################################################################################
+# Planning - Soft Phase
+########################################################################################
+
+def plan_soft_phase() -> None:
+
+    for _ in range(settings.soft.iterations):
+
+        plan_scaling(settings.soft.scaler, (base_soft_width(), base_soft_height()))
+        plan_step_forward(SaveLevel.research)
+
+        plan_scaling_ai(settings.soft.model, settings.soft.multiplier)
+        plan_step_forward(SaveLevel.research)
+
+    plan_phase_forward()
+
+########################################################################################
+# Planning - Hard Phase
+########################################################################################
+
+def plan_hard_phase() -> None:
+
+    for _ in range(settings.hard.iterations):
+
+        plan_scaling(settings.hard.scaler, (base_hard_width(), base_hard_height()))
+        plan_step_forward(SaveLevel.research)
+
+        plan_scaling_ai(settings.hard.model, settings.hard.multiplier)
+        plan_step_forward(SaveLevel.research)
+
+    plan_phase_forward()
+
+########################################################################################
+# Planning - Output Phase
+########################################################################################
+
+def plan_output_phase() -> None:
+
+    plan_scaling(settings.main.scaler, (output_width(), output_height()))
+    plan_step_forward(SaveLevel.endpoints)
+
+    plan_step_forward(SaveLevel.nothing)
+
+    plan_phase_forward()
+
+########################################################################################
+# Execution
+########################################################################################
+
+def execute_plan() -> None:
+
+    total_cost = sum([unit_cost(unit) for unit in execution_plan])
+
+    with ProgressBar(total_cost) as bar:
+        for unit in execution_plan:
+            if isinstance(unit, Scaling):
+                scale(unit, bar)
+            elif isinstance(unit, ScalingAI):
+                scale_ai(unit, bar)
+            elif isinstance(unit, StepForward):
+                step_forward(unit,bar)
+            elif isinstance(unit, PhaseForward):
+                phase_forward(unit, bar)
+        bar.complete()
+
+########################################################################################
+# Main
+########################################################################################
+
+def main():
+    try:
+        help_and_version()
+        sort_options()
+        create_session_folder()
+        create_invocation_file()
+        create_log_file()
+        create_temp_folder()
+        existence_checks()
+        load_input_image()
+        load_settings()
+        disjoint_settings_validation()
+        combined_settings_validation()
+        create_settings_file()
+        create_session()
+        create_session_file()
+        init_run_system()
+        create_ai_file()
+        create_progress_file()
+        plan_input_phase()
+        plan_main_phase()
+        plan_soft_phase()
+        plan_hard_phase()
+        plan_output_phase()
+        log("the execution plan has been created")
+        execute_plan()
+
+    except KeyboardInterrupt:
+        print()
+        exit_message("interrupt")
+        fail("interrupted by user", False)
+
+    except Exception:
+        print()
+        exit_message(traceback.format_exc())
+        fail("unexpected error")
+
+    else:
+        exit_message("success")
+
+########################################################################################
+# Help
+########################################################################################
+
+HELP = textwrap.dedent("""\
+    Anime-Ultrascale
+    A Tool for Extreme Anime Upscaling.
+
+    USAGE
+
+    anime-ultrascale INPUT OUTPUT
+        MAIN_DIVISOR MAIN_MULTIPLIER
+        SOFT_MODEL SOFT_DIVISOR SOFT_MULTIPLIER SOFT_ITERATIONS
+        HARD_MODEL HARD_DIVISOR HARD_MULTIPLIER HARD_ITERATIONS
+        MAIN_SCALER FINAL_SCALER
+        [OPTIONS]
+
+    anime-ultrascale INPUT OUTPUT.png
+                     {SESSION.json│SETTINGS.cfg}
+                     [OPTIONS]
+
+    anime-ultrascale {-h│--help│-v│--version}
+
+    POSITIONAL ARGUMENTS
+
+    INPUT (str)
+        Input image in any of the following formats: PNG, JPG/JPEG,
+        BMP, TIF/TIFF.
+
+    OUTPUT.png (str)
+        Output image in any of the following formats: PNG (RGBA),
+        JPG/JPEG (RGB), BMP (RGB), TIF/TIFF (RGBA).
+
+    MAIN_DIVISOR (float)
+        Main-phase downscaling divisor. Use it to revert an upscaling
+        already present in the input image.
+
+    MAIN_MULTIPLIER (float)
+        Main-phase upscaling multiplier. It determines the output
+        width and height, namely output = (input / MAIN_DIVISOR) *
+        MAIN_MULTIPLIER.
+
+    SOFT_MODEL (str)
+        Real ESRGAN model specialized in preserving detail (basename
+        only).
+
+    SOFT_DIVISOR (float)
+        Soft-phase downscaling divisor. Use it to lose detail.
+
+    SOFT_MULTIPLIER (int)
+        Soft-phase upscaling multiplier. Use it to restore detail. It
+        has to be supported by the model SOFT_MODEL.
+
+    SOFT_ITERATIONS (int)
+        Soft-phase iterations.
+
+    HARD_MODEL (str)
+        Real ESRGAN model specialized in adding detail (basename only).
+
+    HARD_DIVISOR (float)
+        Hard-phase downscaling divisor. Use it to lose detail.
+
+    HARD_MULTIPLIER (int)
+        Hard-phase upscaling multiplier. Use it to enhance detail. It
+        has to be supported by the model SOFT_MODEL.
+
+    HARD_ITERATIONS (int)
+        Hard-phase iterations.
+
+    MAIN_SCALER (str)
+        The downscaling algorithm used in intermediate steps.
+
+    FINAL_SCALER (str)
+        The downscaling algorithm used in the final step.
+
+    {SESSION.json│SETTINGS.cfg} (str)
+        A session or settings file to import settings from.
+
+    {-h│--help}
+        Shows this help message.
+
+    {-v│--version}
+        Shows this program's version.
+
+    CONSTRAINTS
+
+        MAIN_DIVISOR    >= 1
+        MAIN_MULTIPLIER >= 1
+
+        SOFT_MULTIPLIER >= 2
+        SOFT_DIVISOR    >= 1
+        SOFT_DIVISOR    <= SOFT_MULTIPLIER
+        SOFT_ITERATIONS >= 0
+
+        HARD_MULTIPLIER >= 2
+        HARD_DIVISOR    >= 1
+        HARD_DIVISOR    <= HARD_MULTIPLIER
+        HARD_ITERATIONS >= 0
+
+        MAIN_SCALER     in ['bicubic', 'lanczos']
+        FINAL_SCALER    in ['bicubic', 'lanczos']
+
+    OPTIONS
+
+    {-t│--tile} (int)
+        The width/height of the square used to tile the total area.
+            0            -> automatic selection
+            1 <= n <= 16 -> n * 64px
+
+    {-s│--save} (str)
+        Determines the session data that is saved.
+            nothing   -> nothing
+            text      -> basic textual data
+            endpoints -> as 'text' + input/output images
+            research  -> as 'endpoints' + intermediate images
+            debug     -> as 'research' + debug textual data
+
+    DESCRIPTION
+
+    Anime-Ultrascale performs extreme image enlargement by controlled
+    alternation of downscaling and AI upscaling, where downscaling is
+    performed by the bicubic and lanczos algorithms, and AI upscaling
+    is performed using Real ESRGAN models.
+
+    Knowledge of the three phases (main, soft, hard) is required for
+    correct usage. These are described in a dedicated article, see
+    the repositories section.
+
+    DIRECTORY TREE
+
+    Real ESRGAN models, following the usual .bin/.param convention,
+    have to be stored in the 'models' folder.
+
+    The official Real ESRGAN executable, 'realesrgan-ncnn-vulkan',
+    has to be stored in the 'renv' folder.
+
+    Useful additional data, determined by the 'save' option, will
+    be stored in the 'sessions' folder.
+
+    Temporary data will be stored in the 'temp' folder.
+
+    If this program has been installed from the official repository
+    using 'install.sh', the repository's folder will contain:
+
+    ┌── LICENSE
+    ├── README
+    ├── anime-ultrascale.py
+    ├── anime-ultrascale
+    ├── pyproject.toml
+    ├── install
+    ├── .bin
+    │     └── anime-ultrascale
+    ├── .venv
+    │     └── ·······
+    ├── renv
+    │     └── realesrgan-ncnn-vulkan
+    ├── models
+    │     ├── <model>.bin
+    │     ├── <model>.param
+    │     └── ·······
+    ├── sessions
+    │     ├── <date>
+    │     │      ├── <time+pid>
+    │     │      │        └── ·······
+    │     │      └── ·······
+    │     └── ·······
+    └── temp
+          ├── <date+time+pid>
+          │      └── ·······
+          └── ·······
+
+    REPOSITORIES
+
+    Concept -> https://github.com/michele-bizzoca/anime-upscaling
+    Program -> https://github.com/michele-bizzoca/anime-ultrascale
+
+    LICENSE
+
+    Copyright (c) 2026 Michele Bizzoca
+    Licensed under the MIT License.
+""")
+
+########################################################################################
+# Main Call
+########################################################################################
+
+if __name__ == "__main__":
+    main()
+
+########################################################################################
+# End
+########################################################################################
