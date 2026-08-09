@@ -14,6 +14,9 @@ import json
 import dacite
 import pyvips
 import textwrap
+import psutil
+import dataclasses
+import subprocess
 
 # Unqualified
 from pathlib import Path
@@ -21,231 +24,99 @@ from enum import IntEnum
 from datetime import datetime
 from dataclasses import dataclass
 from threading import Event, Thread, Lock
-from typing import ( cast, Callable, TypeVar ,
-                     NoReturn, TypeAlias     )
+from typing import (cast, Callable, TypeVar, NoReturn,
+                    TypeAlias, Final, TextIO, BinaryIO, Any)
 
 ########################################################################################
-# Help
+# Type Variables
 ########################################################################################
 
-HELP = textwrap.dedent("""\
-    Anime-Ultrascale
-    A Tool for Extreme Anime Upscaling.
-
-    USAGE
-
-    anime-ultrascale INPUT OUTPUT
-        MAIN_DIVISOR MAIN_MULTIPLIER
-        SOFT_MODEL SOFT_DIVISOR SOFT_MULTIPLIER SOFT_ITERATIONS
-        HARD_MODEL HARD_DIVISOR HARD_MULTIPLIER HARD_ITERATIONS
-        MAIN_SCALER FINAL_SCALER
-        [OPTIONS]
-
-    anime-ultrascale INPUT OUTPUT.png
-                     {SESSION.json│SETTINGS.cfg}
-                     [OPTIONS]
-
-    anime-ultrascale {-h│--help│-v│--version}
-
-    POSITIONAL ARGUMENTS
-
-    INPUT (str)
-        Input image in any of the following formats: PNG, JPG/JPEG,
-        BMP, TIF/TIFF.
-
-    OUTPUT.png (str)
-        Output image in any of the following formats: PNG (RGBA), 
-        JPG/JPEG (RGB), BMP (RGB), TIF/TIFF (RGBA). 
-
-    MAIN_DIVISOR (float)
-        Main-phase downscaling divisor. Use it to revert an upscaling
-        already present in the input image.
-
-    MAIN_MULTIPLIER (float)
-        Main-phase upscaling multiplier. It determines the output
-        width and height, namely output = (input / MAIN_DIVISOR) *
-        MAIN_MULTIPLIER.
-
-    SOFT_MODEL (str)
-        Real ESRGAN model specialized in preserving detail (basename
-        only).
-
-    SOFT_DIVISOR (float)
-        Soft-phase downscaling divisor. Use it to lose detail.
-
-    SOFT_MULTIPLIER (int)
-        Soft-phase upscaling multiplier. Use it to restore detail. It 
-        has to be supported by the model SOFT_MODEL.
-        
-    SOFT_ITERATIONS (int)
-        Soft-phase iterations.
-
-    HARD_MODEL (str)
-        Real ESRGAN model specialized in adding detail (basename only).
-
-    HARD_DIVISOR (float)
-        Hard-phase downscaling divisor. Use it to lose detail.
-
-    HARD_MULTIPLIER (int)
-        Hard-phase upscaling multiplier. Use it to enhance detail. It 
-        has to be supported by the model SOFT_MODEL.
-
-    HARD_ITERATIONS (int)
-        Hard-phase iterations.
-
-    MAIN_SCALER (str)
-        The downscaling algorithm used in intermediate steps.
-
-    FINAL_SCALER (str)
-        The downscaling algorithm used in the final step.
-
-    {SESSION.json│SETTINGS.cfg} (str)
-        A session or settings file to import settings from.
-
-    {-h│--help}
-        Shows this help message.
-
-    {-v│--version}
-        Shows this program's version.
-
-    CONSTRAINTS
-
-        MAIN_DIVISOR    >= 1
-        MAIN_MULTIPLIER >= 1
-
-        SOFT_MULTIPLIER >= 2
-        SOFT_DIVISOR    >= 1
-        SOFT_DIVISOR    <= SOFT_MULTIPLIER
-        SOFT_ITERATIONS >= 0
-
-        HARD_MULTIPLIER >= 2
-        HARD_DIVISOR    >= 1
-        HARD_DIVISOR    <= HARD_MULTIPLIER
-        HARD_ITERATIONS >= 0
-
-        MAIN_SCALER     in ['bicubic', 'lanczos']
-        FINAL_SCALER    in ['bicubic', 'lanczos']
-
-    OPTIONS
-
-    {-t│--tile} (int)
-        The width/height of the square used to tile the total area.
-            0            -> automatic selection
-            1 <= n <= 16 -> n * 64px
-
-    {-s│--save} (str)
-        Determines the session data that is saved.
-            nothing   -> nothing
-            text      -> basic textual data
-            endpoints -> as 'text' + input/output images
-            research  -> as 'endpoints' + intermediate images
-            debug     -> as 'research' + debug textual data
-
-    DESCRIPTION
-
-    Anime-Ultrascale performs extreme image enlargement by controlled 
-    alternation of downscaling and AI upscaling, where downscaling is
-    performed by the bicubic and lanczos algorithms, and AI upscaling
-    is performed using Real ESRGAN models.
-
-    Knowledge of the three phases (main, soft, hard) is required for
-    correct usage. These are described in a dedicated article, see
-    the repositories section.
-
-    DIRECTORY TREE
-
-    Real ESRGAN models, following the usual .bin/.param convention,
-    have to be stored in the 'models' folder.
-
-    The official Real ESRGAN executable, 'realesrgan-ncnn-vulkan',
-    has to be stored in the 'renv' folder.
-
-    Useful additional data, determined by the 'save' option, will
-    be stored in the 'sessions' folder.
-
-    Temporary data will be stored in the 'temp' folder.
-
-    If this program has been installed from the official repository
-    using 'install.sh', the repository's folder will contain:
-
-    ┌── LICENSE
-    ├── README
-    ├── anime-ultrascale.py
-    ├── anime-ultrascale
-    ├── pyproject.toml
-    ├── install
-    ├── .bin
-    │     └── anime-ultrascale
-    ├── .venv
-    │     └── ·······
-    ├── renv
-    │     └── realesrgan-ncnn-vulkan
-    ├── models
-    │     ├── <model>.bin
-    │     ├── <model>.param
-    │     └── ·······
-    ├── sessions
-    │     ├── <date>
-    │     │      ├── <time+pid>
-    │     │      │        └── ·······
-    │     │      └── ·······
-    │     └── ·······
-    └── temp
-          ├── <date+time+pid>
-          │      └── ·······
-          └── ·······
-
-    REPOSITORIES
-
-    Concept -> https://github.com/michele-bizzoca/anime-upscaling
-    Program -> https://github.com/michele-bizzoca/anime-ultrascale
-
-    LICENSE
-
-    Copyright (c) 2026 Michele Bizzoca
-    Licensed under the MIT License.
-""")
-
-########################################################################################
-# Libraries Configuration
-########################################################################################
-
-Image.MAX_IMAGE_PIXELS = None
+T = TypeVar("T")
 
 ########################################################################################
 # Constants
 ########################################################################################
 
-SOFTWARE_VERSION = "1.0"
-OUTPUT_FORMAT    = "PNG"
-OUTPUT_MODE      = "RGBA"
-TEMP_FOLDER      = "temp"
-MODEL_FOLDER     = "models"
-SESSION_FOLDER   = "sessions"
-RENV_FOLDER      = "renv"
-SESSION_FILE     = "session.json"
-SETTINGS_FILE    = "settings.cfg"
-LOG_FILE         = "log.txt"
-TEMP_INPUT_FILE  = "in.png"
-TEMP_OUTPUT_FILE = "output.png"
-RENV_FILE        = "realesrgan-ncnn-vulkan"
-INVOCATION_FILE  = "call.txt"
-NCNN_FILE        = "ncnn.txt"
-BAR_FILE         = "bar.txt"
-MAX_MPX          = 150000
+SOFTWARE_VERSION : Final = "1.0"
+OUTPUT_FORMAT    : Final = "PNG"
+OUTPUT_MODE      : Final = "RGBA"
+TEMP_FOLDER      : Final = "temp"
+MODEL_FOLDER     : Final = "models"
+SESSION_FOLDER   : Final = "sessions"
+RENV_FOLDER      : Final = "renv"
+SESSION_FILE     : Final = "session.json"
+SETTINGS_FILE    : Final = "settings.cfg"
+LOG_FILE         : Final = "log.txt"
+TEMP_INPUT_FILE  : Final = "in.png"
+TEMP_OUTPUT_FILE : Final = "output.png"
+RENV_FILE        : Final = "realesrgan-ncnn-vulkan"
+INVOCATION_FILE  : Final = "invocation.txt"
+NCNN_FILE        : Final = "ncnn.txt"
+PROGRESS_FILE    : Final = "progress.txt"
+MAX_MPX          : Final = 200
+MAX_TILING       : Final = 16
+MAX_ITERATIONS   : Final = 16
 
 ########################################################################################
 # Phases
 ########################################################################################
 
-phases = [
+PHASES : Final = [
 
-    ( "input"     , ["import"      , "downscaling"]) ,
-    ( "main"      , ["upscaling"   , "downscaling"]) ,
-    ( "soft"      , ["downscaling" , "upscaling"  ]) ,
-    ( "hard"      , ["downscaling" , "upscaling"  ]) ,
-    ( "output"    , ["resizing"    , "export"     ])
+    ( "input"     , ["export"      , "downscaling" ]) ,
+    ( "main"      , ["upscaling"   , "downscaling" ]) ,
+    ( "soft"      , ["downscaling" , "upscaling"   ]) ,
+    ( "hard"      , ["downscaling" , "upscaling"   ]) ,
+    ( "output"    , ["downscaling" , "export"      ])
 ]
+
+########################################################################################
+# Scalers
+########################################################################################
+
+SCALERS : Final = ['bicubic', 'lanczos']
+
+########################################################################################
+# Invocation Data
+########################################################################################
+
+INVOCATION_INSTANT : Final = datetime.fromtimestamp(psutil.Process().create_time())
+INVOCATION_STAMP   : Final = INVOCATION_INSTANT.strftime('%Y/m/%d--%H-%M-%S--%f')
+INVOCATION_DATE    : Final = INVOCATION_INSTANT.strftime('%Y-%m-%d')
+INVOCATION_TIME    : Final = INVOCATION_INSTANT.strftime('%H-%M-%S')
+INVOCATION_USEC    : Final = INVOCATION_INSTANT.strftime('%f')
+INVOCATION_PID     : Final = os.getpid()
+
+########################################################################################
+# Paths
+########################################################################################
+
+PARENT_PATH       : Final = Path(__file__).resolve().parent
+MODEL_FOLDER_PATH : Final = PARENT_PATH / MODEL_FOLDER
+RENV_FOLDER_PATH  : Final = PARENT_PATH / RENV_FOLDER
+
+
+SESSION_FOLDER_PATH : Final = ( PARENT_PATH           /
+                                SESSION_FOLDER        /
+                                INVOCATION_DATE       /
+                                f"{INVOCATION_TIME}-"  
+                                f"{INVOCATION_PID}"   )
+
+TEMP_FOLDER_PATH : Final = ( PARENT_PATH           /
+                             TEMP_FOLDER           /
+                             f"{INVOCATION_DATE}-"      
+                             f"{INVOCATION_TIME}-"      
+                             f"{INVOCATION_PID}"   )
+
+INVOCATION_FILE_PATH  : Final = SESSION_FOLDER_PATH / INVOCATION_FILE
+LOG_FILE_PATH         : Final = SESSION_FOLDER_PATH / LOG_FILE
+SESSION_FILE_PATH     : Final = SESSION_FOLDER_PATH / SESSION_FILE
+SETTINGS_FILE_PATH    : Final = SESSION_FOLDER_PATH / SETTINGS_FILE
+NCNN_FILE_PATH        : Final = SESSION_FOLDER_PATH / NCNN_FILE
+PROGRESS_FILE_PATH    : Final = SESSION_FOLDER_PATH / PROGRESS_FILE
+TEMP_INPUT_FILE_PATH  : Final = TEMP_FOLDER_PATH    / TEMP_INPUT_FILE
+TEMP_OUTPUT_FILE_PATH : Final = TEMP_FOLDER_PATH    / TEMP_OUTPUT_FILE
+RENV_FILE_PATH        : Final = RENV_FOLDER_PATH    / RENV_FILE
 
 ########################################################################################
 # Save Levels
@@ -268,11 +139,6 @@ def descriptor(level: SaveLevel):
     else:
         return "NORMAL"
 
-########################################################################################
-# Type Variables
-########################################################################################
-
-T = TypeVar("T")
 
 ########################################################################################
 # Arguments
@@ -308,27 +174,14 @@ class FlexOption:
     values    : list[str]
     default   : str
 
-flex_register = [
+FLEX_OPTIONS : Final = [
 
-    FlexOption (
-
-        "save"                              ,
-        "s"                                 ,
-        [level.name for level in SaveLevel] ,
-        "endpoints"
-    ),
-
-    FlexOption (
-
-        "tile"                      ,
-        "t"                         ,
-        [str(i) for i in range(16)] ,
-        "0"
-    )
+    FlexOption ("save", "s", [level.name for level in SaveLevel], "endpoints"),
+    FlexOption ("tile", "t", [str(i) for i in range(MAX_TILING)], "0")
 ]
 
 ########################################################################################
-# Session Data
+# Session
 ########################################################################################
 
 @dataclass
@@ -383,7 +236,7 @@ class Session:
     settings   : Settings
 
 ########################################################################################
-# Transformations Description
+# Work Units
 ########################################################################################
 
 @dataclass
@@ -397,6 +250,16 @@ class Scaling:
 @dataclass
 class ScalingAI:
     model      : str
+    multiplier : int
+    in_width   : int
+    in_height  : int
+    out_width  : int
+    out_height : int
+
+@dataclass
+class PureSAI:
+    model      : str
+    multiplier : int
     in_width   : int
     in_height  : int
     out_width  : int
@@ -404,43 +267,52 @@ class ScalingAI:
 
 @dataclass
 class StepForward:
-    saves    : int
-    width    : int
-    height   : int
+    save   : bool
+    width  : int
+    height : int
 
 @dataclass
 class PhaseForward:
     pass
 
-Unit: TypeAlias = Scaling | ScalingAI | PhaseForward | StepForward
+Unit: TypeAlias = Scaling | ScalingAI | PureSAI | StepForward | PhaseForward
 
-unit_classes = [Scaling, ScalingAI, PhaseForward, StepForward]
+UNIT_CLASSES : Final = [Scaling, ScalingAI, PureSAI, StepForward, PhaseForward]
 
-def cost(unit: Unit) -> float:
+def unit_cost(unit: Unit) -> float:
 
     if isinstance(unit, ScalingAI):
-        return unit.in_width * unit.in_height * 1.0 / 1000000
+        return unit.in_width * unit.in_height * 1.33 / 1000000
     elif isinstance(unit, Scaling) and unit.in_width != unit.out_width:
         return unit.out_width * unit.out_height * 0.1 / 1000000
     elif isinstance(unit, StepForward):
-        return (unit.width * unit.height * 0.33 / 1000000) * unit.saves
-    else:
-        return 0
+        return unit.save * unit.width * unit.height * 0.33 / 1000000
+    elif isinstance(unit, PureSAI):
+        return unit.in_width * unit.in_height * 1.00 / 1000000
+    return 0
 
 ########################################################################################
-# Error Reporting
+# Current Time
+########################################################################################
+
+def now() -> str: return datetime.now().strftime('on %Y/%m/%d at %H:%M:%S and %f')
+
+########################################################################################
+# Early Error Reporting
 ########################################################################################
 
 def early_fail( message   : str                              ,
                 suggest   : bool = True                      ,
                 exception : type[BaseException] = SystemExit ) -> NoReturn:
-    raise exception( message[:1].upper() + message[1:] + "."                        +
-                     (" Run with --help for usage information." if suggest else "") )
 
-def early_assume( condition : bool                            ,
-                  message   : str                             ,
-                  suggest   : bool = True                     ,
-                  exception: type[BaseException] = SystemExit ) -> None:
+    tail = " Run with --help for usage information." if suggest else ""
+    raise exception(message[:1].upper() + message[1:] + "." + tail)
+
+def early_assume( condition : bool                             ,
+                  message   : str                              ,
+                  suggest   : bool = True                      ,
+                  exception : type[BaseException] = SystemExit ) -> None:
+
     if not condition:
         early_fail(message, suggest, exception)
 
@@ -448,143 +320,135 @@ def early_assume( condition : bool                            ,
 # Help and Version
 ########################################################################################
 
-if len(sys.argv) == 2:
-    if sys.argv[1] in ["-h", "--help"]:
-        print(HELP, end = "")
-        exit()
-    elif sys.argv[1] in ["-v", "--version"]:
-        print(SOFTWARE_VERSION)
-        exit()
+def help_and_version() -> None:
+
+    if len(sys.argv) == 2:
+        if sys.argv[1] in ["-h", "--help"]:
+            print(HELP, end = "")
+            exit()
+        elif sys.argv[1] in ["-v", "--version"]:
+            print(SOFTWARE_VERSION)
+            exit()
 
 ########################################################################################
 # Options Sorting
 ########################################################################################
 
-flex_option_by_name   = {}
-flex_option_by_letter = {}
+fixed_arguments    : list[str]      = []
+positional_options : list[str]      = []
+flex_options       : dict[str, str] = {}
 
-for option in flex_register:
-    flex_option_by_name[option.name]     = option
-    flex_option_by_letter[option.letter] = option
+def sort_options() -> None:
 
-early_assume( len(sys.argv) >= len(Argument) ,
-              "incomplete I/O specification" )
+    global fixed_arguments
+    global positional_options
+    global flex_options
 
-fixed_arguments    = sys.argv[:len(Argument)]
-flex_options       = {}
-positional_options = []
+    fixed_arguments    = sys.argv[:len(Argument)]
+    positional_options = []
+    flex_options       = {}
 
-i = len(Argument)
-while i < len(sys.argv):
+    flex_option_by_name   = {}
+    flex_option_by_letter = {}
 
-    arg = sys.argv[i]
+    for option in FLEX_OPTIONS:
+        flex_option_by_name[option.name]     = option
+        flex_option_by_letter[option.letter] = option
 
-    if arg.startswith("--"):
-        key = arg[2:]
-        early_assume( key in flex_option_by_name       ,
-                      f"unknown floating option {arg}" )
-        option = flex_option_by_name[key]
+    early_assume(len(sys.argv) >= len(Argument), "incomplete I/O specification")
 
-    elif arg.startswith("-"):
-        key = arg[1:]
-        early_assume( key in flex_option_by_letter     ,
-                      f"unknown floating option {arg}" )
-        option = flex_option_by_letter[key]
+    i = len(Argument)
+    while i < len(sys.argv):
 
-    else:
-        early_assume( not flex_options                             ,
-                      "positional option following a floating one" )
-        positional_options.append(arg)
-        i += 1
-        continue
+        arg = sys.argv[i]
 
-    early_assume( i + 1 < len(sys.argv) and not sys.argv[i + 1].startswith("-") ,
-                  f"missing value for floating option {arg}"                    )
+        if arg.startswith("--"):
+            early_assume( arg[2:] in flex_option_by_name   ,
+                          f"unknown floating option {arg}" )
+            option = flex_option_by_name[arg[2:]]
 
-    early_assume( option.name not in flex_options              ,
-                  f"multiple values for floating option {arg}" )
+        elif arg.startswith("-"):
+            early_assume( arg[1:] in flex_option_by_letter ,
+                          f"unknown floating option {arg}" )
+            option = flex_option_by_letter[arg[1:]]
 
-    early_assume( sys.argv[i + 1] in option.values           ,
-                  f"unknown value for floating option {arg}" )
+        else:
+            early_assume( not flex_options                             ,
+                          "positional option following a floating one" )
+            positional_options.append(arg)
+            i += 1; continue
 
-    flex_options[option.name] = sys.argv[i + 1]
-    i += 2
+        early_assume( i + 1 < len(sys.argv)                      ,
+                      f"missing value for floating option {arg}" )
 
-for option in flex_register:
-    flex_options.setdefault(option.name, option.default)
+        early_assume( not sys.argv[i + 1].startswith("-")        ,
+                      f"missing value for floating option {arg}" )
+
+        early_assume( option.name not in flex_options              ,
+                      f"multiple values for floating option {arg}" )
+
+        early_assume( sys.argv[i + 1] in option.values           ,
+                      f"unknown value for floating option {arg}" )
+
+        flex_options[option.name] = sys.argv[i + 1]
+        i += 2; continue
+
+    for option in FLEX_OPTIONS:
+        flex_options.setdefault(option.name, option.default)
 
 ########################################################################################
 # Save Level
 ########################################################################################
 
-save_level = SaveLevel[flex_options["save"]]
+def save_level() -> SaveLevel:
+
+    return SaveLevel[flex_options["save"]]
 
 ########################################################################################
-# Invocation Date and Time
+# Session Folder Creation
 ########################################################################################
 
-invocation_instant        = datetime.fromtimestamp(Process().create_time())
-invocation_date           = invocation_instant.strftime('%Y-%m-%d')
-invocation_time           = invocation_instant.strftime('%H-%M-%S-%f')
-invocation_pid            = getpid()
-invocation_time_pid       = f"{invocation_time}-{invocation_pid}"
-invocation_date_time_pid  = f"{invocation_date}-{invocation_time_pid}"
-invocation_date_time      = f"{invocation_date}-{invocation_time}"
+def create_session_folder() -> None:
 
-########################################################################################
-# Parent Path
-########################################################################################
-
-parent_path = Path(__file__).resolve().parent
-
-########################################################################################
-# Session Folder
-########################################################################################
-
-session_folder  = parent_path / SESSION_FOLDER / invocation_date / invocation_time_pid
-
-if save_level >= SaveLevel.text:
-    session_folder.mkdir(parents = True, exist_ok = True)
+    if save_level() >= SaveLevel.text:
+        SESSION_FOLDER_PATH.mkdir(parents = True, exist_ok = True)
 
 ########################################################################################
 # Invocation File Creation
 ########################################################################################
 
-invocation_file = session_folder / INVOCATION_FILE
+def create_invocation_file() -> None:
 
-if save_level >= SaveLevel.text:
-    with open(invocation_file, "w") as invocation_handle:
-        invocation_handle.write( f"PID: {invocation_pid}\n"             +
-                                 f"Timestamp: {invocation_date_time}\n" +
-                                 f"PWD: {Path.cwd()}\n"                 +
-                                 f"Command: {' '.join(sys.argv)}\n"     )
-
-########################################################################################
-# Time String
-########################################################################################
-
-def now() -> str: return datetime.now().strftime('on %Y/%m/%d at %H:%M:%S and %f')
+    if save_level() >= SaveLevel.text:
+        with open(INVOCATION_FILE_PATH, "w") as INVOCATION_FILE_HANDLE:
+            timestamp = f"{INVOCATION_DATE}-{INVOCATION_TIME}-{INVOCATION_USEC}"
+            INVOCATION_FILE_HANDLE.write( f"PID: {INVOCATION_PID}\n"         +
+                                          f"Timestamp: {timestamp}\n"        +
+                                          f"PWD: {Path.cwd()}\n"             +
+                                          f"Command: {' '.join(sys.argv)}\n" )
 
 ########################################################################################
 # Logging
 ########################################################################################
 
-log_file = session_folder / LOG_FILE
+log_file_handle: TextIO
 
-if save_level >= SaveLevel.text:
-    log_handle = open(log_file, "w")
+def create_log_file() -> None:
+
+    global log_file_handle
+
+    if save_level() >= SaveLevel.text:
+        log_file_handle = open(LOG_FILE_PATH, "w")
+        def close_log_file(): log_file_handle.close()
+        atexit.register(close_log_file)
+        log("the main log system is operative")
 
 def log(message: str, level: SaveLevel = SaveLevel.text):
-    if save_level >= SaveLevel.text and save_level >= level:
-        log_handle.write( now() + f", level {descriptor(level)}: {message}\n"               )
-    log_handle.flush()
 
-if save_level >= SaveLevel.text:
-
-    def close_log_file(): log_handle.close()
-    atexit.register(close_log_file)
-
-log("the main log system is operative")
+    if save_level() >= SaveLevel.text and save_level() >= level:
+        message = f"{now()}, level {descriptor(level)}: {message}"
+        log_file_handle.write(message + "\n")
+        log_file_handle.flush()
 
 ########################################################################################
 # Error Reporting
@@ -593,6 +457,7 @@ log("the main log system is operative")
 def fail( message   : str                              ,
           suggest   : bool = True                      ,
           exception : type[BaseException] = SystemExit ) -> NoReturn:
+
     log(message, SaveLevel.error)
     early_fail(message, suggest, exception)
 
@@ -600,6 +465,7 @@ def assume( condition : bool                             ,
             message   : str                              ,
             suggest   : bool = True                      ,
             exception : type[BaseException] = SystemExit ) -> None:
+
     if not condition:
         fail(message, suggest, exception)
 
@@ -607,69 +473,87 @@ def assume( condition : bool                             ,
 # Temporary Files Support
 ########################################################################################
 
-temp_folder = parent_path / TEMP_FOLDER / invocation_date_time_pid
-temp_folder.mkdir(parents = True, exist_ok=True)
+def clean_temp_folder() -> None:
 
-def clean_temporaries() -> None:
-    for file in temp_folder.iterdir():
+    for file in TEMP_FOLDER_PATH.iterdir():
         if file.is_file():
             file.unlink()
 
-def clean_temp_folder() -> None:
-    temp_folder.rmdir()
+def remove_temp_folder() -> None:
 
-atexit.register(clean_temp_folder)
-atexit.register(clean_temporaries)
+    TEMP_FOLDER_PATH.rmdir()
 
-log("ready to manage temporary files")
+def create_temp_folder() -> None:
 
-########################################################################################
-# Paths
-########################################################################################
+    TEMP_FOLDER_PATH.mkdir(parents = True, exist_ok = True)
 
-renv_folder      = parent_path    / RENV_FOLDER
-model_folder     = parent_path    / MODEL_FOLDER
-session_file     = session_folder / SESSION_FILE
-settings_file    = session_folder / SETTINGS_FILE
-ncnn_file        = session_folder / NCNN_FILE
-bar_file         = session_folder / BAR_FILE
-temp_input_file  = temp_folder    / TEMP_INPUT_FILE
-temp_output_file = temp_folder    / TEMP_OUTPUT_FILE
-renv_file        = renv_folder    / RENV_FILE
-input_file       = Path(fixed_arguments[Argument.input_filepath])
-output_file      = Path(fixed_arguments[Argument.output_filepath])
+    atexit.register(remove_temp_folder)
+    atexit.register(clean_temp_folder)
+
+    log("the temporary file system is operative")
 
 ########################################################################################
-# Path Related Checks
+# User I/O Files
 ########################################################################################
 
-# TODO
+def input_file_path()  -> Path : return Path(fixed_arguments[Argument.input_filepath])
+def output_file_path() -> Path : return Path(fixed_arguments[Argument.output_filepath])
 
-assume(input_file.is_file(), "input file does not exist")
-assume(output_file.parent.is_dir(), "output folder is not a directory")
-assume(output_file.parent.exists(), "output folder does not exist")
-assume(renv_file.is_file(), "missing realesrgan executable")
-assume(output_file.suffix.lower() == ".png", "the output extension is not png")
+########################################################################################
+# I/O Files Existence Checks
+########################################################################################
+
+def existence_checks() -> None:
+
+    assume(RENV_FILE_PATH.is_file()                   , "missing Real ESRGAN runner"  )
+    assume(input_file_path().is_file()                , "input file does not exist"   )
+    assume(output_file_path().parent.is_dir()         , "output folder does not exist")
+    assume(output_file_path().suffix.lower() == ".png", "output extension is not png" )
+
+########################################################################################
+# Image Loading
+########################################################################################
+
+def load(path: Path) -> pyvips.Image:
+
+    source_image = pyvips.Image.new_from_file(str(path), access = "sequential")
+    source_image = source_image.colourspace("srgb")
+
+    if source_image.bands == 3:
+        source_image = source_image.addalpha()
+    elif source_image.bands > 4:
+        source_image = source_image[:4]
+
+    source_image = source_image.cast("uchar")
+
+    return source_image.copy_memory()
 
 ########################################################################################
 # Input Image Loading
 ########################################################################################
 
-with Image.open(input_file) as input_image:
-    assume(input_image.format is not None, "unrecognized image format")
-    input_format              = cast(str, input_image.format)
-    input_width, input_height = input_image.size
-    input_mode                = input_image.mode
-    input_image               = input_image.convert(OUTPUT_MODE)
+input_image   : pyvips.Image
+current_image : pyvips.Image
 
+def current_width()  -> int: return current_image.width
+def current_height() -> int: return current_image.height
+def input_width()    -> int: return input_image.height
+def input_height()   -> int: return input_image.height
+def input_format()   -> str: return input_image.get("vips-loader").removesuffix("load")
+def input_mode()     -> str: return ( f"{input_image.bands}bands--"                +
+                                    f"{input_image.interpretation}"              +
+                                    ("+alpha" if input_image.hasalpha() else "") )
 
-log(f"the input image has been loaded: {input_width}x{input_height}px {OUTPUT_MODE}")
+def load_input_image() -> None:
 
-########################################################################################
-# State
-########################################################################################
+    global input_image
+    global current_image
 
-state = SimpleNamespace(image = input_image, units = [])
+    input_image   = load(input_file_path())
+    current_image = input_image.copy()
+
+    log( f"the input image has been loaded: {input_image.width}"
+         f"x{input_image.height}px {OUTPUT_MODE}" )
 
 ########################################################################################
 # Nested Dictionary Underscore-Based Flattening
@@ -721,7 +605,7 @@ def unflatten(data: dict[str, object]) -> dict[str, object]:
 
 def export_session(s: Session) -> str:
 
-    return json.dumps(asdict(s), indent = 4, sort_keys = False)
+    return json.dumps(dataclasses.asdict(s), indent = 4, sort_keys = False)
 
 ########################################################################################
 # Session Import
@@ -729,9 +613,9 @@ def export_session(s: Session) -> str:
 
 def import_session(s : str) -> Session:
 
-    return from_dict( data_class = Session,
-                      data       = json.loads(s),
-                      config     = Config(check_types=True) )
+    return dacite.from_dict( data_class = Session,
+                             data       = json.loads(s),
+                             config     = dacite.Config(check_types=True) )
 
 ########################################################################################
 # Settings Export
@@ -741,7 +625,7 @@ def export_settings(s: Settings) -> str:
 
     result: str = ""
 
-    for key, value in flatten(asdict(s)).items():
+    for key, value in flatten(dataclasses.asdict(s)).items():
         result += f"{key} = {json.dumps(value)}\n"
 
     return result
@@ -756,9 +640,9 @@ def import_settings(s : str) -> Settings:
     s = re.sub(r'^\s*(\w+)\s*=([^#]*)(#.*)?$', r'"\1": \2,', s, flags=re.MULTILINE)
     s = "{" + s[:-1] + "}"
 
-    return from_dict( data_class = Settings,
-                      data = unflatten(json.loads(s)),
-                      config = Config(check_types=True) )
+    return dacite.from_dict( data_class = Settings,
+                             data = unflatten(json.loads(s)),
+                             config = dacite.Config(check_types=True) )
 
 ########################################################################################
 # Path Options -> Settings
@@ -835,16 +719,16 @@ def float_from_core_options (
     if modifier is not None:
 
         if modifier == 'w' and index in divisors:
-            value = input_width / value
+            value = input_width() / value
 
         elif modifier == "w" and index in multipliers:
-            value = value / input_width
+            value = value / input_width()
 
         elif modifier == 'h' and index in divisors:
-            value = input_height / value
+            value = input_height() / value
 
         elif modifier == "h" and index in multipliers:
-            value = value / input_height
+            value = value / input_height()
 
         elif modifier == "%":
             value = value / 100
@@ -887,401 +771,453 @@ def settings_from_core_options() -> Settings:
 # Options -> Settings
 ########################################################################################
 
-if len(positional_options) == len(PathOption):
-    settings = settings_from_path_options()
-elif len(positional_options) == len(CoreOption):
-    settings = settings_from_core_options()
-else:
-    fail( "incorrect parameter count, "
-          f"{len(Argument) - 1 + len(PathOption)} or "
-          f"{len(Argument) - 1 + len(CoreOption)} expected" )
+settings: Settings
 
-log("the options have been loaded")
+def load_settings() -> None:
+
+    if len(positional_options) == len(PathOption):
+        settings = settings_from_path_options()
+    elif len(positional_options) == len(CoreOption):
+        settings = settings_from_core_options()
+    else:
+        fail( "incorrect parameter count, "
+              f"{len(Argument) - 1 + len(PathOption)} or "
+              f"{len(Argument) - 1 + len(CoreOption)} expected" )
+
+    log("the settings have been loaded")
 
 ########################################################################################
 # Disjoint Settings Validation
 ########################################################################################
 
-assume( settings.main.multiplier >= 1.0 , "main multiplier < 1"       )
-assume( settings.main.divisor    >= 1.0 , "main divisor < 1"          )
-assume( settings.soft.multiplier >= 2   , "soft-phase multiplier < 2" )
-assume( settings.soft.divisor    >= 1.0 , "soft-phase divisor < 1"    )
-assume( settings.soft.iterations >= 0   , "soft-phase iterations < 0" )
-assume( settings.hard.multiplier >= 2   , "hard-phase multiplier < 2" )
-assume( settings.hard.divisor    >= 1.0 , "hard-phase divisor < 1"    )
-assume( settings.hard.iterations >= 0   , "hard-phase iterations < 0" )
+def disjoint_settings_validation() -> None:
 
-assume( (model_folder/(settings.soft.model + ".bin")).is_file()     ,
-        "missing soft-phase model weights (.bin)"                   )
-assume( (model_folder / (settings.soft.model + ".param")).is_file() ,
-        "missing soft-phase model parameters (.param)"              )
+    assume( settings.main.multiplier >= 1.0 , "main multiplier < 1"       )
+    assume( settings.main.divisor    >= 1.0 , "main divisor < 1"          )
+    assume( settings.soft.multiplier >= 2   , "soft-phase multiplier < 2" )
+    assume( settings.soft.divisor    >= 1.0 , "soft-phase divisor < 1"    )
+    assume( settings.soft.iterations >= 0   , "soft-phase iterations < 0" )
+    assume( settings.hard.multiplier >= 2   , "hard-phase multiplier < 2" )
+    assume( settings.hard.divisor    >= 1.0 , "hard-phase divisor < 1"    )
+    assume( settings.hard.iterations >= 0   , "hard-phase iterations < 0" )
 
-assume( (model_folder / (settings.hard.model + ".bin")).is_file()   ,
-        "missing hard-phase model weights (.bin)"                   )
-assume( (model_folder / (settings.hard.model + ".param")).is_file() ,
-        "missing hard-phase model parameters (.param)"              )
 
-assume ( settings.scaling.main in ["bicubic", "lanczos"] ,
-        "unknown scaling algorithm"                     )
+    assume( settings.soft.iterations <= MAX_ITERATIONS ,
+            f"soft-phase iterations > {MAX_ITERATIONS}" )
 
-assume ( settings.scaling.final in ["bicubic", "lanczos"] ,
-        "unknown scaling algorithm"                      )
+    assume( settings.hard.iterations <= MAX_ITERATIONS ,
+            f"hard-phase iterations > {MAX_ITERATIONS}" )
 
-log("the settings have passed disjoint validation")
+    assume( (MODEL_FOLDER_PATH/(settings.soft.model + ".bin")).is_file()     ,
+            "missing soft-phase model weights (.bin)"                        )
+    assume( (MODEL_FOLDER_PATH / (settings.soft.model + ".param")).is_file() ,
+            "missing soft-phase model parameters (.param)"                   )
+
+    assume( (MODEL_FOLDER_PATH / (settings.hard.model + ".bin")).is_file()   ,
+            "missing hard-phase model weights (.bin)"                        )
+    assume( (MODEL_FOLDER_PATH / (settings.hard.model + ".param")).is_file() ,
+            "missing hard-phase model parameters (.param)"                   )
+
+    assume ( settings.scaling.main in SCALERS ,
+            "unknown scaling algorithm"       )
+
+    assume ( settings.scaling.final in SCALERS ,
+            "unknown scaling algorithm"        )
+
+    log("the settings have passed disjoint validation")
 
 ########################################################################################
 # Shorthands
 ########################################################################################
 
-input_min_length = int(min(input_width, input_height))
-input_max_length = int(max(input_width, input_height))
-input_mpx        = input_width * input_height / float(1000000)
+def input_min_length() : return int(min(input_width(), input_height()))
+def input_max_length() : return int(max(input_width(), input_height()))
+def input_mpx()        : return input_width() * input_height() / float(1000000)
 
-main_factor  = settings.main.multiplier / settings.main.divisor
-soft_factor  = settings.soft.multiplier / settings.soft.divisor
-hard_factor  = settings.hard.multiplier / settings.hard.divisor
+def main_factor() : return settings.main.multiplier / settings.main.divisor
+def soft_factor() : return settings.soft.multiplier / settings.soft.divisor
+def hard_factor() : return settings.hard.multiplier / settings.hard.divisor
 
-total_main_multiplier = settings.main.multiplier * settings.main.divisor
-total_factor = max( settings.main.multiplier * max(soft_factor, hard_factor) ,
-                    1 if total_main_multiplier >= settings.soft.multiplier
-                      else settings.soft.multiplier / settings.main.divisor  )
+def max_factor()   : return max(soft_factor(), hard_factor())
+def main_scaling() : return settings.main.multiplier * settings.main.divisor
+def limit_factor() : return ( 1 if main_scaling() >= settings.soft.multiplier
+                                else settings.soft.multiplier / settings.main.divisor )
+def total_factor() : return max(settings.main.multiplier * max_factor(), limit_factor())
 
-output_width      = int(input_width * settings.main.multiplier)
-output_height     = int(input_height * settings.main.multiplier)
-output_min_length = min(output_width, output_height)
-output_max_length = max(output_width, output_height)
+def output_width()      : return int(input_width() * settings.main.multiplier)
+def output_height()     : return int(input_height() * settings.main.multiplier)
+def output_min_length() : return min(output_width(), output_height())
+def output_max_length() : return max(output_width(), output_height())
 
-base_main_width  = int(input_width  / settings.main.divisor)
-base_main_height = int(input_height / settings.main.divisor)
-base_soft_width  = int(output_width / settings.soft.divisor)
-base_soft_height = int(output_height / settings.soft.divisor)
-base_hard_width  = int(output_width / settings.hard.divisor)
-base_hard_height = int(output_height / settings.hard.divisor)
+def base_main_width()  : return int(input_width()   / settings.main.divisor)
+def base_main_height() : return int(input_height()  / settings.main.divisor)
+def base_soft_width()  : return int(output_width()  / settings.soft.divisor)
+def base_soft_height() : return int(output_height() / settings.soft.divisor)
+def base_hard_width()  : return int(output_width()  / settings.hard.divisor)
+def base_hard_height() : return int(output_height() / settings.hard.divisor)
 
 ########################################################################################
 # Combined Settings Validation
 ########################################################################################
 
-assume ( settings.soft.multiplier >= settings.soft.divisor ,
-         "soft-phase divisor exceeds multiplier"           )
+def combined_settings_validation() -> None:
 
-assume ( settings.hard.multiplier >= settings.hard.divisor ,
-         "hard-phase divisor exceeds multiplier"            )
+    assume ( settings.soft.multiplier >= settings.soft.divisor ,
+             "soft-phase divisor exceeds multiplier"           )
 
-assume (input_min_length >= settings.main.divisor and
-        output_min_length >= settings.soft.divisor and
-        output_min_length >= settings.hard.divisor,
-         "attempt to generate an empty intermediate image")
+    assume ( settings.hard.multiplier >= settings.hard.divisor ,
+             "hard-phase divisor exceeds multiplier"            )
 
-assume( input_mpx * total_factor ** 2 < MAX_MPX                                ,
-        f"attempt to generate an intermediate image larger than {MAX_MPX} Mpx" )
+    assume (input_min_length() >= settings.main.divisor and
+            output_min_length() >= settings.soft.divisor and
+            output_min_length() >= settings.hard.divisor,
+             "attempt to generate an empty intermediate image")
 
-log("the settings have passed combined validation")
+    assume( input_mpx() * total_factor() ** 2 < MAX_MPX                            ,
+            f"attempt to generate an intermediate image larger than {MAX_MPX} Mpx" )
+
+    log("the settings have passed combined validation")
 
 ########################################################################################
 # Session Construction
 ########################################################################################
 
-session = Session (
+session: Session
 
-    Invocation( invocation_date + "_" + invocation_time ,
-                SOFTWARE_VERSION                        ,
-                flex_options["save"]                    ) ,
-    ImageInfo(input_format, input_mode, input_width, input_height)   ,
-    ImageInfo(OUTPUT_FORMAT, OUTPUT_MODE, output_width, output_height) ,
-    settings
-)
+def create_session() -> None:
+
+    global session
+
+    session = Session (
+
+        Invocation(INVOCATION_STAMP, SOFTWARE_VERSION, flex_options["save"])   ,
+        ImageInfo(input_format(), input_mode(), input_width(), input_height()) ,
+        ImageInfo(OUTPUT_FORMAT, OUTPUT_MODE, output_width(), output_height()) ,
+        settings
+    )
 
 ########################################################################################
 # Session Recording
 ########################################################################################
 
-if save_level >= SaveLevel.text:
+def record_session() -> None:
 
-    with open(session_file, "w") as session_handle:
-        session_handle.write(export_session(session))
+    if save_level() >= SaveLevel.text:
 
-    log("the session file has been written")
+        with open(SESSION_FILE_PATH, "w") as session_handle:
+            session_handle.write(export_session(session))
+
+        log("the session file has been written")
 
 ########################################################################################
 # Settings Recording
 ########################################################################################
 
-if save_level >= SaveLevel.text:
+def record_settings() -> None:
 
-    with open(settings_file, "w") as settings_handle:
-        settings_handle.write(export_settings(settings))
+    if save_level() >= SaveLevel.text:
 
-    log("the settings file has been written")
+        with open(SETTINGS_FILE_PATH, "w") as settings_handle:
+            settings_handle.write(export_settings(settings))
 
-########################################################################################
-# Progress Bar
-########################################################################################
+        log("the settings file has been written")
 
-def clamp(l: float | None, x: float, r:float | None) -> float:
-    if l is not None:
-        x = max(l, x)
-    if r is not None:
-        x = min(r, x)
-    return x
-
-
-def make_bar(percentage: float, width: int = 40) -> str:
-    blocks = " ▏▎▍▌▋▊▉█"
-
-    units = percentage / 100.0 * width
-    full = int(units)
-    fraction = int((units - full) * 8)
-
-    return ( "█" * full                                       +
-             (blocks[fraction] if percentage < 100.0 else "") +
-             " " * max(0, width - full - 1)                   )
+# ########################################################################################
+# # Progress Bar
+# ########################################################################################
+#
+# def clamp(l: float | None, x: float, r:float | None) -> float:
+#     if l is not None:
+#         x = max(l, x)
+#     if r is not None:
+#         x = min(r, x)
+#     return x
+#
+#
+# def make_bar(percentage: float, width: int = 40) -> str:
+#     blocks = " ▏▎▍▌▋▊▉█"
+#
+#     units = percentage / 100.0 * width
+#     full = int(units)
+#     fraction = int((units - full) * 8)
+#
+#     return ( "█" * full                                       +
+#              (blocks[fraction] if percentage < 100.0 else "") +
+#              " " * max(0, width - full - 1)                   )
+#
+# class ProgressBar:
+#
+#     def __init__(self, total_cost: float) -> None:
+#         self.total_cost = total_cost
+#         self.total_cost_done = 0.0
+#         self.unit_class_name = PhaseForward.__name__
+#         self.unit_cost = 0.0
+#         self.high_speed = False
+#         self.unit_cost_done = 0.0
+#         self.progress_average_speed = 0.0
+#         self.refresh_average_speed = 0.0
+#         self.bonus_cost_done = 0.0
+#         self.last_progress_instant = perf_counter()
+#         self.last_render_instant = self.last_progress_instant
+#         self.last_refresh_instant = self.last_progress_instant
+#         self.last_progress_percentage = 0.0
+#         self.last_render_percentage = 0.0
+#         self.lock = Lock()
+#         self.stop_event = Event()
+#         self.refresh_thread = Thread( target = self._refresh_call ,
+#                                       daemon = True               )
+#         self.refresh_thread.start()
+#         self.timespans = {k.__name__: 0 for k in unit_classes}
+#         self.costs = {k.__name__: 0 for k in unit_classes}
+#         self.started = {k.__name__: False for k in unit_classes}
+#         self._render()
+#
+#     def new_unit(self, unit: Unit) -> None:
+#         with (self.lock):
+#             if self.unit_cost > 0.0:
+#                 self.progress(100.0)
+#             self.progress_average_speed = (
+#                 self.costs[type(unit).__name__] / self.timespans[type(unit).__name__]
+#                     if self.timespans[type(unit).__name__] != 0
+#                     else 0 )
+#             self.unit_cost = cost(unit)
+#             self.unit_class_name = type(unit).__name__
+#             self.unit_cost_done = 0.0
+#             self.bonus_cost_done = 0.0
+#             self.last_progress_instant = perf_counter()
+#             self.last_refresh_instant = perf_counter()
+#             self.last_progress_percentage = 0.0
+#
+#     def progress(self, percentage: float) -> None:
+#         delta = percentage - self.last_progress_percentage
+#         self.last_progress_percentage = percentage
+#         chunk_cost = self.unit_cost * delta / 100.0
+#         old_part = clamp(None, self.bonus_cost_done, chunk_cost)
+#         new_part = chunk_cost - old_part
+#         now = perf_counter()
+#         delta = now - self.last_progress_instant
+#         self.last_progress_instant = now
+#         if self.started[self.unit_class_name] and delta > 0.0:
+#             self.timespans[self.unit_class_name] += delta
+#             self.costs[self.unit_class_name] += chunk_cost
+#             current_speed = chunk_cost / delta
+#             self.progress_average_speed = (
+#                 current_speed if self.progress_average_speed == 0.0
+#                               else ( 0.8 * self.progress_average_speed +
+#                                      0.2 * current_speed               ) )
+#         self.started[self.unit_class_name] = True
+#         self._old_progress(old_part)
+#         self._new_progress(new_part)
+#         self._render()
+#
+#     def _old_progress(self, chunk_cost: float) -> None:
+#         self.bonus_cost_done -= clamp(0, chunk_cost, None)
+#
+#     def _new_progress(self, chunk_cost: float) -> None:
+#         self.total_cost_done = clamp( None                              ,
+#                                       self.total_cost_done + chunk_cost ,
+#                                       self.total_cost                   )
+#         self.unit_cost_done = clamp( None                              ,
+#                                      self.unit_cost_done +  chunk_cost ,
+#                                      self.unit_cost                    )
+#
+#     def refresh(self) -> None:
+#         with self.lock:
+#             now = perf_counter()
+#             delta = now - self.last_refresh_instant
+#             self.last_refresh_instant = now
+#             bonus_chunk_cost = clamp( 0.0,
+#                                       delta * self.progress_average_speed ,
+#                                       self.unit_cost - self.unit_cost_done )
+#             self.bonus_cost_done += bonus_chunk_cost
+#             self.total_cost_done = clamp( None,
+#                                           self.total_cost_done + bonus_chunk_cost ,
+#                                           self.total_cost                         )
+#             self.unit_cost_done = clamp( None                                   ,
+#                                          self.unit_cost_done + bonus_chunk_cost ,
+#                                          self.unit_cost                         )
+#             self._render()
+#
+#     def _render(self) -> None:
+#         now = perf_counter()
+#         delta = now - self.last_render_instant
+#         self.last_render_instant = now
+#         percentage = 100.0 * ( 1.0 if self.total_cost == 0.0
+#                                    else self.total_cost_done / self.total_cost )
+#         if delta > 0.0:
+#             speed = ( (percentage - self.last_render_percentage) *
+#                       self.total_cost                            /
+#                       (100 * delta)                              )
+#             decay = math.exp(-delta / 0.6)
+#             self.refresh_average_speed = (
+#                 speed if self.refresh_average_speed == 0.0
+#                       else ( decay * self.refresh_average_speed +
+#                              (1 - decay)* speed                 ) )
+#
+#         self.last_render_percentage = percentage
+#
+#         bar = make_bar(percentage)
+#
+#         line = (
+#             f" [{bar}]"
+#             f" {percentage:6.2f}% "
+#             f"({self.total_cost_done:6.2f}/{self.total_cost:6.2f} Mpx), "
+#             f"{self.refresh_average_speed:5.2f} Mpx/s"
+#         )
+#
+#         print( f"\r\033[K" + line ,
+#                end=""             ,
+#                flush=True         )
+#
+#         if save_level >= SaveLevel.debug:
+#             bar_handle.write(sys.modules[__name__].now() + ": " + line + "\n")
+#             bar_handle.flush()
+#
+#     def close(self) -> None:
+#         self.stop_event.set()
+#         self.refresh_thread.join()
+#         with self.lock:
+#             self.total_cost_done = self.total_cost
+#             self.last_render_percentage = 100.0
+#             self.refresh_average_speed = 0.0
+#             self._render()
+#
+#     def _refresh_call(self) -> None:
+#         while not self.stop_event.wait(0.1):
+#             self.refresh()
+#
+#     def __enter__(self) -> "ProgressBar":
+#         return self
+#
+#     def __exit__(self, exc_type, exc_value, traceback) -> None:
+#         self.stop_event.set()
+#         self.refresh_thread.join()
 
 class ProgressBar:
 
     def __init__(self, total_cost: float) -> None:
-        self.total_cost = total_cost
-        self.total_cost_done = 0.0
-        self.unit_class_name = PhaseForward.__name__
-        self.unit_cost = 0.0
-        self.high_speed = False
-        self.unit_cost_done = 0.0
-        self.progress_average_speed = 0.0
-        self.refresh_average_speed = 0.0
-        self.bonus_cost_done = 0.0
-        self.last_progress_instant = perf_counter()
-        self.last_render_instant = self.last_progress_instant
-        self.last_refresh_instant = self.last_progress_instant
-        self.last_progress_percentage = 0.0
-        self.last_render_percentage = 0.0
-        self.lock = Lock()
-        self.stop_event = Event()
-        self.refresh_thread = Thread( target = self._refresh_call ,
-                                      daemon = True               )
-        self.refresh_thread.start()
-        self.timespans = {k.__name__: 0 for k in unit_classes}
-        self.costs = {k.__name__: 0 for k in unit_classes}
-        self.started = {k.__name__: False for k in unit_classes}
-        self._render()
+        pass
 
     def new_unit(self, unit: Unit) -> None:
-        with (self.lock):
-            if self.unit_cost > 0.0:
-                self.progress(100.0)
-            self.progress_average_speed = (
-                self.costs[type(unit).__name__] / self.timespans[type(unit).__name__]
-                    if self.timespans[type(unit).__name__] != 0
-                    else 0 )
-            self.unit_cost = cost(unit)
-            self.unit_class_name = type(unit).__name__
-            self.unit_cost_done = 0.0
-            self.bonus_cost_done = 0.0
-            self.last_progress_instant = perf_counter()
-            self.last_refresh_instant = perf_counter()
-            self.last_progress_percentage = 0.0
+        pass
 
     def progress(self, percentage: float) -> None:
-        delta = percentage - self.last_progress_percentage
-        self.last_progress_percentage = percentage
-        chunk_cost = self.unit_cost * delta / 100.0
-        old_part = clamp(None, self.bonus_cost_done, chunk_cost)
-        new_part = chunk_cost - old_part
-        now = perf_counter()
-        delta = now - self.last_progress_instant
-        self.last_progress_instant = now
-        if self.started[self.unit_class_name] and delta > 0.0:
-            self.timespans[self.unit_class_name] += delta
-            self.costs[self.unit_class_name] += chunk_cost
-            current_speed = chunk_cost / delta
-            self.progress_average_speed = (
-                current_speed if self.progress_average_speed == 0.0
-                              else ( 0.8 * self.progress_average_speed +
-                                     0.2 * current_speed               ) )
-        self.started[self.unit_class_name] = True
-        self._old_progress(old_part)
-        self._new_progress(new_part)
-        self._render()
-
-    def _old_progress(self, chunk_cost: float) -> None:
-        self.bonus_cost_done -= clamp(0, chunk_cost, None)
-
-    def _new_progress(self, chunk_cost: float) -> None:
-        self.total_cost_done = clamp( None                              ,
-                                      self.total_cost_done + chunk_cost ,
-                                      self.total_cost                   )
-        self.unit_cost_done = clamp( None                              ,
-                                     self.unit_cost_done +  chunk_cost ,
-                                     self.unit_cost                    )
+        pass
 
     def refresh(self) -> None:
-        with self.lock:
-            now = perf_counter()
-            delta = now - self.last_refresh_instant
-            self.last_refresh_instant = now
-            bonus_chunk_cost = clamp( 0.0,
-                                      delta * self.progress_average_speed ,
-                                      self.unit_cost - self.unit_cost_done )
-            self.bonus_cost_done += bonus_chunk_cost
-            self.total_cost_done = clamp( None,
-                                          self.total_cost_done + bonus_chunk_cost ,
-                                          self.total_cost                         )
-            self.unit_cost_done = clamp( None                                   ,
-                                         self.unit_cost_done + bonus_chunk_cost ,
-                                         self.unit_cost                         )
-            self._render()
-
-    def _render(self) -> None:
-        now = perf_counter()
-        delta = now - self.last_render_instant
-        self.last_render_instant = now
-        percentage = 100.0 * ( 1.0 if self.total_cost == 0.0
-                                   else self.total_cost_done / self.total_cost )
-        if delta > 0.0:
-            speed = ( (percentage - self.last_render_percentage) *
-                      self.total_cost                            /
-                      (100 * delta)                              )
-            decay = math.exp(-delta / 0.6)
-            self.refresh_average_speed = (
-                speed if self.refresh_average_speed == 0.0
-                      else ( decay * self.refresh_average_speed +
-                             (1 - decay)* speed                 ) )
-
-        self.last_render_percentage = percentage
-
-        bar = make_bar(percentage)
-
-        line = (
-            f" [{bar}]"
-            f" {percentage:6.2f}% "
-            f"({self.total_cost_done:6.2f}/{self.total_cost:6.2f} Mpx), "
-            f"{self.refresh_average_speed:5.2f} Mpx/s"
-        )
-
-        print( f"\r\033[K" + line ,
-               end=""             ,
-               flush=True         )
-
-        if save_level >= SaveLevel.debug:
-            bar_handle.write(sys.modules[__name__].now() + ": " + line + "\n")
-            bar_handle.flush()
+        pass
 
     def close(self) -> None:
-        self.stop_event.set()
-        self.refresh_thread.join()
-        with self.lock:
-            self.total_cost_done = self.total_cost
-            self.last_render_percentage = 100.0
-            self.refresh_average_speed = 0.0
-            self._render()
-
-    def _refresh_call(self) -> None:
-        while not self.stop_event.wait(0.1):
-            self.refresh()
+        pass
 
     def __enter__(self) -> "ProgressBar":
         return self
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self.stop_event.set()
-        self.refresh_thread.join()
+        pass
 
 ########################################################################################
-# Internal Output Naming System
+# Image Transformations
 ########################################################################################
 
-naming_state = SimpleNamespace(i = 0, j = 0, k = 0)
+def save(unit: StepForward, path: Path, bar: ProgressBar) -> None:
 
-def first_step() -> bool:
-    return naming_state.i == 0 and naming_state.j == 0
+    if unit.save:
 
-def last_step() -> bool:
-    return ( naming_state.i == len(phases) - 1                  and
-             naming_state.j == len(phases[naming_state.i][1]) - 1 )
+        bar.new_unit(unit)
 
-def step_forward():
+        image           = current_image.copy()
+        last_percentage = 0.0
+        started         = False
 
-    phase, steps = phases[naming_state.i]
-    step         = steps[naming_state.j]
+        def start_bar(image: pyvips.Image, progress: Any) -> None:
 
-    if ( save_level >= SaveLevel.endpoints and (first_step() or last_step()) or
-         save_level >= SaveLevel.research                                     ):
+            nonlocal started
 
-        file_name = "_".join((f"{(naming_state.k + 1):02}",
-                              f"{phase}-phase",
-                              f"{step}-step",
-                              f"{state.image.width}x{state.image.height}.png"))
-        file = session_folder / file_name
-        state.image.save(file)
+            if not started:
+                started = True
+                bar.progress(0.0)
 
-        naming_state.k += 1
+        def update_bar(image: pyvips.Image, progress: Any) -> None:
 
-    log( f"a{'n' if step[0] in 'aeiou' else ''} {step} step in the {phase}"
-         f" phase has been completed with output size {state.image.width}x"
-         f"{state.image.height}" )
+            nonlocal last_percentage
 
-    if last_step():
-        state.image.save(output_file)
-        log(f"the output image has been saved, {state.image.width}x"
-            f"{state.image.height}px {OUTPUT_FORMAT} {OUTPUT_MODE}")
+            percentage = float(progress.percent)
+            if percentage > last_percentage:
+                last_percentage = percentage
+                bar.progress(percentage)
 
-    naming_state.j = (naming_state.j + 1) % len(steps)
+        image.set_progress(True)
+        image.signal_connect("preeval", start_bar)
+        image.signal_connect("eval", update_bar)
 
-def phase_forward() -> None:
+        image.write_to_file(str(path))
 
-    log(f"the {phases[naming_state.i][0]} phase has been completed")
+        if last_percentage < 100.0:
+            bar.progress(100.0)
 
-    naming_state.i += 1
-    naming_state.j = 0
+def scale(unit: Scaling, bar: ProgressBar) -> None:
 
-########################################################################################
-# NCNN Logging
-########################################################################################
+    global current_image
 
-if save_level >= SaveLevel.debug:
-    ncnn_handle = open(ncnn_file, "w")
+    kernels         = {"lanczos": "lanczos3", "bicubic": "cubic"}
+    kernel          = kernels.get(unit.algorithm)
+    factor          = unit.out_width / unit.in_width
+    image           = current_image.resize(factor, kernel = kernel)
+    last_percentage = 0.0
+    started         = False
 
-if save_level >= SaveLevel.debug:
-    def close_ncnn_file(): ncnn_handle.close()
-    atexit.register(close_ncnn_file)
+    def start_bar(image: pyvips.Image, progress: Any) -> None:
 
-log("the ncnn logging system is operative")
+        nonlocal started
 
-########################################################################################
-# Runners
-########################################################################################
+        if not started:
+            started = True
+            bar.progress(0.0)
 
-def run_phase_forward(bar: ProgressBar) -> None:
-    phase_forward()
-    bar.progress(100)
-    
-def run_step_forward(bar: ProgressBar) -> None:
-    step_forward()
-    bar.progress(100)
+    def update_bar(image: pyvips.Image, progress: Any) -> None:
 
-# TODO
+        nonlocal last_percentage
 
-def run_realesrgan( model      : str         ,
-                    multiplier : int         ,
-                    bar        : ProgressBar ) -> None:
+        percentage = float(progress.percent)
+        if percentage > last_percentage:
+            last_percentage = percentage
+            bar.progress(percentage)
 
-    state.image.save(temp_input_file)
+    image.set_progress(True)
+    image.signal_connect("preeval", start_bar)
+    image.signal_connect("eval", update_bar)
 
-    process = Popen(
+    current_image = image.copy_memory()
 
-        [ str(renv_file)                                     ,
-          "-i", str(temp_input_file)                         ,
-          "-o", str(temp_output_file)                        ,
-          "-m", str(model_folder)                            ,
-          "-n", model                                        ,
+    if last_percentage < 100.0:
+        bar.progress(100.0)
+
+def scale_ai(unit: ScalingAI, bar: ProgressBar) -> None:
+
+    step_forward_unit = StepForward(True, unit.in_width, unit.in_height)
+    pure_sai_unit     = PureSAI(** vars(unit))
+
+    save(step_forward_unit, TEMP_INPUT_FILE_PATH, bar)
+
+    bar.new_unit(pure_sai_unit)
+
+    process = subprocess.Popen(
+
+        [ str(RENV_FILE_PATH)                                ,
+          "-i", str(TEMP_INPUT_FILE_PATH)                    ,
+          "-o", str(TEMP_OUTPUT_FILE_PATH)                   ,
+          "-m", str(MODEL_FOLDER_PATH)                       ,
+          "-n", unit.model                                   ,
           "-t", "0" if flex_options["tile"] == "0"
                     else str(64 * int(flex_options["tile"])) ,
           "-g", "0"                                          ,
           "-j", "1:1:1"                                      ,
-          "-s", str(multiplier)                              ],
+          "-s", str(unit.multiplier)                         ],
 
-        stdout  = PIPE   ,
-        stderr  = STDOUT ,
-        text    = True   ,
+        stdout  = subprocess.PIPE   ,
+        stderr  = subprocess.STDOUT ,
+        text    = True              ,
         bufsize = 1
     )
 
@@ -1289,9 +1225,9 @@ def run_realesrgan( model      : str         ,
         fail("failed to capture Real ESRGAN's output")
 
     for line in process.stdout:
-        if save_level >= SaveLevel.debug:
-            ncnn_handle.write(now() + ": " + line)
-            ncnn_handle.flush()
+        if save_level() >= SaveLevel.debug:
+            ncnn_file_handle.write(now() + ": " + line)
+            ncnn_file_handle.flush()
         line = "".join(line.split())
         if re.search(r"^[0-9]+(\.[0-9]+)?%$", line):
             bar.progress(float(line[:-1]))
@@ -1300,8 +1236,145 @@ def run_realesrgan( model      : str         ,
     assume( return_code == 0                              ,
             f"Real ESRGAN failed with code {return_code}" )
 
-    with Image.open(temp_output_file) as result:
-        state.image = result.copy()
+    current_image = load(TEMP_OUTPUT_FILE_PATH)
+
+########################################################################################
+# Export System
+########################################################################################
+
+forward_i: int
+forward_j: int
+forward_k: int
+
+def init_export_system() -> None:
+
+    global forward_i
+    global forward_j
+    global forward_k
+
+    forward_i = 0
+    forward_j = 0
+    forward_k = 0
+
+def first_step() -> bool:
+    return forward_i == 0 and forward_j == 0
+
+def run_step_forward(unit: StepForward, bar: ProgressBar):
+
+    global forward_j
+    global forward_k
+
+    phase, steps = PHASES[forward_i]
+    step         = steps[forward_j]
+
+    if unit.save:
+
+        file_name = "_".join((f"{(forward_k + 1):02}",
+                              f"{phase}-phase",
+                              f"{step}-step",
+                              f"{unit.width}x{unit.height}.png"))
+        file_path = SESSION_FOLDER_PATH / file_name
+        export(unit, file_path, bar)
+
+        forward_k += 1
+
+    log( f"a{'n' if step[0] in 'aeiou' else ''} {step} "
+         f"step in the {phase} phase has been completed "
+         f"with output size {unit.width}x{unit.height}" )
+
+    forward_j = (forward_j + 1) % len(steps)
+
+def run_phase_forward(unit : PhaseForward, bar: ProgressBar) -> None:
+
+    global forward_i
+    global forward_j
+
+    log(f"the {PHASES[forward_i][0]} phase has been completed")
+
+    forward_i += 1
+    forward_j = 0
+
+def run_input_export(unit: InputExport, bar: ProgressBar) -> None:
+
+    global forward_k
+
+    if unit.save:
+
+        file_name = "_".join((f"{(forward_k + 1):02}",
+                              f"{PHASES[forward_i][0]}-phase",
+                              f"export-step",
+                              f"{unit.width}x{unit.height}.png"))
+        file_path = SESSION_FOLDER_PATH / file_name
+        export(unit, file_path, bar)
+
+        forward_k += 1
+
+def run_output_export(unit: OutputExport, bar: ProgressBar) -> None:
+
+    global forward_k
+
+    if unit.save:
+
+        file_name = "_".join((f"{(forward_k + 1):02}",
+                              f"{PHASES[forward_i][0]}-phase",
+                              f"export-step",
+                              f"{unit.width}x{unit.height}.png"))
+        file_path = SESSION_FOLDER_PATH / file_name
+        export(unit, file_path, bar)
+
+        forward_k += 1
+
+# def run_step_forward(bar: ProgressBar):
+#
+#     global forward_j
+#     global forward_k
+#
+#     phase, steps = PHASES[forward_i]
+#     step         = steps[forward_j]
+#
+#     if ( save_level() >= SaveLevel.endpoints and (first_step() or last_step()) or
+#          save_level() >= SaveLevel.research                                     ):
+#
+#         file_name = "_".join((f"{(forward_k + 1):02}",
+#                               f"{phase}-phase",
+#                               f"{step}-step",
+#                               f"{current_width()}x{current_height()}.png"))
+#         file_path = SESSION_FOLDER_PATH / file_name
+#         current_image.write_to_file(str(file_path))
+#
+#         forward_k += 1
+#
+#     log( f"a{'n' if step[0] in 'aeiou' else ''} {step} step in the {phase}"
+#          f" phase has been completed with output size {current_width()}x"
+#          f"{current_height()}" )
+#
+#     if last_step():
+#         current_image.write_to_file(str(output_file_path()))
+#         log(f"the output image has been saved, {current_width()}x"
+#             f"{current_height()}px {OUTPUT_FORMAT} {OUTPUT_MODE}")
+#
+#     forward_j = (forward_j + 1) % len(steps)
+
+########################################################################################
+# NCNN Logging
+########################################################################################
+
+ncnn_file_handle: TextIO
+
+def create_ncnn_file() -> None:
+
+    global ncnn_file_handle
+
+    if save_level() >= SaveLevel.debug:
+        ncnn_file_handle = open(NCNN_FILE_PATH, "w")
+        def close_ncnn_file(): ncnn_file_handle.close()
+        atexit.register(close_ncnn_file)
+        log("the ncnn logging system is operative")
+
+########################################################################################
+# Runners
+########################################################################################
+
 
 def run_algorithm(
     algorithm: str,
@@ -1380,187 +1453,383 @@ def run_algorithm(
     if last_percentage < 100.0:
         bar.progress(100.0)
 
-########################################################################################
-# Scaling Algorithms
-########################################################################################
-
-scalers = {"bicubic": "cubic", "lanczos": "lanczos3"}
-
-main_scaler  = scalers[settings.scaling.main]
-final_scaler = scalers[settings.scaling.final]
-
-########################################################################################
-# Progress Bar Logging
-########################################################################################
-
-if save_level >= SaveLevel.debug:
-    bar_handle = open(bar_file, "w")
-
-if save_level >= SaveLevel.debug:
-    def close_bar_file(): bar_handle.close()
-    atexit.register(close_bar_file)
-
-log("the progress bar logging system is operative")
-
-########################################################################################
-# Planners
-########################################################################################
-
-def current_size() -> tuple[int, int]:
-
-    for i in range(len(state.units) - 1, -1, -1):
-
-        unit = state.units[i]
-
-        if isinstance(unit, (Scaling, ScalingAI)):
-            return unit.out_width, unit.out_height
-        else:
-            continue
-
-    return input_width, input_height
-
-def plan_algorithm( arg: float |tuple[int, int]               ,
-                    algorithm: str = main_scaler ) -> None:
-
-    in_width  , in_height  = current_size()
-    out_width , out_height = ( arg if isinstance(arg, tuple)
-                                   else [int(in_width  * arg),
-                                         int(in_height * arg)] )
-    state.units.append(Scaling( algorithm  ,
-                                in_width   ,
-                                in_height  ,
-                                out_width  ,
-                                out_height ))
-
-def plan_realesrgan(settings: ModelSettings = settings.soft) -> None:
-
-    in_width  , in_height  = current_size()
-    out_width , out_height = ( int(in_width  * settings.multiplier) ,
-                               int(in_height * settings.multiplier) )
-    state.units.append(ScalingAI( settings.model ,
-                                  in_width       ,
-                                  in_height      ,
-                                  out_width      ,
-                                  out_height     ))
-
-def plan_phase_forward() -> None:
-    state.units.append(PhaseForward())
-
-def plan_step_forward(first: bool = False, last:bool = False) -> None:
-    save = last + ( (first or last) and save_level >= SaveLevel.endpoints or
-                    save_level >= SaveLevel.research                       )
-    width, height  = current_size()
-    state.units.append(StepForward(save, width, height))
-    
-########################################################################################
-# Planning - Input Phase
-########################################################################################
-
-plan_step_forward(True, False)
-
-plan_algorithm((base_main_width, base_main_height))
-plan_step_forward()
-
-plan_phase_forward()
-
-########################################################################################
-# Planning - Main Phase
-########################################################################################
-
-main_iterations = math.ceil(math.log(total_main_multiplier, settings.soft.multiplier))
-factor = ( (total_main_multiplier / settings.soft.multiplier ** main_iterations) **
-           (1 / (main_iterations - 1) if main_iterations != 1 else 0)             )
-
-for _ in range(main_iterations - 1):
-    plan_realesrgan()
-    plan_step_forward()
-
-    plan_algorithm(factor)
-    plan_step_forward()
-
-if main_iterations != 0:
-    plan_realesrgan()
-    plan_step_forward()
-
-plan_phase_forward()
-
-########################################################################################
-# Planning - Soft Phase
-########################################################################################
-
-for _ in range(settings.soft.iterations):
-
-    plan_algorithm((base_soft_width, base_soft_height))
-    plan_step_forward()
-
-    plan_realesrgan()
-    plan_step_forward()
-
-plan_phase_forward()
-
-########################################################################################
-# Planning - Hard Phase
-########################################################################################
-
-for _ in range(settings.hard.iterations):
-
-    plan_algorithm((base_hard_width, base_hard_height))
-    plan_step_forward()
-
-    plan_realesrgan(settings.hard)
-    plan_step_forward()
-
-plan_phase_forward()
-
-########################################################################################
-# Planning - Output Phase
-########################################################################################
-
-plan_algorithm((output_width, output_height), final_scaler)
-plan_step_forward()
-
-plan_step_forward(False, True)
-
-plan_phase_forward()
-
-########################################################################################
-# Planning Processing
-########################################################################################
-
-total_cost = sum([cost(unit) for unit in state.units])
-
-log("the execution plan has been created")
-
-########################################################################################
-# Newline at Exit
-########################################################################################
-
-def newline() -> None: print()
-atexit.register(newline)
-
-########################################################################################
-# Plan Execution
-########################################################################################
-
-try:
-    with ProgressBar(total_cost) as bar:
-        for unit in state.units:
-            bar.new_unit(unit)
-            if isinstance(unit, Scaling):
-                run_algorithm( unit.algorithm                         ,
-                               (unit.out_width, unit.out_height), bar )
-            elif isinstance(unit, ScalingAI):
-                run_realesrgan( unit.model                           ,
-                                unit.out_width // unit.in_width, bar )
-            elif isinstance(unit, StepForward):
-                run_step_forward(bar)
-            elif isinstance(unit, PhaseForward):
-                run_phase_forward(bar)
-        bar.close()
-except KeyboardInterrupt:
-    print()
-    fail("interrupted by user", False)
-
-########################################################################################
-# End
-########################################################################################
+# ########################################################################################
+# # Scaling Algorithms
+# ########################################################################################
+#
+# scalers = {"bicubic": "cubic", "lanczos": "lanczos3"}
+#
+# main_scaler  = scalers[settings.scaling.main]
+# final_scaler = scalers[settings.scaling.final]
+#
+# ########################################################################################
+# # Progress Bar Logging
+# ########################################################################################
+#
+# if save_level >= SaveLevel.debug:
+#     bar_handle = open(bar_file, "w")
+#
+# if save_level >= SaveLevel.debug:
+#     def close_bar_file(): bar_handle.close()
+#     atexit.register(close_bar_file)
+#
+# log("the progress bar logging system is operative")
+#
+# ########################################################################################
+# # Planners
+# ########################################################################################
+#
+# def current_size() -> tuple[int, int]:
+#
+#     for i in range(len(state.units) - 1, -1, -1):
+#
+#         unit = state.units[i]
+#
+#         if isinstance(unit, (Scaling, ScalingAI)):
+#             return unit.out_width, unit.out_height
+#         else:
+#             continue
+#
+#     return input_width, input_height
+#
+# def plan_algorithm( arg: float |tuple[int, int]               ,
+#                     algorithm: str = main_scaler ) -> None:
+#
+#     in_width  , in_height  = current_size()
+#     out_width , out_height = ( arg if isinstance(arg, tuple)
+#                                    else [int(in_width  * arg),
+#                                          int(in_height * arg)] )
+#     state.units.append(Scaling( algorithm  ,
+#                                 in_width   ,
+#                                 in_height  ,
+#                                 out_width  ,
+#                                 out_height ))
+#
+# def plan_realesrgan(settings: ModelSettings = settings.soft) -> None:
+#
+#     in_width  , in_height  = current_size()
+#     out_width , out_height = ( int(in_width  * settings.multiplier) ,
+#                                int(in_height * settings.multiplier) )
+#     state.units.append(ScalingAI( settings.model ,
+#                                   in_width       ,
+#                                   in_height      ,
+#                                   out_width      ,
+#                                   out_height     ))
+#
+# def plan_phase_forward() -> None:
+#     state.units.append(PhaseForward())
+#
+# def plan_step_forward(first: bool = False, last:bool = False) -> None:
+#     save = last + ( (first or last) and save_level >= SaveLevel.endpoints or
+#                     save_level >= SaveLevel.research                       )
+#     width, height  = current_size()
+#     state.units.append(StepForward(save, width, height))
+#
+# ########################################################################################
+# # Planning - Input Phase
+# ########################################################################################
+#
+# plan_step_forward(True, False)
+#
+# plan_algorithm((base_main_width, base_main_height))
+# plan_step_forward()
+#
+# plan_phase_forward()
+#
+# ########################################################################################
+# # Planning - Main Phase
+# ########################################################################################
+#
+# main_iterations = math.ceil(math.log(total_main_multiplier, settings.soft.multiplier))
+# factor = ( (total_main_multiplier / settings.soft.multiplier ** main_iterations) **
+#            (1 / (main_iterations - 1) if main_iterations != 1 else 0)             )
+#
+# for _ in range(main_iterations - 1):
+#     plan_realesrgan()
+#     plan_step_forward()
+#
+#     plan_algorithm(factor)
+#     plan_step_forward()
+#
+# if main_iterations != 0:
+#     plan_realesrgan()
+#     plan_step_forward()
+#
+# plan_phase_forward()
+#
+# ########################################################################################
+# # Planning - Soft Phase
+# ########################################################################################
+#
+# for _ in range(settings.soft.iterations):
+#
+#     plan_algorithm((base_soft_width, base_soft_height))
+#     plan_step_forward()
+#
+#     plan_realesrgan()
+#     plan_step_forward()
+#
+# plan_phase_forward()
+#
+# ########################################################################################
+# # Planning - Hard Phase
+# ########################################################################################
+#
+# for _ in range(settings.hard.iterations):
+#
+#     plan_algorithm((base_hard_width, base_hard_height))
+#     plan_step_forward()
+#
+#     plan_realesrgan(settings.hard)
+#     plan_step_forward()
+#
+# plan_phase_forward()
+#
+# ########################################################################################
+# # Planning - Output Phase
+# ########################################################################################
+#
+# plan_algorithm((output_width, output_height), final_scaler)
+# plan_step_forward()
+#
+# plan_step_forward(False, True)
+#
+# plan_phase_forward()
+#
+# ########################################################################################
+# # Planning Processing
+# ########################################################################################
+#
+# total_cost = sum([cost(unit) for unit in state.units])
+#
+# log("the execution plan has been created")
+#
+# ########################################################################################
+# # Newline at Exit
+# ########################################################################################
+#
+# def newline() -> None: print()
+# atexit.register(newline)
+#
+# ########################################################################################
+# # Plan Execution
+# ########################################################################################
+#
+# try:
+#     with ProgressBar(total_cost) as bar:
+#         for unit in state.units:
+#             bar.new_unit(unit)
+#             if isinstance(unit, Scaling):
+#                 run_algorithm( unit.algorithm                         ,
+#                                (unit.out_width, unit.out_height), bar )
+#             elif isinstance(unit, ScalingAI):
+#                 run_realesrgan( unit.model                           ,
+#                                 unit.out_width // unit.in_width, bar )
+#             elif isinstance(unit, StepForward):
+#                 run_step_forward(bar)
+#             elif isinstance(unit, PhaseForward):
+#                 run_phase_forward(bar)
+#         bar.close()
+# except KeyboardInterrupt:
+#     print()
+#     fail("interrupted by user", False)
+#
+# ########################################################################################
+# # Main
+# ########################################################################################
+#
+# def main():
+#     pass
+#
+# ########################################################################################
+# # Help
+# ########################################################################################
+#
+# HELP = textwrap.dedent("""\
+#     Anime-Ultrascale
+#     A Tool for Extreme Anime Upscaling.
+#
+#     USAGE
+#
+#     anime-ultrascale INPUT OUTPUT
+#         MAIN_DIVISOR MAIN_MULTIPLIER
+#         SOFT_MODEL SOFT_DIVISOR SOFT_MULTIPLIER SOFT_ITERATIONS
+#         HARD_MODEL HARD_DIVISOR HARD_MULTIPLIER HARD_ITERATIONS
+#         MAIN_SCALER FINAL_SCALER
+#         [OPTIONS]
+#
+#     anime-ultrascale INPUT OUTPUT.png
+#                      {SESSION.json│SETTINGS.cfg}
+#                      [OPTIONS]
+#
+#     anime-ultrascale {-h│--help│-v│--version}
+#
+#     POSITIONAL ARGUMENTS
+#
+#     INPUT (str)
+#         Input image in any of the following formats: PNG, JPG/JPEG,
+#         BMP, TIF/TIFF.
+#
+#     OUTPUT.png (str)
+#         Output image in any of the following formats: PNG (RGBA),
+#         JPG/JPEG (RGB), BMP (RGB), TIF/TIFF (RGBA).
+#
+#     MAIN_DIVISOR (float)
+#         Main-phase downscaling divisor. Use it to revert an upscaling
+#         already present in the input image.
+#
+#     MAIN_MULTIPLIER (float)
+#         Main-phase upscaling multiplier. It determines the output
+#         width and height, namely output = (input / MAIN_DIVISOR) *
+#         MAIN_MULTIPLIER.
+#
+#     SOFT_MODEL (str)
+#         Real ESRGAN model specialized in preserving detail (basename
+#         only).
+#
+#     SOFT_DIVISOR (float)
+#         Soft-phase downscaling divisor. Use it to lose detail.
+#
+#     SOFT_MULTIPLIER (int)
+#         Soft-phase upscaling multiplier. Use it to restore detail. It
+#         has to be supported by the model SOFT_MODEL.
+#
+#     SOFT_ITERATIONS (int)
+#         Soft-phase iterations.
+#
+#     HARD_MODEL (str)
+#         Real ESRGAN model specialized in adding detail (basename only).
+#
+#     HARD_DIVISOR (float)
+#         Hard-phase downscaling divisor. Use it to lose detail.
+#
+#     HARD_MULTIPLIER (int)
+#         Hard-phase upscaling multiplier. Use it to enhance detail. It
+#         has to be supported by the model SOFT_MODEL.
+#
+#     HARD_ITERATIONS (int)
+#         Hard-phase iterations.
+#
+#     MAIN_SCALER (str)
+#         The downscaling algorithm used in intermediate steps.
+#
+#     FINAL_SCALER (str)
+#         The downscaling algorithm used in the final step.
+#
+#     {SESSION.json│SETTINGS.cfg} (str)
+#         A session or settings file to import settings from.
+#
+#     {-h│--help}
+#         Shows this help message.
+#
+#     {-v│--version}
+#         Shows this program's version.
+#
+#     CONSTRAINTS
+#
+#         MAIN_DIVISOR    >= 1
+#         MAIN_MULTIPLIER >= 1
+#
+#         SOFT_MULTIPLIER >= 2
+#         SOFT_DIVISOR    >= 1
+#         SOFT_DIVISOR    <= SOFT_MULTIPLIER
+#         SOFT_ITERATIONS >= 0
+#
+#         HARD_MULTIPLIER >= 2
+#         HARD_DIVISOR    >= 1
+#         HARD_DIVISOR    <= HARD_MULTIPLIER
+#         HARD_ITERATIONS >= 0
+#
+#         MAIN_SCALER     in ['bicubic', 'lanczos']
+#         FINAL_SCALER    in ['bicubic', 'lanczos']
+#
+#     OPTIONS
+#
+#     {-t│--tile} (int)
+#         The width/height of the square used to tile the total area.
+#             0            -> automatic selection
+#             1 <= n <= 16 -> n * 64px
+#
+#     {-s│--save} (str)
+#         Determines the session data that is saved.
+#             nothing   -> nothing
+#             text      -> basic textual data
+#             endpoints -> as 'text' + input/output images
+#             research  -> as 'endpoints' + intermediate images
+#             debug     -> as 'research' + debug textual data
+#
+#     DESCRIPTION
+#
+#     Anime-Ultrascale performs extreme image enlargement by controlled
+#     alternation of downscaling and AI upscaling, where downscaling is
+#     performed by the bicubic and lanczos algorithms, and AI upscaling
+#     is performed using Real ESRGAN models.
+#
+#     Knowledge of the three phases (main, soft, hard) is required for
+#     correct usage. These are described in a dedicated article, see
+#     the repositories section.
+#
+#     DIRECTORY TREE
+#
+#     Real ESRGAN models, following the usual .bin/.param convention,
+#     have to be stored in the 'models' folder.
+#
+#     The official Real ESRGAN executable, 'realesrgan-ncnn-vulkan',
+#     has to be stored in the 'renv' folder.
+#
+#     Useful additional data, determined by the 'save' option, will
+#     be stored in the 'sessions' folder.
+#
+#     Temporary data will be stored in the 'temp' folder.
+#
+#     If this program has been installed from the official repository
+#     using 'install.sh', the repository's folder will contain:
+#
+#     ┌── LICENSE
+#     ├── README
+#     ├── anime-ultrascale.py
+#     ├── anime-ultrascale
+#     ├── pyproject.toml
+#     ├── install
+#     ├── .bin
+#     │     └── anime-ultrascale
+#     ├── .venv
+#     │     └── ·······
+#     ├── renv
+#     │     └── realesrgan-ncnn-vulkan
+#     ├── models
+#     │     ├── <model>.bin
+#     │     ├── <model>.param
+#     │     └── ·······
+#     ├── sessions
+#     │     ├── <date>
+#     │     │      ├── <time+pid>
+#     │     │      │        └── ·······
+#     │     │      └── ·······
+#     │     └── ·······
+#     └── temp
+#           ├── <date+time+pid>
+#           │      └── ·······
+#           └── ·······
+#
+#     REPOSITORIES
+#
+#     Concept -> https://github.com/michele-bizzoca/anime-upscaling
+#     Program -> https://github.com/michele-bizzoca/anime-ultrascale
+#
+#     LICENSE
+#
+#     Copyright (c) 2026 Michele Bizzoca
+#     Licensed under the MIT License.
+# """)
+#
+# ########################################################################################
+# # Main Call
+# ########################################################################################
+#
+# if __name__ == "__main__":
+#     main()
+#
+# ########################################################################################
+# # End
+# ########################################################################################
