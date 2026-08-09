@@ -146,15 +146,6 @@ class Scaler(IntEnum):
     lanczos = 1
 
 ########################################################################################
-# Model
-########################################################################################
-
-class Model(IntEnum):
-
-    soft = 0
-    hard = 1
-
-########################################################################################
 # Arguments
 ########################################################################################
 
@@ -327,20 +318,6 @@ def early_assume( condition : bool                             ,
         early_fail(message, suggest, exception)
 
 ########################################################################################
-# Help and Version
-########################################################################################
-
-def help_and_version() -> None:
-
-    if len(sys.argv) == 2:
-        if sys.argv[1] in ["-h", "--help"]:
-            print(HELP, end = "")
-            exit()
-        elif sys.argv[1] in ["-v", "--version"]:
-            print(SOFTWARE_VERSION)
-            exit()
-
-########################################################################################
 # Options Sorting
 ########################################################################################
 
@@ -353,6 +330,14 @@ def sort_options() -> None:
     global fixed_arguments
     global positional_options
     global flex_options
+
+    if len(sys.argv) == 2:
+        if sys.argv[1] in ["-h", "--help"]:
+            print(HELP, end = "")
+            exit()
+        elif sys.argv[1] in ["-v", "--version"]:
+            print(SOFTWARE_VERSION)
+            exit()
 
     fixed_arguments    = sys.argv[:len(Argument)]
     positional_options = []
@@ -451,7 +436,6 @@ def create_exit_file() -> None:
         exit_file_handle = open(EXIT_FILE_PATH, "w")
         def close_exit_file(): exit_file_handle.close()
         atexit.register(close_exit_file)
-        log("the exit system is operative")
 
 def exit_message(message: str) -> None:
 
@@ -472,7 +456,6 @@ def create_log_file() -> None:
         log_file_handle = open(LOG_FILE_PATH, "w")
         def close_log_file(): log_file_handle.close()
         atexit.register(close_log_file)
-        log("the main log system is operative")
 
 def log(message: str, level: SaveLevel = SaveLevel.text):
 
@@ -521,8 +504,6 @@ def create_temp_folder() -> None:
 
     atexit.register(remove_temp_folder)
     atexit.register(clean_temp_folder)
-
-    log("the temporary file system is operative")
 
 ########################################################################################
 # User I/O Files
@@ -583,9 +564,6 @@ def load_input_image() -> None:
 
     input_image   = load(input_file_path())
     current_image = input_image.copy()
-
-    log( f"the input image has been loaded: {input_image.width}"
-         f"x{input_image.height}px {OUTPUT_MODE}" )
 
 ########################################################################################
 # Nested Dictionary Underscore-Based Flattening
@@ -816,8 +794,6 @@ def load_settings() -> None:
               f"{len(Argument) - 1 + len(PathOption)} or "
               f"{len(Argument) - 1 + len(CoreOption)} expected" )
 
-    log("the settings have been loaded")
-
 ########################################################################################
 # Disjoint Settings Validation
 ########################################################################################
@@ -858,8 +834,6 @@ def disjoint_settings_validation() -> None:
 
     assume ( settings.hard.scaler in Scaler.__members__ ,
             "unknown scaling algorithm"                 )
-
-    log("the settings have passed disjoint validation")
 
 ########################################################################################
 # Shorthands
@@ -911,8 +885,6 @@ def combined_settings_validation() -> None:
     assume( input_mpx() * total_factor() ** 2 < MAX_MPX                            ,
             f"attempt to generate an intermediate image larger than {MAX_MPX} Mpx" )
 
-    log("the settings have passed combined validation")
-
 ########################################################################################
 # Settings Recording
 ########################################################################################
@@ -923,8 +895,6 @@ def create_settings_file() -> None:
 
         with open(SETTINGS_FILE_PATH, "w") as settings_handle:
             settings_handle.write(export_settings(settings))
-
-        log("the settings file has been written")
 
 ########################################################################################
 # Session Construction
@@ -954,8 +924,6 @@ def create_session_file() -> None:
 
         with open(SESSION_FILE_PATH, "w") as session_handle:
             session_handle.write(export_session(session))
-
-        log("the session file has been written")
 
 # ########################################################################################
 # # Progress Bar
@@ -1341,7 +1309,6 @@ def create_ai_file() -> None:
         ai_file_handle = open(AI_FILE_PATH, "w")
         def close_ai_file(): ai_file_handle.close()
         atexit.register(close_ai_file)
-        log("the AI logging system is operative")
 
 ########################################################################################
 # Progress Bar Logging
@@ -1357,7 +1324,6 @@ def create_progress_file() -> None:
         progress_file_handle = open(PROGRESS_FILE_PATH, "w")
         def close_progress_file(): progress_file_handle.close()
         atexit.register(close_progress_file)
-        log("the progress bar logging system is operative")
 
 ########################################################################################
 # Planners
@@ -1507,32 +1473,66 @@ def execute_plan() -> None:
 # Main
 ########################################################################################
 
+
+
+        log("the exit system is operative")
+        log("the main log system is operative")
+        log("the temporary file system is operative")
+        log(f"the input image has been loaded: {input_image.width}"
+            f"x{input_image.height}px {OUTPUT_MODE}")
+        log("the settings have been loaded")
+
+        log("the settings file has been written")
+        log("the session file has been written")
+        log("the AI logging system is operative")
+        log("the progress bar logging system is operative")
+
 def main():
     try:
-        help_and_version()
         sort_options()
+        log("options have been sorted")
         create_session_folder()
+        log("the session folder has been created")
         create_invocation_file()
+        log("the invocation file has been written")
         create_log_file()
+        log("the main logging system is operative")
         create_temp_folder()
+        log("the temporary file system is operative")
         existence_checks()
+        log("existence checks have been passed")
         load_input_image()
+        log("the input image has been loaded")
         load_settings()
+        log("settings have been loaded")
         disjoint_settings_validation()
+        log("settings have passed disjoint validation")
         combined_settings_validation()
+        log("settings have passed combined validation")
         create_settings_file()
+        log("the settings file has been written")
         create_session()
+        log("the settings have passed combined validation")
         create_session_file()
+        log("the session file has been written")
         init_run_system()
+        log("the run system is operative")
         create_ai_file()
+        log("the AI logging system is operative")
         create_progress_file()
+        log("the progress logging system is operative")
         plan_input_phase()
+        log("the input phase has been planned")
         plan_main_phase()
+        log("the main phase has been planned")
         plan_soft_phase()
+        log("the soft phase has been planned")
         plan_hard_phase()
+        log("the hard phase has been planned")
         plan_output_phase()
-        log("the execution plan has been created")
+        log("the output phase has been planned")
         execute_plan()
+        log("the plan has been executed")
 
     except KeyboardInterrupt:
         print()
