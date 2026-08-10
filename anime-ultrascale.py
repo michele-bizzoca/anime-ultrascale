@@ -262,13 +262,23 @@ class ScalingAI:
     out_height : int
 
 @dataclass
-class PureSAI:
+class PureAI:
     model      : str
     multiplier : int
     in_width   : int
     in_height  : int
     out_width  : int
     out_height : int
+
+@dataclass
+class Save:
+    width  : int
+    height : int
+
+@dataclass
+class Load:
+    width  : int
+    height : int
 
 @dataclass
 class StepForward:
@@ -280,20 +290,27 @@ class StepForward:
 class PhaseForward:
     pass
 
-Unit: TypeAlias = Scaling | ScalingAI | PureSAI | StepForward | PhaseForward
+Unit: TypeAlias = ( Scaling | ScalingAI | PureAI      |
+                    Save    | Load      | StepForward | PhaseForward )
 
-UNIT_CLASSES : Final = [Scaling, ScalingAI, PureSAI, StepForward, PhaseForward]
+UNIT_CLASSES : Final = [ Scaling , ScalingAI , PureAI      ,
+                         Save    , Load      , StepForward , PhaseForward ]
 
 def unit_cost(unit: Unit) -> float:
 
-    if isinstance(unit, ScalingAI):
-        return unit.in_width * unit.in_height * 1.33 / 1000000
-    elif isinstance(unit, Scaling) and unit.in_width != unit.out_width:
-        return unit.out_width * unit.out_height * 0.1 / 1000000
-    elif isinstance(unit, StepForward):
-        return unit.save * unit.width * unit.height * 0.33 / 1000000
-    elif isinstance(unit, PureSAI):
-        return unit.in_width * unit.in_height * 1.00 / 1000000
+    if   isinstance(unit, Scaling) and not ( unit.in_width  == unit.out_width and
+                                             unit.in_height == unit.out_height  ):
+        return unit.out_width * unit.out_height * 0.1  / 1000000
+    elif isinstance(unit, ScalingAI):
+        return unit.in_width  * unit.in_height  * 1.33 / 1000000
+    elif isinstance(unit, PureAI):
+        return unit.in_width  * unit.in_height  * 1.00 / 1000000
+    elif isinstance(unit, Save):
+        return unit.width     * unit.height     * 0.33 / 1000000
+    elif isinstance(unit, Load):
+        return unit.width     * unit.height     * 0.05 / 1000000
+    elif isinstance(unit, StepForward) and unit.save:
+        return unit.width     * unit.height     * 0.33 / 1000000
     return 0
 
 ########################################################################################
@@ -590,6 +607,378 @@ def existence_checks() -> None:
     assume(output_file_path().suffix.lower() == ".png", "output extension is not png" )
 
 ########################################################################################
+# Progress Bar
+########################################################################################
+
+# def clamp(l: float | None, x: float, r:float | None) -> float:
+#     if l is not None:
+#         x = max(l, x)
+#     if r is not None:
+#         x = min(r, x)
+#     return x
+#
+#
+# def make_bar(percentage: float, width: int = 40) -> str:
+#     blocks = " ▏▎▍▌▋▊▉█"
+#
+#     units = percentage / 100.0 * width
+#     full = int(units)
+#     fraction = int((units - full) * 8)
+#
+#     return ( "█" * full                                       +
+#              (blocks[fraction] if percentage < 100.0 else "") +
+#              " " * max(0, width - full - 1)                   )
+#
+# class ProgressBar:
+#
+#     def __init__(self, total_cost: float) -> None:
+#         self.total_cost = total_cost
+#         self.total_cost_done = 0.0
+#         self.unit_class_name = PhaseForward.__name__
+#         self.unit_cost = 0.0
+#         self.high_speed = False
+#         self.unit_cost_done = 0.0
+#         self.progress_average_speed = 0.0
+#         self.refresh_average_speed = 0.0
+#         self.bonus_cost_done = 0.0
+#         self.last_progress_instant = time.perf_counter()
+#         self.last_render_instant = self.last_progress_instant
+#         self.last_refresh_instant = self.last_progress_instant
+#         self.last_progress_percentage = 0.0
+#         self.last_render_percentage = 0.0
+#         self.lock = Lock()
+#         self.stop_event = Event()
+#         self.refresh_thread = Thread( target = self._refresh_call ,
+#                                       daemon = True               )
+#         self.refresh_thread.start()
+#         self.timespans = {k.__name__: 0 for k in UNIT_CLASSES}
+#         self.costs = {k.__name__: 0 for k in UNIT_CLASSES}
+#         self.started = {k.__name__: False for k in UNIT_CLASSES}
+#         self._render()
+#
+#     def new_unit(self, unit: Unit) -> None:
+#         with (self.lock):
+#             if self.unit_cost > 0.0:
+#                 self.progress(100.0)
+#             self.progress_average_speed = (
+#                 self.costs[type(unit).__name__] / self.timespans[type(unit).__name__]
+#                     if self.timespans[type(unit).__name__] != 0
+#                     else 0 )
+#             self.unit_cost = unit_cost(unit)
+#             self.unit_class_name = type(unit).__name__
+#             self.unit_cost_done = 0.0
+#             self.bonus_cost_done = 0.0
+#             self.last_progress_instant = time.perf_counter()
+#             self.last_refresh_instant = time.perf_counter()
+#             self.last_progress_percentage = 0.0
+#
+#     def progress(self, percentage: float) -> None:
+#         delta = percentage - self.last_progress_percentage
+#         self.last_progress_percentage = percentage
+#         chunk_cost = self.unit_cost * delta / 100.0
+#         old_part = clamp(None, self.bonus_cost_done, chunk_cost)
+#         new_part = chunk_cost - old_part
+#         now = time.perf_counter()
+#         delta = now - self.last_progress_instant
+#         self.last_progress_instant = now
+#         if self.started[self.unit_class_name] and delta > 0.0:
+#             self.timespans[self.unit_class_name] += delta
+#             self.costs[self.unit_class_name] += chunk_cost
+#             current_speed = chunk_cost / delta
+#             self.progress_average_speed = (
+#                 current_speed if self.progress_average_speed == 0.0
+#                               else ( 0.8 * self.progress_average_speed +
+#                                      0.2 * current_speed               ) )
+#         self.started[self.unit_class_name] = True
+#         self._old_progress(old_part)
+#         self._new_progress(new_part)
+#         self._render()
+#
+#     def _old_progress(self, chunk_cost: float) -> None:
+#         self.bonus_cost_done -= clamp(0, chunk_cost, None)
+#
+#     def _new_progress(self, chunk_cost: float) -> None:
+#         self.total_cost_done = clamp( None                              ,
+#                                       self.total_cost_done + chunk_cost ,
+#                                       self.total_cost                   )
+#         self.unit_cost_done = clamp( None                              ,
+#                                      self.unit_cost_done +  chunk_cost ,
+#                                      self.unit_cost                    )
+#
+#     def refresh(self) -> None:
+#         with self.lock:
+#             now = time.perf_counter()
+#             delta = now - self.last_refresh_instant
+#             self.last_refresh_instant = now
+#             bonus_chunk_cost = clamp( 0.0,
+#                                       delta * self.progress_average_speed ,
+#                                       self.unit_cost - self.unit_cost_done )
+#             self.bonus_cost_done += bonus_chunk_cost
+#             self.total_cost_done = clamp( None,
+#                                           self.total_cost_done + bonus_chunk_cost ,
+#                                           self.total_cost                         )
+#             self.unit_cost_done = clamp( None                                   ,
+#                                          self.unit_cost_done + bonus_chunk_cost ,
+#                                          self.unit_cost                         )
+#             self._render()
+#
+#     def _render(self) -> None:
+#         now = time.perf_counter()
+#         delta = now - self.last_render_instant
+#         self.last_render_instant = now
+#         percentage = 100.0 * ( 1.0 if self.total_cost == 0.0
+#                                    else self.total_cost_done / self.total_cost )
+#         if delta > 0.0:
+#             speed = ( (percentage - self.last_render_percentage) *
+#                       self.total_cost                            /
+#                       (100 * delta)                              )
+#             decay = math.exp(-delta / 0.6)
+#             self.refresh_average_speed = (
+#                 speed if self.refresh_average_speed == 0.0
+#                       else ( decay * self.refresh_average_speed +
+#                              (1 - decay)* speed                 ) )
+#
+#         self.last_render_percentage = percentage
+#
+#         bar = make_bar(percentage)
+#
+#         line = (
+#             f" [{bar}]"
+#             f" {percentage:6.2f}% "
+#             f"({self.total_cost_done:6.2f}/{self.total_cost:6.2f} Mpx), "
+#             f"{self.refresh_average_speed:5.2f} Mpx/s"
+#         )
+#
+#         print( f"\r\033[K" + line ,
+#                end=""             ,
+#                flush=True         )
+#
+#         if savelevel() >= SaveLevel.debug:
+#             progress_file_handle.write(sys.modules[__name__].now() + ": " + line + "\n")
+#             progress_file_handle.flush()
+#
+#     def complete(self) -> None:
+#         self.stop_event.set()
+#         self.refresh_thread.join()
+#         with self.lock:
+#             self.total_cost_done = self.total_cost
+#             self.last_render_percentage = 100.0
+#             self.refresh_average_speed = 0.0
+#             self._render()
+#
+#     def _refresh_call(self) -> None:
+#         while not self.stop_event.wait(0.1):
+#             self.refresh()
+#
+#     def __enter__(self) -> "ProgressBar":
+#         return self
+#
+#     def __exit__(self, exc_type, exc_value, traceback) -> None:
+#         self.stop_event.set()
+#         self.refresh_thread.join()
+
+class ProgressBar:
+
+    def __init__(self, total_cost: float) -> None:
+        current_time = time.perf_counter()
+
+        self.total_cost = total_cost
+        self.completed_cost = 0.0
+
+        self.current_unit_type = PhaseForward.__name__
+        self.current_unit_cost = 0.0
+        self.current_unit_completed_cost = 0.0
+        self.estimated_cost = 0.0
+        self.last_reported_percentage = 0.0
+
+        self.estimated_speed = 0.0
+        self.displayed_speed = 0.0
+        self.last_report_time = current_time
+        self.last_refresh_time = current_time
+        self.last_render_time = current_time
+        self.last_rendered_percentage = 0.0
+        self.last_logged_percentage_text: str | None = None
+
+        unit_types = [unit_class.__name__ for unit_class in UNIT_CLASSES]
+        self.elapsed_time_by_type = {name: 0.0 for name in unit_types}
+        self.completed_cost_by_type = {name: 0.0 for name in unit_types}
+
+        self.lock = Lock()
+        self.stop_event = Event()
+        self.refresh_thread = Thread(
+            target=self._refresh_loop,
+            daemon=True,
+        )
+        self.refresh_thread.start()
+
+        self._render()
+
+    def new_unit(self, unit: Unit) -> None:
+        with self.lock:
+            if self.current_unit_cost > 0.0:
+                self._progress(100.0)
+
+            unit_type = type(unit).__name__
+            elapsed_time = self.elapsed_time_by_type[unit_type]
+
+            self.estimated_speed = (
+                self.completed_cost_by_type[unit_type] / elapsed_time
+                if elapsed_time > 0.0
+                else 0.0
+            )
+
+            current_time = time.perf_counter()
+
+            self.current_unit_type = unit_type
+            self.current_unit_cost = unit_cost(unit)
+            self.current_unit_completed_cost = 0.0
+            self.estimated_cost = 0.0
+            self.last_reported_percentage = 0.0
+            self.last_report_time = current_time
+            self.last_refresh_time = current_time
+
+    def progress(self, percentage: float) -> None:
+        with self.lock:
+            self._progress(percentage)
+
+    def _progress(self, percentage: float) -> None:
+        percentage_delta = percentage - self.last_reported_percentage
+        reported_cost = self.current_unit_cost * percentage_delta / 100.0
+
+        estimated_overlap = min(self.estimated_cost, reported_cost)
+        newly_completed_cost = reported_cost - estimated_overlap
+
+        current_time = time.perf_counter()
+        elapsed_time = current_time - self.last_report_time
+
+        self.last_reported_percentage = percentage
+        self.last_report_time = current_time
+
+        if elapsed_time > 0.0:
+            self.elapsed_time_by_type[self.current_unit_type] += elapsed_time
+            self.completed_cost_by_type[self.current_unit_type] += reported_cost
+
+            integral_elapsed_time = (
+                self.elapsed_time_by_type[self.current_unit_type]
+            )
+            self.estimated_speed = (
+                self.completed_cost_by_type[self.current_unit_type] /
+                integral_elapsed_time
+                if integral_elapsed_time > 0.0
+                else 0.0
+            )
+
+        self.estimated_cost -= max(0.0, estimated_overlap)
+        self._add_cost(newly_completed_cost)
+        self._render()
+
+    def _add_cost(self, cost: float) -> None:
+        self.completed_cost = min(
+            self.completed_cost + cost,
+            self.total_cost,
+        )
+        self.current_unit_completed_cost = min(
+            self.current_unit_completed_cost + cost,
+            self.current_unit_cost,
+        )
+
+    def refresh(self) -> None:
+        with self.lock:
+            current_time = time.perf_counter()
+            elapsed_time = current_time - self.last_refresh_time
+            self.last_refresh_time = current_time
+
+            estimated_cost = max(
+                0.0,
+                min(
+                    elapsed_time * self.estimated_speed,
+                    self.current_unit_cost - self.current_unit_completed_cost,
+                ),
+            )
+
+            self.estimated_cost += estimated_cost
+            self._add_cost(estimated_cost)
+            self._render()
+
+    def complete(self) -> None:
+        self._stop_refresh_thread()
+
+        with self.lock:
+            self.completed_cost = self.total_cost
+            self.last_rendered_percentage = 100.0
+            self.displayed_speed = 0.0
+            self._render()
+
+    def _render(self) -> None:
+        current_time = time.perf_counter()
+        elapsed_time = current_time - self.last_render_time
+        self.last_render_time = current_time
+
+        percentage = (
+            100.0
+            if self.total_cost == 0.0
+            else 100.0 * self.completed_cost / self.total_cost
+        )
+
+        if elapsed_time > 0.0:
+            current_speed = (
+                (percentage - self.last_rendered_percentage)
+                * self.total_cost
+                / (100.0 * elapsed_time)
+            )
+            decay = math.exp(-elapsed_time / 0.9)
+            self.displayed_speed = (
+                current_speed
+                if self.displayed_speed == 0.0
+                else (
+                    decay * self.displayed_speed
+                    + (1.0 - decay) * current_speed
+                )
+            )
+
+        self.last_rendered_percentage = percentage
+
+        percentage_text = f"{percentage:6.2f}"
+
+        partial_width = PROGRESS_BAR_SIZE * percentage / 100.0
+        filled_width = int(partial_width)
+        partial_index = int((partial_width - filled_width) * 8)
+        partial = " ▏▎▍▌▋▊▉"[partial_index]
+        empty_width = PROGRESS_BAR_SIZE - filled_width - (partial_index > 0)
+        bar = "█" * filled_width + partial.strip() + " " * empty_width
+
+        line = (
+            f" [{bar}]"
+            f" {percentage_text}% "
+            f"({self.completed_cost:6.2f}/{self.total_cost:6.2f} Mpx), "
+            f"{self.displayed_speed:5.2f} Mpx/s"
+        )
+
+        print("\r\033[K" + line, end="", flush=True)
+
+        if (
+            savelevel() >= SaveLevel.debug
+            and percentage_text != self.last_logged_percentage_text
+        ):
+            progress_file_handle.write(now() + ": " + line + "\n")
+            progress_file_handle.flush()
+            self.last_logged_percentage_text = percentage_text
+
+    def _refresh_loop(self) -> None:
+        while not self.stop_event.wait(0.1):
+            self.refresh()
+
+    def _stop_refresh_thread(self) -> None:
+        self.stop_event.set()
+        self.refresh_thread.join()
+
+    def __enter__(self) -> "ProgressBar":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self._stop_refresh_thread()
+
+########################################################################################
 # Image Loading
 ########################################################################################
 
@@ -629,20 +1018,12 @@ def input_height()   -> int: return input_image.height
 #
 #     return source_image.copy_memory()
 
-def load(path: Path, input: bool = False) -> pyvips.Image:
+def load(unit: Load, path: Path, bar: ProgressBar | None = None) -> pyvips.Image:
 
-    global input_format
-    global input_mode
+    if bar is not None:
+        bar.new_unit(unit)
 
     image = pyvips.Image.new_from_file(str(path), access="sequential")
-
-    if input:
-        input_format = image.get("vips-loader").removesuffix("load")
-        input_mode = (
-            f"{image.bands}bands--"
-            f"{image.interpretation}"
-            f"{'+alpha' if image.hasalpha() else ''}"
-        )
 
     image = image.colourspace("srgb")
 
@@ -664,8 +1045,13 @@ def load(path: Path, input: bool = False) -> pyvips.Image:
         if interrupted.is_set():
             image.set_kill(True)
 
+    def update_progress(image: pyvips.Image, progress: Any) -> None:
+        if bar is not None:
+            bar.progress(float(progress.percent))
+
     image.set_progress(True)
     image.signal_connect("eval", update_interrupt)
+
     image.signal_connect(
         "preeval",
         lambda image, progress:
@@ -677,6 +1063,10 @@ def load(path: Path, input: bool = False) -> pyvips.Image:
             scaling_update("load", "eval", progress),
     )
     image.signal_connect(
+        "eval",
+        update_progress,
+    )
+    image.signal_connect(
         "posteval",
         lambda image, progress:
             scaling_update("load", "posteval", progress),
@@ -685,7 +1075,13 @@ def load(path: Path, input: bool = False) -> pyvips.Image:
     signal.signal(signal.SIGINT, request_interrupt)
 
     try:
+        if bar is not None:
+            bar.progress(0.0)
+
         loaded_image = image.copy_memory()
+
+        if bar is not None:
+            bar.progress(100.0)
 
         if interrupted.is_set():
             raise KeyboardInterrupt
@@ -704,8 +1100,17 @@ def load_input_image() -> None:
 
     global input_image
     global current_image
+    global input_format
+    global input_mode
 
-    input_image   = load(input_file_path(), True)
+    image = pyvips.Image.new_from_file( str(input_file_path()) ,
+                                        access = "sequential"  )
+    input_format = image.get("vips-loader").removesuffix("load")
+    input_mode = ( f"{image.bands}bands--"
+                   f"{image.interpretation}"
+                   f"{'+alpha' if image.hasalpha() else ''}" )
+
+    input_image = load(Load(image.width, image.height), input_file_path())
     current_image = input_image.copy()
 
 ########################################################################################
@@ -1086,378 +1491,6 @@ def create_progress_file() -> None:
         atexit.register(close_progress_file)
 
 ########################################################################################
-# Progress Bar
-########################################################################################
-
-# def clamp(l: float | None, x: float, r:float | None) -> float:
-#     if l is not None:
-#         x = max(l, x)
-#     if r is not None:
-#         x = min(r, x)
-#     return x
-#
-#
-# def make_bar(percentage: float, width: int = 40) -> str:
-#     blocks = " ▏▎▍▌▋▊▉█"
-#
-#     units = percentage / 100.0 * width
-#     full = int(units)
-#     fraction = int((units - full) * 8)
-#
-#     return ( "█" * full                                       +
-#              (blocks[fraction] if percentage < 100.0 else "") +
-#              " " * max(0, width - full - 1)                   )
-#
-# class ProgressBar:
-#
-#     def __init__(self, total_cost: float) -> None:
-#         self.total_cost = total_cost
-#         self.total_cost_done = 0.0
-#         self.unit_class_name = PhaseForward.__name__
-#         self.unit_cost = 0.0
-#         self.high_speed = False
-#         self.unit_cost_done = 0.0
-#         self.progress_average_speed = 0.0
-#         self.refresh_average_speed = 0.0
-#         self.bonus_cost_done = 0.0
-#         self.last_progress_instant = time.perf_counter()
-#         self.last_render_instant = self.last_progress_instant
-#         self.last_refresh_instant = self.last_progress_instant
-#         self.last_progress_percentage = 0.0
-#         self.last_render_percentage = 0.0
-#         self.lock = Lock()
-#         self.stop_event = Event()
-#         self.refresh_thread = Thread( target = self._refresh_call ,
-#                                       daemon = True               )
-#         self.refresh_thread.start()
-#         self.timespans = {k.__name__: 0 for k in UNIT_CLASSES}
-#         self.costs = {k.__name__: 0 for k in UNIT_CLASSES}
-#         self.started = {k.__name__: False for k in UNIT_CLASSES}
-#         self._render()
-#
-#     def new_unit(self, unit: Unit) -> None:
-#         with (self.lock):
-#             if self.unit_cost > 0.0:
-#                 self.progress(100.0)
-#             self.progress_average_speed = (
-#                 self.costs[type(unit).__name__] / self.timespans[type(unit).__name__]
-#                     if self.timespans[type(unit).__name__] != 0
-#                     else 0 )
-#             self.unit_cost = unit_cost(unit)
-#             self.unit_class_name = type(unit).__name__
-#             self.unit_cost_done = 0.0
-#             self.bonus_cost_done = 0.0
-#             self.last_progress_instant = time.perf_counter()
-#             self.last_refresh_instant = time.perf_counter()
-#             self.last_progress_percentage = 0.0
-#
-#     def progress(self, percentage: float) -> None:
-#         delta = percentage - self.last_progress_percentage
-#         self.last_progress_percentage = percentage
-#         chunk_cost = self.unit_cost * delta / 100.0
-#         old_part = clamp(None, self.bonus_cost_done, chunk_cost)
-#         new_part = chunk_cost - old_part
-#         now = time.perf_counter()
-#         delta = now - self.last_progress_instant
-#         self.last_progress_instant = now
-#         if self.started[self.unit_class_name] and delta > 0.0:
-#             self.timespans[self.unit_class_name] += delta
-#             self.costs[self.unit_class_name] += chunk_cost
-#             current_speed = chunk_cost / delta
-#             self.progress_average_speed = (
-#                 current_speed if self.progress_average_speed == 0.0
-#                               else ( 0.8 * self.progress_average_speed +
-#                                      0.2 * current_speed               ) )
-#         self.started[self.unit_class_name] = True
-#         self._old_progress(old_part)
-#         self._new_progress(new_part)
-#         self._render()
-#
-#     def _old_progress(self, chunk_cost: float) -> None:
-#         self.bonus_cost_done -= clamp(0, chunk_cost, None)
-#
-#     def _new_progress(self, chunk_cost: float) -> None:
-#         self.total_cost_done = clamp( None                              ,
-#                                       self.total_cost_done + chunk_cost ,
-#                                       self.total_cost                   )
-#         self.unit_cost_done = clamp( None                              ,
-#                                      self.unit_cost_done +  chunk_cost ,
-#                                      self.unit_cost                    )
-#
-#     def refresh(self) -> None:
-#         with self.lock:
-#             now = time.perf_counter()
-#             delta = now - self.last_refresh_instant
-#             self.last_refresh_instant = now
-#             bonus_chunk_cost = clamp( 0.0,
-#                                       delta * self.progress_average_speed ,
-#                                       self.unit_cost - self.unit_cost_done )
-#             self.bonus_cost_done += bonus_chunk_cost
-#             self.total_cost_done = clamp( None,
-#                                           self.total_cost_done + bonus_chunk_cost ,
-#                                           self.total_cost                         )
-#             self.unit_cost_done = clamp( None                                   ,
-#                                          self.unit_cost_done + bonus_chunk_cost ,
-#                                          self.unit_cost                         )
-#             self._render()
-#
-#     def _render(self) -> None:
-#         now = time.perf_counter()
-#         delta = now - self.last_render_instant
-#         self.last_render_instant = now
-#         percentage = 100.0 * ( 1.0 if self.total_cost == 0.0
-#                                    else self.total_cost_done / self.total_cost )
-#         if delta > 0.0:
-#             speed = ( (percentage - self.last_render_percentage) *
-#                       self.total_cost                            /
-#                       (100 * delta)                              )
-#             decay = math.exp(-delta / 0.6)
-#             self.refresh_average_speed = (
-#                 speed if self.refresh_average_speed == 0.0
-#                       else ( decay * self.refresh_average_speed +
-#                              (1 - decay)* speed                 ) )
-#
-#         self.last_render_percentage = percentage
-#
-#         bar = make_bar(percentage)
-#
-#         line = (
-#             f" [{bar}]"
-#             f" {percentage:6.2f}% "
-#             f"({self.total_cost_done:6.2f}/{self.total_cost:6.2f} Mpx), "
-#             f"{self.refresh_average_speed:5.2f} Mpx/s"
-#         )
-#
-#         print( f"\r\033[K" + line ,
-#                end=""             ,
-#                flush=True         )
-#
-#         if savelevel() >= SaveLevel.debug:
-#             progress_file_handle.write(sys.modules[__name__].now() + ": " + line + "\n")
-#             progress_file_handle.flush()
-#
-#     def complete(self) -> None:
-#         self.stop_event.set()
-#         self.refresh_thread.join()
-#         with self.lock:
-#             self.total_cost_done = self.total_cost
-#             self.last_render_percentage = 100.0
-#             self.refresh_average_speed = 0.0
-#             self._render()
-#
-#     def _refresh_call(self) -> None:
-#         while not self.stop_event.wait(0.1):
-#             self.refresh()
-#
-#     def __enter__(self) -> "ProgressBar":
-#         return self
-#
-#     def __exit__(self, exc_type, exc_value, traceback) -> None:
-#         self.stop_event.set()
-#         self.refresh_thread.join()
-
-class ProgressBar:
-
-    def __init__(self, total_cost: float) -> None:
-        current_time = time.perf_counter()
-
-        self.total_cost = total_cost
-        self.completed_cost = 0.0
-
-        self.current_unit_type = PhaseForward.__name__
-        self.current_unit_cost = 0.0
-        self.current_unit_completed_cost = 0.0
-        self.estimated_cost = 0.0
-        self.last_reported_percentage = 0.0
-
-        self.estimated_speed = 0.0
-        self.displayed_speed = 0.0
-        self.last_report_time = current_time
-        self.last_refresh_time = current_time
-        self.last_render_time = current_time
-        self.last_rendered_percentage = 0.0
-        self.last_logged_percentage_text: str | None = None
-
-        unit_types = [unit_class.__name__ for unit_class in UNIT_CLASSES]
-        self.elapsed_time_by_type = {name: 0.0 for name in unit_types}
-        self.completed_cost_by_type = {name: 0.0 for name in unit_types}
-
-        self.lock = Lock()
-        self.stop_event = Event()
-        self.refresh_thread = Thread(
-            target=self._refresh_loop,
-            daemon=True,
-        )
-        self.refresh_thread.start()
-
-        self._render()
-
-    def new_unit(self, unit: Unit) -> None:
-        with self.lock:
-            if self.current_unit_cost > 0.0:
-                self._progress(100.0)
-
-            unit_type = type(unit).__name__
-            elapsed_time = self.elapsed_time_by_type[unit_type]
-
-            self.estimated_speed = (
-                self.completed_cost_by_type[unit_type] / elapsed_time
-                if elapsed_time > 0.0
-                else 0.0
-            )
-
-            current_time = time.perf_counter()
-
-            self.current_unit_type = unit_type
-            self.current_unit_cost = unit_cost(unit)
-            self.current_unit_completed_cost = 0.0
-            self.estimated_cost = 0.0
-            self.last_reported_percentage = 0.0
-            self.last_report_time = current_time
-            self.last_refresh_time = current_time
-
-    def progress(self, percentage: float) -> None:
-        with self.lock:
-            self._progress(percentage)
-
-    def _progress(self, percentage: float) -> None:
-        percentage_delta = percentage - self.last_reported_percentage
-        reported_cost = self.current_unit_cost * percentage_delta / 100.0
-
-        estimated_overlap = min(self.estimated_cost, reported_cost)
-        newly_completed_cost = reported_cost - estimated_overlap
-
-        current_time = time.perf_counter()
-        elapsed_time = current_time - self.last_report_time
-
-        self.last_reported_percentage = percentage
-        self.last_report_time = current_time
-
-        if elapsed_time > 0.0:
-            self.elapsed_time_by_type[self.current_unit_type] += elapsed_time
-            self.completed_cost_by_type[self.current_unit_type] += reported_cost
-
-            integral_elapsed_time = (
-                self.elapsed_time_by_type[self.current_unit_type]
-            )
-            self.estimated_speed = (
-                self.completed_cost_by_type[self.current_unit_type] /
-                integral_elapsed_time
-                if integral_elapsed_time > 0.0
-                else 0.0
-            )
-
-        self.estimated_cost -= max(0.0, estimated_overlap)
-        self._add_cost(newly_completed_cost)
-        self._render()
-
-    def _add_cost(self, cost: float) -> None:
-        self.completed_cost = min(
-            self.completed_cost + cost,
-            self.total_cost,
-        )
-        self.current_unit_completed_cost = min(
-            self.current_unit_completed_cost + cost,
-            self.current_unit_cost,
-        )
-
-    def refresh(self) -> None:
-        with self.lock:
-            current_time = time.perf_counter()
-            elapsed_time = current_time - self.last_refresh_time
-            self.last_refresh_time = current_time
-
-            estimated_cost = max(
-                0.0,
-                min(
-                    elapsed_time * self.estimated_speed,
-                    self.current_unit_cost - self.current_unit_completed_cost,
-                ),
-            )
-
-            self.estimated_cost += estimated_cost
-            self._add_cost(estimated_cost)
-            self._render()
-
-    def complete(self) -> None:
-        self._stop_refresh_thread()
-
-        with self.lock:
-            self.completed_cost = self.total_cost
-            self.last_rendered_percentage = 100.0
-            self.displayed_speed = 0.0
-            self._render()
-
-    def _render(self) -> None:
-        current_time = time.perf_counter()
-        elapsed_time = current_time - self.last_render_time
-        self.last_render_time = current_time
-
-        percentage = (
-            100.0
-            if self.total_cost == 0.0
-            else 100.0 * self.completed_cost / self.total_cost
-        )
-
-        if elapsed_time > 0.0:
-            current_speed = (
-                (percentage - self.last_rendered_percentage)
-                * self.total_cost
-                / (100.0 * elapsed_time)
-            )
-            decay = math.exp(-elapsed_time / 0.9)
-            self.displayed_speed = (
-                current_speed
-                if self.displayed_speed == 0.0
-                else (
-                    decay * self.displayed_speed
-                    + (1.0 - decay) * current_speed
-                )
-            )
-
-        self.last_rendered_percentage = percentage
-
-        percentage_text = f"{percentage:6.2f}"
-
-        partial_width = PROGRESS_BAR_SIZE * percentage / 100.0
-        filled_width = int(partial_width)
-        partial_index = int((partial_width - filled_width) * 8)
-        partial = " ▏▎▍▌▋▊▉"[partial_index]
-        empty_width = PROGRESS_BAR_SIZE - filled_width - (partial_index > 0)
-        bar = "█" * filled_width + partial.strip() + " " * empty_width
-
-        line = (
-            f" [{bar}]"
-            f" {percentage_text}% "
-            f"({self.completed_cost:6.2f}/{self.total_cost:6.2f} Mpx), "
-            f"{self.displayed_speed:5.2f} Mpx/s"
-        )
-
-        print("\r\033[K" + line, end="", flush=True)
-
-        if (
-            savelevel() >= SaveLevel.debug
-            and percentage_text != self.last_logged_percentage_text
-        ):
-            progress_file_handle.write(now() + ": " + line + "\n")
-            progress_file_handle.flush()
-            self.last_logged_percentage_text = percentage_text
-
-    def _refresh_loop(self) -> None:
-        while not self.stop_event.wait(0.1):
-            self.refresh()
-
-    def _stop_refresh_thread(self) -> None:
-        self.stop_event.set()
-        self.refresh_thread.join()
-
-    def __enter__(self) -> "ProgressBar":
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self._stop_refresh_thread()
-
-########################################################################################
 # Run System
 ########################################################################################
 
@@ -1508,67 +1541,65 @@ def init_run_system() -> None:
 #
 #         image.write_to_file(str(path))
 
-def save(unit: StepForward, path: Path, bar: ProgressBar) -> None:
+def save(unit: Save, image: pyvips.Image, path: Path, bar: ProgressBar) -> None:
 
-    if unit.save:
+    bar.new_unit(unit)
 
-        bar.new_unit(unit)
+    image           = image.copy()
+    last_percentage = 0.0
+    started         = False
+    interrupted     = Event()
+    previous_sigint = signal.getsignal(signal.SIGINT)
 
-        image           = current_image.copy()
-        last_percentage = 0.0
-        started         = False
-        interrupted     = Event()
-        previous_sigint = signal.getsignal(signal.SIGINT)
+    def request_interrupt(signum, frame) -> None:
 
-        def request_interrupt(signum, frame) -> None:
+        interrupted.set()
 
-            interrupted.set()
+    def start_bar(image: pyvips.Image, progress: Any) -> None:
 
-        def start_bar(image: pyvips.Image, progress: Any) -> None:
+        nonlocal started
 
-            nonlocal started
+        if not started:
+            started = True
+            bar.progress(0.0)
 
-            if not started:
-                started = True
-                bar.progress(0.0)
+    def update_bar(image: pyvips.Image, progress: Any) -> None:
 
-        def update_bar(image: pyvips.Image, progress: Any) -> None:
+        nonlocal last_percentage
 
-            nonlocal last_percentage
+        percentage = float(progress.percent)
+        if percentage > last_percentage:
+            last_percentage = percentage
+            bar.progress(percentage)
 
-            percentage = float(progress.percent)
-            if percentage > last_percentage:
-                last_percentage = percentage
-                bar.progress(percentage)
+        if interrupted.is_set():
+            image.set_kill(True)
 
-            if interrupted.is_set():
-                image.set_kill(True)
+    image.set_progress(True)
+    image.signal_connect("preeval", start_bar)
+    image.signal_connect("eval", update_bar)
+    image.signal_connect("preeval",
+        lambda image, progress: scaling_update("save", "preeval", progress))
+    image.signal_connect("eval",
+         lambda image, progress: scaling_update("save", "eval", progress))
+    image.signal_connect("posteval",
+         lambda image, progress: scaling_update("save", "posteval", progress))
 
-        image.set_progress(True)
-        image.signal_connect("preeval", start_bar)
-        image.signal_connect("eval", update_bar)
-        image.signal_connect("preeval",
-            lambda image, progress: scaling_update("save", "preeval", progress))
-        image.signal_connect("eval",
-             lambda image, progress: scaling_update("save", "eval", progress))
-        image.signal_connect("posteval",
-             lambda image, progress: scaling_update("save", "posteval", progress))
+    signal.signal(signal.SIGINT, request_interrupt)
 
-        signal.signal(signal.SIGINT, request_interrupt)
+    try:
+        image.write_to_file(str(path))
 
-        try:
-            image.write_to_file(str(path))
+        if interrupted.is_set():
+            raise KeyboardInterrupt
 
-            if interrupted.is_set():
-                raise KeyboardInterrupt
+    except pyvips.Error:
+        if interrupted.is_set():
+            raise KeyboardInterrupt from None
+        raise
 
-        except pyvips.Error:
-            if interrupted.is_set():
-                raise KeyboardInterrupt from None
-            raise
-
-        finally:
-            signal.signal(signal.SIGINT, previous_sigint)
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
 
 
 # def scale(unit: Scaling, bar: ProgressBar) -> None:
@@ -1691,12 +1722,13 @@ def scale_ai(unit: ScalingAI, bar: ProgressBar) -> None:
 
     global current_image
 
-    step_forward_unit = StepForward(True, unit.in_width, unit.in_height)
-    pure_sai_unit     = PureSAI(** vars(unit))
+    save_unit    = Save(unit.in_width, unit.in_height)
+    pure_ai_unit = PureAI(** vars(unit))
+    load_unit    = Load(unit.out_width, unit.out_height)
 
-    save(step_forward_unit, TEMP_INPUT_FILE_PATH, bar)
+    save(save_unit, current_image, TEMP_INPUT_FILE_PATH, bar)
 
-    bar.new_unit(pure_sai_unit)
+    bar.new_unit(pure_ai_unit)
 
     process = subprocess.Popen(
 
@@ -1732,7 +1764,7 @@ def scale_ai(unit: ScalingAI, bar: ProgressBar) -> None:
     assume( return_code == 0                              ,
             f"Real ESRGAN failed with code {return_code}" )
 
-    current_image = load(TEMP_OUTPUT_FILE_PATH)
+    current_image = load(load_unit, TEMP_OUTPUT_FILE_PATH, bar)
 
 def step_forward(unit: StepForward, bar: ProgressBar):
 
@@ -1744,15 +1776,17 @@ def step_forward(unit: StepForward, bar: ProgressBar):
 
     if unit.save:
 
+        save_unit = Save(unit.width, unit.height)
+
         if step == "export":
-            save(unit, output_file_path(), bar)
+            save(save_unit, current_image, output_file_path(), bar)
         else:
             file_name = "_".join((f"{(forward_k + 1):02}",
                                   f"{phase}-phase",
                                   f"{step}-step",
                                   f"{unit.width}x{unit.height}.png"))
             file_path = SESSION_FOLDER_PATH / file_name
-            save(unit, file_path, bar)
+            save(save_unit, current_image, file_path, bar)
 
         forward_k += 1
 
