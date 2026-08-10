@@ -529,6 +529,49 @@ def create_temp_folder() -> None:
     atexit.register(clean_temp_folder)
 
 ########################################################################################
+# Scaling's Logging
+########################################################################################
+
+scaling_file_handle: TextIO
+
+def create_scaling_file() -> None:
+
+    global scaling_file_handle
+
+    if savelevel() >= SaveLevel.debug:
+        scaling_file_handle = open(SCALING_FILE_PATH, "w")
+        def close_scaling_file(): scaling_file_handle.close()
+        atexit.register(close_scaling_file)
+
+def scaling_update(job: str, event: str, progress: Any) -> None:
+
+    if savelevel() >= SaveLevel.debug:
+        scaling_file_handle.write( f"{now()}: "
+                                   f"job={job}, "
+                                   f"event={event}, "
+                                   f"percent={progress.percent}, "
+                                   f"run={progress.run}, "
+                                   f"eta={progress.eta}, "
+                                   f"npels={progress.npels}, "
+                                   f"tpels={progress.tpels}\n" )
+        scaling_file_handle.flush()
+
+########################################################################################
+# AI Scaling's Logging
+########################################################################################
+
+scaling_ai_file_handle: TextIO
+
+def create_scaling_ai_file() -> None:
+
+    global scaling_ai_file_handle
+
+    if savelevel() >= SaveLevel.debug:
+        scaling_ai_file_handle = open(SCALING_AI_FILE_PATH, "w")
+        def close_scaling_ai_file(): scaling_ai_file_handle.close()
+        atexit.register(close_scaling_ai_file)
+
+########################################################################################
 # User I/O Files
 ########################################################################################
 
@@ -560,31 +603,102 @@ def current_height() -> int: return current_image.height
 def input_width()    -> int: return input_image.width
 def input_height()   -> int: return input_image.height
 
+# def load(path: Path, input: bool = False) -> pyvips.Image:
+#
+#     global input_format
+#     global input_mode
+#
+#     source_image = pyvips.Image.new_from_file(str(path), access = "sequential")
+#
+#     if input:
+#
+#         input_format = source_image.get("vips-loader").removesuffix("load")
+#         input_mode = ( f"{source_image.bands}bands--"                +
+#                        f"{source_image.interpretation}"              +
+#                        ("+alpha" if source_image.hasalpha() else "") )
+#
+#     source_image = source_image.colourspace("srgb")
+#
+#     if source_image.bands == 3:
+#         source_image = source_image.addalpha()
+#
+#     if source_image.bands > 4:
+#         source_image = source_image[:4]
+#
+#     source_image = source_image.cast("uchar")
+#
+#     return source_image.copy_memory()
+
 def load(path: Path, input: bool = False) -> pyvips.Image:
 
     global input_format
     global input_mode
 
-    source_image = pyvips.Image.new_from_file(str(path), access = "sequential")
+    image = pyvips.Image.new_from_file(str(path), access="sequential")
 
     if input:
+        input_format = image.get("vips-loader").removesuffix("load")
+        input_mode = (
+            f"{image.bands}bands--"
+            f"{image.interpretation}"
+            f"{'+alpha' if image.hasalpha() else ''}"
+        )
 
-        input_format = source_image.get("vips-loader").removesuffix("load")
-        input_mode = ( f"{source_image.bands}bands--"                +
-                       f"{source_image.interpretation}"              +
-                       ("+alpha" if source_image.hasalpha() else "") )
+    image = image.colourspace("srgb")
 
-    source_image = source_image.colourspace("srgb")
+    if image.bands == 3:
+        image = image.addalpha()
 
-    if source_image.bands == 3:
-        source_image = source_image.addalpha()
+    if image.bands > 4:
+        image = image[:4]
 
-    if source_image.bands > 4:
-        source_image = source_image[:4]
+    image = image.cast("uchar")
 
-    source_image = source_image.cast("uchar")
+    interrupted = Event()
+    previous_sigint = signal.getsignal(signal.SIGINT)
 
-    return source_image.copy_memory()
+    def request_interrupt(signum, frame) -> None:
+        interrupted.set()
+
+    def update_interrupt(image: pyvips.Image, progress: Any) -> None:
+        if interrupted.is_set():
+            image.set_kill(True)
+
+    image.set_progress(True)
+    image.signal_connect("eval", update_interrupt)
+    image.signal_connect(
+        "preeval",
+        lambda image, progress:
+            scaling_update("load", "preeval", progress),
+    )
+    image.signal_connect(
+        "eval",
+        lambda image, progress:
+            scaling_update("load", "eval", progress),
+    )
+    image.signal_connect(
+        "posteval",
+        lambda image, progress:
+            scaling_update("load", "posteval", progress),
+    )
+
+    signal.signal(signal.SIGINT, request_interrupt)
+
+    try:
+        loaded_image = image.copy_memory()
+
+        if interrupted.is_set():
+            raise KeyboardInterrupt
+
+    except pyvips.Error:
+        if interrupted.is_set():
+            raise KeyboardInterrupt from None
+        raise
+
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+
+    return loaded_image
 
 def load_input_image() -> None:
 
@@ -1343,36 +1457,6 @@ class ProgressBar:
         self._stop_refresh_thread()
 
 ########################################################################################
-# Scaling's Logging
-########################################################################################
-
-scaling_file_handle: TextIO
-
-def create_scaling_file() -> None:
-
-    global scaling_file_handle
-
-    if savelevel() >= SaveLevel.debug:
-        scaling_file_handle = open(SCALING_FILE_PATH, "w")
-        def close_scaling_file(): scaling_file_handle.close()
-        atexit.register(close_scaling_file)
-
-########################################################################################
-# AI Scaling's Logging
-########################################################################################
-
-scaling_ai_file_handle: TextIO
-
-def create_scaling_ai_file() -> None:
-
-    global scaling_ai_file_handle
-
-    if savelevel() >= SaveLevel.debug:
-        scaling_ai_file_handle = open(SCALING_AI_FILE_PATH, "w")
-        def close_scaling_ai_file(): scaling_ai_file_handle.close()
-        atexit.register(close_scaling_ai_file)
-
-########################################################################################
 # Run System
 ########################################################################################
 
@@ -1462,6 +1546,12 @@ def save(unit: StepForward, path: Path, bar: ProgressBar) -> None:
         image.set_progress(True)
         image.signal_connect("preeval", start_bar)
         image.signal_connect("eval", update_bar)
+        image.signal_connect("preeval",
+            lambda image, progress: scaling_update("save", "preeval", progress))
+        image.signal_connect("eval",
+             lambda image, progress: scaling_update("save", "eval", progress))
+        image.signal_connect("posteval",
+             lambda image, progress: scaling_update("save", "posteval", progress))
 
         signal.signal(signal.SIGINT, request_interrupt)
 
@@ -1479,16 +1569,6 @@ def save(unit: StepForward, path: Path, bar: ProgressBar) -> None:
         finally:
             signal.signal(signal.SIGINT, previous_sigint)
 
-def log_scaling_progress(event: str, progress: Any) -> None:
-
-    scaling_file_handle.write( f"{now()}: "
-                               f"event={event}, "
-                               f"percent={progress.percent}, "
-                               f"run={progress.run}, "
-                               f"eta={progress.eta}, "
-                               f"npels={progress.npels}, "
-                               f"tpels={progress.tpels}\n" )
-    scaling_file_handle.flush()
 
 # def scale(unit: Scaling, bar: ProgressBar) -> None:
 #
@@ -1581,12 +1661,12 @@ def scale(unit: Scaling, bar: ProgressBar) -> None:
     image.set_progress(True)
     image.signal_connect("preeval", start_bar)
     image.signal_connect("eval", update_bar)
-    image.signal_connect("preeval" , lambda image, progress:
-                                         log_scaling_progress("preeval", progress))
-    image.signal_connect("eval"    , lambda image, progress:
-                                         log_scaling_progress("eval", progress))
-    image.signal_connect("posteval", lambda image, progress:
-                                         log_scaling_progress("posteval", progress))
+    image.signal_connect("preeval",
+        lambda image, progress: scaling_update("scale", "preeval", progress))
+    image.signal_connect("eval",
+        lambda image, progress: scaling_update("scale", "eval", progress))
+    image.signal_connect("posteval",
+        lambda image, progress: scaling_update("scale", "posteval", progress))
 
     signal.signal(signal.SIGINT, request_interrupt)
 
@@ -1720,20 +1800,18 @@ def current_size() -> tuple[int, int]:
 
     return input_width(), input_height()
 
-def plan_scaling(scaler: str, arg: float |tuple[int, int]) -> None:
+def plan_scaling(scaler: str, size: tuple[int, int]) -> None:
 
     in_width  , in_height  = current_size()
-    out_width , out_height = ( arg if isinstance(arg, tuple)
-                                   else [int(in_width  * arg),
-                                         int(in_height * arg)] )
+    out_width , out_height = size
+
     unit = Scaling(scaler, in_width, in_height, out_width, out_height)
     execution_plan.append(unit)
 
 def plan_scaling_ai(model: str, multiplier: int) -> None:
 
     in_width  , in_height  = current_size()
-    out_width , out_height = ( int(in_width  * multiplier) ,
-                               int(in_height * multiplier) )
+    out_width , out_height = (int(in_width * multiplier), int(in_height * multiplier))
     unit = ScalingAI(model, multiplier, in_width, in_height, out_width, out_height)
     execution_plan.append(unit)
 
@@ -1872,6 +1950,10 @@ def main():
         log("the invocation file has been written")
         create_temp_folder()
         log("the temporary file system is operative")
+        create_scaling_file()
+        log("the scaling's logging system is operative")
+        create_scaling_ai_file()
+        log("the AI scaling's logging system is operative")
         existence_checks()
         log("existence checks have been passed")
         load_input_image()
@@ -1890,10 +1972,6 @@ def main():
         log("the session file has been written")
         init_run_system()
         log("the run system is operative")
-        create_scaling_file()
-        log("the scaling's logging system is operative")
-        create_scaling_ai_file()
-        log("the AI scaling's logging system is operative")
         create_progress_file()
         log("the progress logging system is operative")
         init_plan_system()
