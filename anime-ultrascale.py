@@ -1281,7 +1281,6 @@ class ProgressBar:
         unit_types = [unit_class.__name__ for unit_class in UNIT_CLASSES]
         self.elapsed_time_by_type = {name: 0.0 for name in unit_types}
         self.completed_cost_by_type = {name: 0.0 for name in unit_types}
-        self.has_report_by_type = {name: False for name in unit_types}
 
         self.lock = Lock()
         self.stop_event = Event()
@@ -1334,18 +1333,20 @@ class ProgressBar:
         self.last_reported_percentage = percentage
         self.last_report_time = current_time
 
-        if self.has_report_by_type[self.current_unit_type] and elapsed_time > 0.0:
+        if elapsed_time > 0.0:
             self.elapsed_time_by_type[self.current_unit_type] += elapsed_time
             self.completed_cost_by_type[self.current_unit_type] += reported_cost
 
-            reported_speed = reported_cost / elapsed_time
+            integral_elapsed_time = (
+                self.elapsed_time_by_type[self.current_unit_type]
+            )
             self.estimated_speed = (
-                reported_speed
-                if self.estimated_speed == 0.0
-                else 0.8 * self.estimated_speed + 0.2 * reported_speed
+                self.completed_cost_by_type[self.current_unit_type] /
+                integral_elapsed_time
+                if integral_elapsed_time > 0.0
+                else 0.0
             )
 
-        self.has_report_by_type[self.current_unit_type] = True
         self.estimated_cost -= max(0.0, estimated_overlap)
         self._add_cost(newly_completed_cost)
         self._render()
