@@ -59,7 +59,7 @@ EXIT_FILE         : Final = "exit.txt"
 MAX_MPX           : Final = 200
 MAX_TILING        : Final = 16
 MAX_ITERATIONS    : Final = 16
-PROGRESS_BAR_SIZE : Final = 40
+PROGRESS_BAR_SIZE : Final = 35
 
 ########################################################################################
 # Phases
@@ -790,6 +790,11 @@ class ProgressBar:
         self.current_unit_completed_cost = 0.0
         self.estimated_cost = 0.0
         self.last_reported_percentage = 0.0
+        self.current_unit_zero_reported = False
+        self.current_unit_zero_breakpoint_reached = False
+        self.current_unit_tail_breakpoint_reached = False
+        self.current_unit_zero_percentage = 0.0
+        self.current_unit_last_percentage = 0.0
 
         self.estimated_speed = 0.0
         self.displayed_speed = 0.0
@@ -798,10 +803,18 @@ class ProgressBar:
         self.last_render_time = current_time
         self.last_rendered_percentage = 0.0
         self.last_logged_percentage_text: str | None = None
+        self.progress_completed = False
+        self.cursor_hidden = False
 
         unit_types = [unit_class.__name__ for unit_class in UNIT_CLASSES]
-        self.elapsed_time_by_type = {name: 0.0 for name in unit_types}
-        self.completed_cost_by_type = {name: 0.0 for name in unit_types}
+        self.total_elapsed_time_by_type = {name: 0.0 for name in unit_types}
+        self.total_completed_cost_by_type = {name: 0.0 for name in unit_types}
+        self.pre_zero_elapsed_time_by_type = {name: 0.0 for name in unit_types}
+        self.pre_zero_completed_cost_by_type = {name: 0.0 for name in unit_types}
+        self.post_zero_elapsed_time_by_type = {name: 0.0 for name in unit_types}
+        self.post_zero_completed_cost_by_type = {name: 0.0 for name in unit_types}
+        self.tail_elapsed_time_by_type = {name: 0.0 for name in unit_types}
+        self.tail_completed_cost_by_type = {name: 0.0 for name in unit_types}
 
         self.lock = Lock()
         self.stop_event = Event()
@@ -811,21 +824,16 @@ class ProgressBar:
         )
         self.refresh_thread.start()
 
+        print("\033[?25l", end="", flush=True)
+        self.cursor_hidden = True
         self._render()
 
     def new_unit(self, unit: Unit) -> None:
         with self.lock:
             if self.current_unit_cost > 0.0:
-                self._progress(100.0)
+                self._complete_current_unit()
 
             unit_type = type(unit).__name__
-            elapsed_time = self.elapsed_time_by_type[unit_type]
-
-            self.estimated_speed = (
-                self.completed_cost_by_type[unit_type] / elapsed_time
-                if elapsed_time > 0.0
-                else 0.0
-            )
 
             current_time = time.perf_counter()
 
@@ -834,6 +842,16 @@ class ProgressBar:
             self.current_unit_completed_cost = 0.0
             self.estimated_cost = 0.0
             self.last_reported_percentage = 0.0
+            self.current_unit_zero_reported = False
+            self.current_unit_zero_breakpoint_reached = False
+            self.current_unit_tail_breakpoint_reached = False
+            self.current_unit_zero_percentage = (
+                self._zero_percentage_for_current_unit()
+            )
+            self.current_unit_last_percentage = (
+                self._last_percentage_for_current_unit()
+            )
+            self.estimated_speed = self._current_integral_speed()
             self.last_report_time = current_time
             self.last_refresh_time = current_time
 
@@ -842,7 +860,11 @@ class ProgressBar:
             self._progress(percentage)
 
     def _progress(self, percentage: float) -> None:
-        percentage_delta = percentage - self.last_reported_percentage
+        remapped_percentage = self._remap_percentage(percentage)
+        percentage_delta = max(
+            0.0,
+            remapped_percentage - self.last_reported_percentage,
+        )
         reported_cost = self.current_unit_cost * percentage_delta / 100.0
 
         estimated_overlap = min(self.estimated_cost, reported_cost)
@@ -851,26 +873,75 @@ class ProgressBar:
         current_time = time.perf_counter()
         elapsed_time = current_time - self.last_report_time
 
-        self.last_reported_percentage = percentage
+        use_post_zero_average = percentage > 0.0
+
+        self.last_reported_percentage = remapped_percentage
         self.last_report_time = current_time
 
         if elapsed_time > 0.0:
-            self.elapsed_time_by_type[self.current_unit_type] += elapsed_time
-            self.completed_cost_by_type[self.current_unit_type] += reported_cost
+            self.total_elapsed_time_by_type[
+                self.current_unit_type
+            ] += elapsed_time
+            self.total_completed_cost_by_type[
+                self.current_unit_type
+            ] += reported_cost
 
-            integral_elapsed_time = (
-                self.elapsed_time_by_type[self.current_unit_type]
-            )
-            self.estimated_speed = (
-                self.completed_cost_by_type[self.current_unit_type] /
-                integral_elapsed_time
-                if integral_elapsed_time > 0.0
-                else 0.0
-            )
+            if use_post_zero_average:
+                self.post_zero_elapsed_time_by_type[
+                    self.current_unit_type
+                ] += elapsed_time
+                self.post_zero_completed_cost_by_type[
+                    self.current_unit_type
+                ] += reported_cost
+            else:
+                self.pre_zero_elapsed_time_by_type[
+                    self.current_unit_type
+                ] += elapsed_time
+                self.pre_zero_completed_cost_by_type[
+                    self.current_unit_type
+                ] += reported_cost
+
+        if percentage == 0.0:
+            self.current_unit_zero_reported = True
+        elif percentage == 100.0:
+            self.current_unit_tail_breakpoint_reached = True
 
         self.estimated_cost -= max(0.0, estimated_overlap)
         self._add_cost(newly_completed_cost)
+        self._update_current_unit_breakpoints()
+        self.estimated_speed = self._current_integral_speed()
         self._render()
+
+    def _complete_current_unit(self) -> None:
+        current_time = time.perf_counter()
+        elapsed_time = current_time - self.last_report_time
+        percentage_delta = max(0.0, 100.0 - self.last_reported_percentage)
+        tail_cost = self.current_unit_cost * percentage_delta / 100.0
+
+        if elapsed_time > 0.0:
+            self.total_elapsed_time_by_type[
+                self.current_unit_type
+            ] += elapsed_time
+            self.total_completed_cost_by_type[
+                self.current_unit_type
+            ] += tail_cost
+            self.tail_elapsed_time_by_type[
+                self.current_unit_type
+            ] += elapsed_time
+            self.tail_completed_cost_by_type[
+                self.current_unit_type
+            ] += tail_cost
+
+        remaining_cost = max(
+            0.0,
+            self.current_unit_cost - self.current_unit_completed_cost,
+        )
+
+        self.estimated_cost = 0.0
+        self.last_reported_percentage = 100.0
+        self.last_report_time = current_time
+        self.current_unit_tail_breakpoint_reached = True
+        self._add_cost(remaining_cost)
 
     def _add_cost(self, cost: float) -> None:
         self.completed_cost = min(
@@ -888,39 +959,156 @@ class ProgressBar:
             elapsed_time = current_time - self.last_refresh_time
             self.last_refresh_time = current_time
 
+            estimated_cost_limit = self.current_unit_cost
+
             estimated_cost = max(
                 0.0,
                 min(
                     elapsed_time * self.estimated_speed,
-                    self.current_unit_cost - self.current_unit_completed_cost,
+                    estimated_cost_limit - self.current_unit_completed_cost,
                 ),
             )
 
             self.estimated_cost += estimated_cost
             self._add_cost(estimated_cost)
+            self._update_current_unit_breakpoints()
+            self.estimated_speed = self._current_integral_speed()
             self._render()
+
+    def _current_integral_speed(self) -> float:
+        if self.current_unit_tail_breakpoint_reached:
+            elapsed_time = self.tail_elapsed_time_by_type[
+                self.current_unit_type
+            ]
+            completed_cost = self.tail_completed_cost_by_type[
+                self.current_unit_type
+            ]
+        elif (
+            self.current_unit_zero_breakpoint_reached
+            or self.current_unit_zero_reported
+        ):
+            elapsed_time = self.post_zero_elapsed_time_by_type[
+                self.current_unit_type
+            ]
+            completed_cost = self.post_zero_completed_cost_by_type[
+                self.current_unit_type
+            ]
+        else:
+            elapsed_time = self.pre_zero_elapsed_time_by_type[
+                self.current_unit_type
+            ]
+            completed_cost = self.pre_zero_completed_cost_by_type[
+                self.current_unit_type
+            ]
+
+        return completed_cost / elapsed_time if elapsed_time > 0.0 else 0.0
+
+    def _update_current_unit_breakpoints(self) -> None:
+        zero_breakpoint_cost = (
+            self.current_unit_cost
+            * self.current_unit_zero_percentage
+            / 100.0
+        )
+        tail_breakpoint_cost = (
+            self.current_unit_cost
+            * self.current_unit_last_percentage
+            / 100.0
+        )
+
+        if self.current_unit_completed_cost >= zero_breakpoint_cost:
+            self.current_unit_zero_breakpoint_reached = True
+
+        if self.current_unit_completed_cost >= tail_breakpoint_cost:
+            self.current_unit_tail_breakpoint_reached = True
+
+    def _zero_percentage_for_current_unit(self) -> float:
+        elapsed_time = self.total_elapsed_time_by_type[
+            self.current_unit_type
+        ]
+
+        if elapsed_time == 0.0:
+            return 10.0
+
+        zero_percentage = 100.0 * self.pre_zero_elapsed_time_by_type[
+            self.current_unit_type
+        ] / elapsed_time
+
+        return max(0.0, min(90.0, zero_percentage))
+
+    def _last_percentage_for_current_unit(self) -> float:
+        elapsed_time = self.total_elapsed_time_by_type[
+            self.current_unit_type
+        ]
+
+        if elapsed_time == 0.0:
+            if self.current_unit_type == PureAI.__name__:
+                return 50.0
+
+            return 90.0
+
+        last_percentage = 100.0 * (
+            elapsed_time
+            - self.tail_elapsed_time_by_type[self.current_unit_type]
+        ) / elapsed_time
+        minimum_percentage = self.current_unit_zero_percentage + 1.0
+
+        return max(
+            minimum_percentage,
+            min(99.0, last_percentage),
+        )
+
+    def _remap_percentage(self, percentage: float) -> float:
+        zero_percentage = self.current_unit_zero_percentage
+        report_span = (
+            self.current_unit_last_percentage
+            - zero_percentage
+        )
+
+        return zero_percentage + percentage * report_span / 100.0
 
     def complete(self) -> None:
         self._stop_refresh_thread()
 
         with self.lock:
+            if self.current_unit_cost > 0.0:
+                self._complete_current_unit()
+
             self.completed_cost = self.total_cost
-            self.last_rendered_percentage = 100.0
+            self.progress_completed = True
             self.displayed_speed = 0.0
             self._render()
+
+            if self.cursor_hidden:
+                print("\033[?25h", end="", flush=True)
+                self.cursor_hidden = False
 
     def _render(self) -> None:
         current_time = time.perf_counter()
         elapsed_time = current_time - self.last_render_time
         self.last_render_time = current_time
 
-        percentage = (
+        raw_percentage = (
             100.0
             if self.total_cost == 0.0
             else 100.0 * self.completed_cost / self.total_cost
         )
 
-        if elapsed_time > 0.0:
+        percentage = raw_percentage
+        if not self.progress_completed:
+            percentage = min(99.99, percentage)
+
+        displayed_completed_cost = (
+            self.total_cost
+            if self.progress_completed
+            else min(
+                self.completed_cost,
+                self.total_cost * percentage / 100.0,
+            )
+        )
+
+        if self.progress_completed:
+            self.displayed_speed = 0.0
+        elif elapsed_time > 0.0:
             current_speed = (
                 (percentage - self.last_rendered_percentage)
                 * self.total_cost
@@ -938,20 +1126,30 @@ class ProgressBar:
 
         self.last_rendered_percentage = percentage
 
-        percentage_text = f"{percentage:6.2f}"
+        percentage_text = f"{percentage:‥>5.{2 if percentage < 100 else 1}f}"
 
-        partial_width = PROGRESS_BAR_SIZE * percentage / 100.0
+        bar_percentage = percentage
+        if not self.progress_completed:
+            bar_percentage = min(
+                bar_percentage,
+                100.0 * (PROGRESS_BAR_SIZE - 1) / PROGRESS_BAR_SIZE,
+            )
+
+        partial_width = PROGRESS_BAR_SIZE * bar_percentage / 100.0
         filled_width = int(partial_width)
         partial_index = int((partial_width - filled_width) * 8)
         partial = " ▏▎▍▌▋▊▉"[partial_index]
         empty_width = PROGRESS_BAR_SIZE - filled_width - (partial_index > 0)
         bar = "█" * filled_width + partial.strip() + " " * empty_width
 
+        cost_digits = 3 + math.ceil(math.log10(math.floor(self.total_cost)))
+
         line = (
-            f" [{bar}]"
-            f" {percentage_text}% "
-            f"({self.completed_cost:6.2f}/{self.total_cost:6.2f} Mpx), "
-            f"{self.displayed_speed:5.2f} Mpx/s"
+            f"【{bar}】"
+            f"{percentage_text}% | "
+            f"{displayed_completed_cost:‥>{cost_digits}.2f} / "
+            f"{self.total_cost:{cost_digits}.2f} Mpx | "
+            f"{self.displayed_speed:.2f} Mpx/s"
         )
 
         print("\r\033[K" + line, end="", flush=True)
@@ -977,6 +1175,15 @@ class ProgressBar:
 
     def __exit__(self, exc_type, exc_value, traceback) -> None:
         self._stop_refresh_thread()
+        if self.cursor_hidden:
+            print("\033[?25h", end="", flush=True)
+            self.cursor_hidden = False
+
+    def __del__(self) -> None:
+        if getattr(self, "cursor_hidden", False):
+            print("\033[?25h", end="", flush=True)
+            self.cursor_hidden = False
+
 
 ########################################################################################
 # Image Loading
