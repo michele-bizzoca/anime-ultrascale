@@ -1,0 +1,201 @@
+def make_bar(percentage: float) -> str:
+
+    partial_width = PROGRESS_BAR_SIZE * percentage / 100.0
+    filled_width = int(partial_width)
+    partial_index = int((partial_width - filled_width) * 8)
+    partial = " ▏▎▍▌▋▊▉"[partial_index]
+    empty_width = PROGRESS_BAR_SIZE - filled_width - (partial_index > 0)
+    return "█" * filled_width + partial.strip() + " " * empty_width
+
+class ProgressBar:
+
+    def __init__(self, total_cost: float) -> None:
+        instant = time.perf_counter()
+
+        self.total_cost = total_cost
+        self.total_cost_done = 0.0
+
+        self.unit_class_name = PhaseForward.__name__
+        self.unit_cost = 0.0
+        self.unit_cost_done = 0.0
+        self.bonus_cost_done = 0.0
+        self.last_progress_percentage = 0.0
+
+        self.progress_average_speed = 0.0
+        self.refresh_average_speed = 0.0
+        self.last_progress_instant = instant
+        self.last_refresh_instant = instant
+        self.last_render_instant = instant
+        self.last_render_percentage = 0.0
+        self.last_logged_percentage: str | None = None
+
+        unit_names = [unit_class.__name__ for unit_class in UNIT_CLASSES]
+        self.timespans = {name: 0.0 for name in unit_names}
+        self.costs = {name: 0.0 for name in unit_names}
+        self.started = {name: False for name in unit_names}
+
+        self.lock = Lock()
+        self.stop_event = Event()
+        self.refresh_thread = Thread(
+            target=self._refresh_loop,
+            daemon=True,
+        )
+        self.refresh_thread.start()
+
+        self._render()
+
+    def new_unit(self, unit: Unit) -> None:
+        with self.lock:
+            if self.unit_cost > 0.0:
+                self._progress(100.0)
+
+            unit_class_name = type(unit).__name__
+            timespan = self.timespans[unit_class_name]
+
+            self.progress_average_speed = (
+                self.costs[unit_class_name] / timespan
+                if timespan != 0.0
+                else 0.0
+            )
+
+            instant = time.perf_counter()
+
+            self.unit_class_name = unit_class_name
+            self.unit_cost = unit_cost(unit)
+            self.unit_cost_done = 0.0
+            self.bonus_cost_done = 0.0
+            self.last_progress_percentage = 0.0
+            self.last_progress_instant = instant
+            self.last_refresh_instant = instant
+
+    def progress(self, percentage: float) -> None:
+        with self.lock:
+            self._progress(percentage)
+
+    def _progress(self, percentage: float) -> None:
+        percentage_delta = percentage - self.last_progress_percentage
+        chunk_cost = self.unit_cost * percentage_delta / 100.0
+
+        old_cost = min(self.bonus_cost_done, chunk_cost)
+        new_cost = chunk_cost - old_cost
+
+        instant = time.perf_counter()
+        timespan = instant - self.last_progress_instant
+
+        self.last_progress_percentage = percentage
+        self.last_progress_instant = instant
+
+        if self.started[self.unit_class_name] and timespan > 0.0:
+            self.timespans[self.unit_class_name] += timespan
+            self.costs[self.unit_class_name] += chunk_cost
+
+            current_speed = chunk_cost / timespan
+            self.progress_average_speed = (
+                current_speed
+                if self.progress_average_speed == 0.0
+                else 0.8 * self.progress_average_speed + 0.2 * current_speed
+            )
+
+        self.started[self.unit_class_name] = True
+        self.bonus_cost_done -= max(0.0, old_cost)
+        self._add_cost(new_cost)
+        self._render()
+
+    def _add_cost(self, chunk_cost: float) -> None:
+        self.total_cost_done = min(
+            self.total_cost_done + chunk_cost,
+            self.total_cost,
+        )
+        self.unit_cost_done = min(
+            self.unit_cost_done + chunk_cost,
+            self.unit_cost,
+        )
+
+    def refresh(self) -> None:
+        with self.lock:
+            instant = time.perf_counter()
+            timespan = instant - self.last_refresh_instant
+            self.last_refresh_instant = instant
+
+            bonus_cost = max(
+                0.0,
+                min(
+                    timespan * self.progress_average_speed,
+                    self.unit_cost - self.unit_cost_done,
+                ),
+            )
+
+            self.bonus_cost_done += bonus_cost
+            self._add_cost(bonus_cost)
+            self._render()
+
+    def complete(self) -> None:
+        self._stop_refresh_thread()
+
+        with self.lock:
+            self.total_cost_done = self.total_cost
+            self.last_render_percentage = 100.0
+            self.refresh_average_speed = 0.0
+            self._render()
+
+    def _render(self) -> None:
+        instant = time.perf_counter()
+        timespan = instant - self.last_render_instant
+        self.last_render_instant = instant
+
+        percentage = 100.0 * (
+            1.0
+            if self.total_cost == 0.0
+            else self.total_cost_done / self.total_cost
+        )
+
+        if timespan > 0.0:
+            speed = (
+                (percentage - self.last_render_percentage)
+                * self.total_cost
+                / (100.0 * timespan)
+            )
+            decay = math.exp(-timespan / 0.6)
+            self.refresh_average_speed = (
+                speed
+                if self.refresh_average_speed == 0.0
+                else (
+                    decay * self.refresh_average_speed
+                    + (1.0 - decay) * speed
+                )
+            )
+
+        self.last_render_percentage = percentage
+
+        percentage_text = f"{percentage:6.2f}"
+
+        line = (
+            f" [{make_bar(percentage)}]"
+            f" {percentage_text}% "
+            f"({self.total_cost_done:6.2f}/{self.total_cost:6.2f} Mpx), "
+            f"{self.refresh_average_speed:5.2f} Mpx/s"
+        )
+
+        print("\r\033[K" + line, end="", flush=True)
+
+        if (
+            savelevel() >= SaveLevel.debug
+            and percentage_text != self.last_logged_percentage
+        ):
+            progress_file_handle.write(now() + ": " + line + "\n")
+            progress_file_handle.flush()
+            self.last_logged_percentage = percentage_text
+
+    def _refresh_loop(self) -> None:
+        while not self.stop_event.wait(0.1):
+            self.refresh()
+
+    def _stop_refresh_thread(self) -> None:
+        self.stop_event.set()
+        self.refresh_thread.join()
+
+    def __enter__(self) -> "ProgressBar":
+        return self
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        self._stop_refresh_thread()
