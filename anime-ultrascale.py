@@ -39,8 +39,8 @@ T = TypeVar("T")
 ########################################################################################
 
 SOFTWARE_VERSION : Final = "1.0"
-OUTPUT_FORMAT    : Final = "PNG"
-OUTPUT_MODE      : Final = "RGBA"
+OUTPUT_FORMAT    : Final = "png"
+OUTPUT_MODE      : Final = "4bands--srgb+alpha"
 TEMP_FOLDER      : Final = "temp"
 MODEL_FOLDER     : Final = "models"
 SESSION_FOLDER   : Final = "sessions"
@@ -77,7 +77,6 @@ PHASES : Final = [
 ########################################################################################
 
 INVOCATION_INSTANT : Final = datetime.fromtimestamp(psutil.Process().create_time())
-INVOCATION_STAMP   : Final = INVOCATION_INSTANT.strftime('%Y/m/%d--%H-%M-%S--%f')
 INVOCATION_DATE    : Final = INVOCATION_INSTANT.strftime('%Y-%m-%d')
 INVOCATION_TIME    : Final = INVOCATION_INSTANT.strftime('%H-%M-%S')
 INVOCATION_USEC    : Final = INVOCATION_INSTANT.strftime('%f')
@@ -92,17 +91,19 @@ MODEL_FOLDER_PATH : Final = PARENT_PATH / MODEL_FOLDER
 RENV_FOLDER_PATH  : Final = PARENT_PATH / RENV_FOLDER
 
 
-SESSION_FOLDER_PATH : Final = ( PARENT_PATH           /
-                                SESSION_FOLDER        /
-                                INVOCATION_DATE       /
-                                f"{INVOCATION_TIME}-"  
-                                f"{INVOCATION_PID}"   )
+SESSION_FOLDER_PATH : Final = ( PARENT_PATH            /
+                                SESSION_FOLDER         /
+                                INVOCATION_DATE        /
+                                f"{INVOCATION_TIME}--"  
+                                f"{INVOCATION_USEC}--"  
+                                f"{INVOCATION_PID}"    )
 
-TEMP_FOLDER_PATH : Final = ( PARENT_PATH           /
-                             TEMP_FOLDER           /
-                             f"{INVOCATION_DATE}-"      
-                             f"{INVOCATION_TIME}-"      
-                             f"{INVOCATION_PID}"   )
+TEMP_FOLDER_PATH : Final = ( PARENT_PATH            /
+                             TEMP_FOLDER            /
+                             f"{INVOCATION_DATE}--"      
+                             f"{INVOCATION_TIME}--"      
+                             f"{INVOCATION_USEC}--"     
+                             f"{INVOCATION_PID}"    )
 
 INVOCATION_FILE_PATH  : Final = SESSION_FOLDER_PATH / INVOCATION_FILE
 LOG_FILE_PATH         : Final = SESSION_FOLDER_PATH / LOG_FILE
@@ -193,9 +194,9 @@ FLEX_OPTIONS : Final = [
 @dataclass
 class Invocation:
 
-    time    : str
-    version : str
-    save    : str
+    time      : str
+    version   : str
+    savelevel : str
 
 @dataclass
 class ImageInfo:
@@ -321,15 +322,17 @@ def early_assume( condition : bool                             ,
 # Options Sorting
 ########################################################################################
 
-fixed_arguments    : list[str]      = []
-positional_options : list[str]      = []
-flex_options       : dict[str, str] = {}
+fixed_arguments    : list[str]
+positional_options : list[str]
+flex_options       : dict[str, str]
+option_sorting_now : str
 
 def sort_options() -> None:
 
     global fixed_arguments
     global positional_options
     global flex_options
+    global option_sorting_now
 
     if len(sys.argv) == 2:
         if sys.argv[1] in ["-h", "--help"]:
@@ -391,11 +394,13 @@ def sort_options() -> None:
     for option in FLEX_OPTIONS:
         flex_options.setdefault(option.name, option.default)
 
+    option_sorting_now = now()
+
 ########################################################################################
 # Save Level
 ########################################################################################
 
-def save_level() -> SaveLevel:
+def savelevel() -> SaveLevel:
 
     return SaveLevel[flex_options["save"]]
 
@@ -403,44 +408,41 @@ def save_level() -> SaveLevel:
 # Session Folder Creation
 ########################################################################################
 
+session_folder_now: str
+
 def create_session_folder() -> None:
 
-    if save_level() >= SaveLevel.text:
+    global session_folder_now
+
+    if savelevel() >= SaveLevel.text:
         SESSION_FOLDER_PATH.mkdir(parents = True, exist_ok = True)
 
-########################################################################################
-# Invocation File Creation
-########################################################################################
-
-def create_invocation_file() -> None:
-
-    if save_level() >= SaveLevel.text:
-        with open(INVOCATION_FILE_PATH, "w") as INVOCATION_FILE_HANDLE:
-            timestamp = f"{INVOCATION_DATE}-{INVOCATION_TIME}-{INVOCATION_USEC}"
-            INVOCATION_FILE_HANDLE.write( f"PID: {INVOCATION_PID}\n"         +
-                                          f"Timestamp: {timestamp}\n"        +
-                                          f"PWD: {Path.cwd()}\n"             +
-                                          f"Command: {' '.join(sys.argv)}\n" )
+    session_folder_now = now()
 
 ########################################################################################
 # Exit Message
 ########################################################################################
 
 exit_file_handle: TextIO
+exit_message_now: str
 
 def create_exit_file() -> None:
 
     global exit_file_handle
+    global exit_message_now
 
-    if save_level() >= SaveLevel.debug:
+    if savelevel() >= SaveLevel.debug:
         exit_file_handle = open(EXIT_FILE_PATH, "w")
         def close_exit_file(): exit_file_handle.close()
         atexit.register(close_exit_file)
 
+    exit_message_now = now()
+
 def exit_message(message: str) -> None:
 
-    exit_file_handle.write(message + "\n")
-    exit_file_handle.flush()
+    if savelevel() >= SaveLevel.debug:
+        exit_file_handle.write(message + "\n")
+        exit_file_handle.flush()
 
 ########################################################################################
 # Logging
@@ -452,18 +454,18 @@ def create_log_file() -> None:
 
     global log_file_handle
 
-    if save_level() >= SaveLevel.text:
+    if savelevel() >= SaveLevel.text:
         log_file_handle = open(LOG_FILE_PATH, "w")
         def close_log_file(): log_file_handle.close()
         atexit.register(close_log_file)
 
-def log(message: str, level: SaveLevel = SaveLevel.text):
+def log(message: str, now_ : str | None = None, level: SaveLevel = SaveLevel.text):
 
-    if save_level() >= SaveLevel.text and save_level() >= level:
-        message = f"{now()}, level {descriptor(level)}: {message}"
+    if savelevel() >= SaveLevel.text and savelevel() >= level:
+        now_ = now() if now_ is None else now_
+        message = f"{now_}, level {descriptor(level)}: {message}"
         log_file_handle.write(message + "\n")
         log_file_handle.flush()
-
 
 ########################################################################################
 # Error Reporting
@@ -473,7 +475,7 @@ def fail( message   : str                              ,
           suggest   : bool = True                      ,
           exception : type[BaseException] = SystemExit ) -> NoReturn:
 
-    log(message, SaveLevel.error)
+    log(message, now(), SaveLevel.error)
     early_fail(message, suggest, exception)
 
 def assume( condition : bool                             ,
@@ -483,6 +485,20 @@ def assume( condition : bool                             ,
 
     if not condition:
         fail(message, suggest, exception)
+
+########################################################################################
+# Invocation File Creation
+########################################################################################
+
+def create_invocation_file() -> None:
+
+    if savelevel() >= SaveLevel.text:
+        with open(INVOCATION_FILE_PATH, "w") as INVOCATION_FILE_HANDLE:
+            stamp = f"{INVOCATION_DATE}--{INVOCATION_TIME}--{INVOCATION_USEC}"
+            INVOCATION_FILE_HANDLE.write( f"PID: {INVOCATION_PID}\n"         +
+                                          f"Timestamp: {stamp}\n"            +
+                                          f"PWD: {Path.cwd()}\n"             +
+                                          f"Command: {' '.join(sys.argv)}\n" )
 
 ########################################################################################
 # Temporary Files Support
@@ -527,42 +543,48 @@ def existence_checks() -> None:
 # Image Loading
 ########################################################################################
 
-def load(path: Path) -> pyvips.Image:
+input_image   : pyvips.Image
+input_format  : str
+input_mode    : str
+current_image : pyvips.Image
+
+def current_width()  -> int: return current_image.width
+def current_height() -> int: return current_image.height
+def input_width()    -> int: return input_image.width
+def input_height()   -> int: return input_image.height
+
+def load(path: Path, input: bool = False) -> pyvips.Image:
+
+    global input_format
+    global input_mode
 
     source_image = pyvips.Image.new_from_file(str(path), access = "sequential")
+
+    if input:
+
+        input_format = source_image.get("vips-loader").removesuffix("load")
+        input_mode = ( f"{source_image.bands}bands--"                +
+                       f"{source_image.interpretation}"              +
+                       ("+alpha" if source_image.hasalpha() else "") )
+
     source_image = source_image.colourspace("srgb")
 
     if source_image.bands == 3:
         source_image = source_image.addalpha()
-    elif source_image.bands > 4:
+
+    if source_image.bands > 4:
         source_image = source_image[:4]
 
     source_image = source_image.cast("uchar")
 
     return source_image.copy_memory()
 
-########################################################################################
-# Input Image Loading
-########################################################################################
-
-input_image   : pyvips.Image
-current_image : pyvips.Image
-
-def current_width()  -> int: return current_image.width
-def current_height() -> int: return current_image.height
-def input_width()    -> int: return input_image.height
-def input_height()   -> int: return input_image.height
-def input_format()   -> str: return input_image.get("vips-loader").removesuffix("load")
-def input_mode()     -> str: return ( f"{input_image.bands}bands--"                +
-                                    f"{input_image.interpretation}"              +
-                                    ("+alpha" if input_image.hasalpha() else "") )
-
 def load_input_image() -> None:
 
     global input_image
     global current_image
 
-    input_image   = load(input_file_path())
+    input_image   = load(input_file_path(), True)
     current_image = input_image.copy()
 
 ########################################################################################
@@ -891,7 +913,7 @@ def combined_settings_validation() -> None:
 
 def create_settings_file() -> None:
 
-    if save_level() >= SaveLevel.text:
+    if savelevel() >= SaveLevel.text:
 
         with open(SETTINGS_FILE_PATH, "w") as settings_handle:
             settings_handle.write(export_settings(settings))
@@ -906,10 +928,12 @@ def create_session() -> None:
 
     global session
 
+    stamp = f"{INVOCATION_DATE}--{INVOCATION_TIME}--{INVOCATION_USEC}"
+
     session = Session (
 
-        Invocation(INVOCATION_STAMP, SOFTWARE_VERSION, flex_options["save"])   ,
-        ImageInfo(input_format(), input_mode(), input_width(), input_height()) ,
+        Invocation(stamp, SOFTWARE_VERSION, flex_options["save"])   ,
+        ImageInfo(input_format, input_mode, input_width(), input_height()) ,
         ImageInfo(OUTPUT_FORMAT, OUTPUT_MODE, output_width(), output_height()) ,
         settings
     )
@@ -920,7 +944,7 @@ def create_session() -> None:
 
 def create_session_file() -> None:
 
-    if save_level() >= SaveLevel.text:
+    if savelevel() >= SaveLevel.text:
 
         with open(SESSION_FILE_PATH, "w") as session_handle:
             session_handle.write(export_session(session))
@@ -1174,12 +1198,16 @@ def scale(unit: Scaling, bar: ProgressBar) -> None:
 
     global current_image
 
+    if unit.out_width == unit.in_width and unit.out_height == unit.in_height:
+        return
+
     bar.new_unit(unit)
 
     kernels         = {"lanczos": "lanczos3", "bicubic": "cubic"}
     kernel          = kernels.get(unit.algorithm)
-    factor          = unit.out_width / unit.in_width
-    image           = current_image.resize(factor, kernel = kernel)
+    hscale          = unit.out_width / unit.in_width
+    vscale          = unit.out_height / unit.in_height
+    image           = current_image.resize(hscale, vscale = vscale, kernel = kernel)
     last_percentage = 0.0
     started         = False
 
@@ -1240,7 +1268,7 @@ def scale_ai(unit: ScalingAI, bar: ProgressBar) -> None:
         fail("failed to capture Real ESRGAN's output")
 
     for line in process.stdout:
-        if save_level() >= SaveLevel.debug:
+        if savelevel() >= SaveLevel.debug:
             ai_file_handle.write(now() + ": " + line)
             ai_file_handle.flush()
         line = "".join(line.split())
@@ -1273,15 +1301,15 @@ def step_forward(unit: StepForward, bar: ProgressBar):
             file_path = SESSION_FOLDER_PATH / file_name
             save(unit, file_path, bar)
 
-        log(f"a{'n' if step[0] in 'aeiou' else ''} {step} "
-            f"step in the {phase} phase has been completed "
-            f"with output size {unit.width}x{unit.height}")
-
-        if step == "export":
-            log(f"the output image has been saved, {current_width()}x"
-                f"{current_height()}px {OUTPUT_FORMAT} {OUTPUT_MODE}")
-
         forward_k += 1
+
+    log(f"a{'n' if step[0] in 'aeiou' else ''} {step} "
+        f"step in the {phase} phase has been completed "
+        f"with output size {unit.width}x{unit.height}")
+
+    if step == "export":
+        log(f"the output image has been saved, {current_width()}x"
+            f"{current_height()}px {OUTPUT_FORMAT} {OUTPUT_MODE}")
 
     forward_j = (forward_j + 1) % len(steps)
 
@@ -1305,7 +1333,7 @@ def create_ai_file() -> None:
 
     global ai_file_handle
 
-    if save_level() >= SaveLevel.debug:
+    if savelevel() >= SaveLevel.debug:
         ai_file_handle = open(AI_FILE_PATH, "w")
         def close_ai_file(): ai_file_handle.close()
         atexit.register(close_ai_file)
@@ -1320,7 +1348,7 @@ def create_progress_file() -> None:
 
     global progress_file_handle
 
-    if save_level() >= SaveLevel.debug:
+    if savelevel() >= SaveLevel.debug:
         progress_file_handle = open(PROGRESS_FILE_PATH, "w")
         def close_progress_file(): progress_file_handle.close()
         atexit.register(close_progress_file)
@@ -1330,6 +1358,12 @@ def create_progress_file() -> None:
 ########################################################################################
 
 execution_plan: list[Unit]
+
+def init_plan_system() -> None:
+
+    global execution_plan
+
+    execution_plan = []
 
 def current_size() -> tuple[int, int]:
 
@@ -1366,7 +1400,7 @@ def plan_phase_forward() -> None:
 
 def plan_step_forward(save_level_: SaveLevel) -> None:
     width, height = current_size()
-    execution_plan.append(StepForward(save_level() >= save_level_, width, height))
+    execution_plan.append(StepForward(savelevel() >= save_level_, width, height))
 
 ########################################################################################
 # Planning - Input Phase
@@ -1473,30 +1507,27 @@ def execute_plan() -> None:
 # Main
 ########################################################################################
 
-
-
-        log("the exit system is operative")
-        log("the main log system is operative")
-        log("the temporary file system is operative")
-        log(f"the input image has been loaded: {input_image.width}"
-            f"x{input_image.height}px {OUTPUT_MODE}")
-        log("the settings have been loaded")
-
-        log("the settings file has been written")
-        log("the session file has been written")
-        log("the AI logging system is operative")
-        log("the progress bar logging system is operative")
-
 def main():
+
     try:
         sort_options()
-        log("options have been sorted")
         create_session_folder()
-        log("the session folder has been created")
+        create_exit_file()
+
+    except KeyboardInterrupt:
+        early_fail("interrupted by user", False)
+
+    except Exception:
+        early_fail("unexpected error", False)
+
+    try:
+        create_log_file()
+        log("options have been sorted", option_sorting_now)
+        log("the session folder has been created", session_folder_now)
+        log("the exit message system is operative", exit_message_now)
+        log("the main logging system is operative")
         create_invocation_file()
         log("the invocation file has been written")
-        create_log_file()
-        log("the main logging system is operative")
         create_temp_folder()
         log("the temporary file system is operative")
         existence_checks()
@@ -1512,7 +1543,7 @@ def main():
         create_settings_file()
         log("the settings file has been written")
         create_session()
-        log("the settings have passed combined validation")
+        log("the session has been created")
         create_session_file()
         log("the session file has been written")
         init_run_system()
@@ -1521,6 +1552,8 @@ def main():
         log("the AI logging system is operative")
         create_progress_file()
         log("the progress logging system is operative")
+        init_plan_system()
+        log("the plan system is operative")
         plan_input_phase()
         log("the input phase has been planned")
         plan_main_phase()
@@ -1531,6 +1564,16 @@ def main():
         log("the hard phase has been planned")
         plan_output_phase()
         log("the output phase has been planned")
+
+    except KeyboardInterrupt:
+        exit_message("interrupt")
+        fail("interrupted by user", False)
+
+    except Exception:
+        exit_message(traceback.format_exc())
+        fail("unexpected error", False)
+
+    try:
         execute_plan()
         log("the plan has been executed")
 
@@ -1542,7 +1585,7 @@ def main():
     except Exception:
         print()
         exit_message(traceback.format_exc())
-        fail("unexpected error")
+        fail("unexpected error", False)
 
     else:
         exit_message("success")
