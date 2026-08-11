@@ -1188,8 +1188,8 @@ def similarity(
 
 def descale(image: pyvips.Image) -> float:
     img = image.copy()
-    img = luminance(image)
-    reference = to_numpy(image)
+    img = luminance(img)
+    reference = to_numpy(img)
 
     low = 1.0
     high = 2.0
@@ -1211,6 +1211,9 @@ def descale(image: pyvips.Image) -> float:
             low = middle
         else:
             high = middle
+
+    print((low + high) / 2.0)
+    fail("")
 
     return (low + high) / 2.0
 
