@@ -1212,9 +1212,6 @@ def descale(image: pyvips.Image) -> float:
         else:
             high = middle
 
-    print((low + high) / 2.0)
-    fail("")
-
     return (low + high) / 2.0
 
 ########################################################################################
@@ -1876,11 +1873,12 @@ def current_size() -> tuple[int, int]:
 
     return input_width(), input_height()
 
-def plan_scaling(scaler: str, size: tuple[int, int]) -> None:
 
-    in_width  , in_height  = current_size()
-    out_width , out_height = size
-
+def plan_scaling(scaler: str, arg: float | tuple[int, int]) -> None:
+    in_width, in_height = current_size()
+    out_width, out_height = (arg if isinstance(arg, tuple)
+                             else [int(in_width * arg),
+                                   int(in_height * arg)])
     unit = Scaling(scaler, in_width, in_height, out_width, out_height)
     execution_plan.append(unit)
 
