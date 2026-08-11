@@ -62,7 +62,7 @@ MAX_MPX            : Final = 200
 MAX_TILING         : Final = 16
 MAX_ITERATIONS     : Final = 16
 PROGRESS_BAR_SIZE  : Final = 35
-DESCALE_TARGET     : Final = 0.90
+DESCALE_TARGET     : Final = 0.95
 DESCALE_ITERATIONS : Final = 16
 
 ########################################################################################
@@ -1138,6 +1138,8 @@ def load_input_image() -> None:
 ########################################################################################
 # Image Descaling
 ########################################################################################
+
+# TODO refactoring of this section -----------------------------------------------------
 
 def luminance(image: pyvips.Image) -> pyvips.Image:
     image = image[:3] if image.bands > 3 else image
