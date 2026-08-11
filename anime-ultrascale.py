@@ -1,9 +1,8 @@
 ########################################################################################
 # Imports
 ########################################################################################
-import signal
+
 # Qualified
-import types
 import sys
 import os
 import time
@@ -18,6 +17,9 @@ import psutil
 import dataclasses
 import subprocess
 import traceback
+import numpy
+import signal
+import skimage
 
 # Unqualified
 from pathlib import Path
@@ -38,28 +40,30 @@ T = TypeVar("T")
 # Constants
 ########################################################################################
 
-SOFTWARE_VERSION  : Final = "1.0"
-OUTPUT_FORMAT     : Final = "png"
-OUTPUT_MODE       : Final = "4bands--srgb+alpha"
-TEMP_FOLDER       : Final = "temp"
-MODEL_FOLDER      : Final = "models"
-SESSION_FOLDER    : Final = "sessions"
-RENV_FOLDER       : Final = "renv"
-SESSION_FILE      : Final = "session.json"
-SETTINGS_FILE     : Final = "settings.cfg"
-LOG_FILE          : Final = "log.txt"
-TEMP_INPUT_FILE   : Final = "in.png"
-TEMP_OUTPUT_FILE  : Final = "output.png"
-RENV_FILE         : Final = "realesrgan-ncnn-vulkan"
-INVOCATION_FILE   : Final = "invocation.txt"
-SCALING_FILE      : Final = "scaling.txt"
-SCALING_AI_FILE   : Final = "scaling_ai.txt"
-PROGRESS_FILE     : Final = "progress.txt"
-EXIT_FILE         : Final = "exit.txt"
-MAX_MPX           : Final = 200
-MAX_TILING        : Final = 16
-MAX_ITERATIONS    : Final = 16
-PROGRESS_BAR_SIZE : Final = 35
+SOFTWARE_VERSION   : Final = "1.0"
+OUTPUT_FORMAT      : Final = "png"
+OUTPUT_MODE        : Final = "4bands--srgb+alpha"
+TEMP_FOLDER        : Final = "temp"
+MODEL_FOLDER       : Final = "models"
+SESSION_FOLDER     : Final = "sessions"
+RENV_FOLDER        : Final = "renv"
+SESSION_FILE       : Final = "session.json"
+SETTINGS_FILE      : Final = "settings.cfg"
+LOG_FILE           : Final = "log.txt"
+TEMP_INPUT_FILE    : Final = "in.png"
+TEMP_OUTPUT_FILE   : Final = "output.png"
+RENV_FILE          : Final = "realesrgan-ncnn-vulkan"
+INVOCATION_FILE    : Final = "invocation.txt"
+SCALING_FILE       : Final = "scaling.txt"
+SCALING_AI_FILE    : Final = "scaling_ai.txt"
+PROGRESS_FILE      : Final = "progress.txt"
+EXIT_FILE          : Final = "exit.txt"
+MAX_MPX            : Final = 200
+MAX_TILING         : Final = 16
+MAX_ITERATIONS     : Final = 16
+PROGRESS_BAR_SIZE  : Final = 35
+DESCALE_TARGET     : Final = 0.90
+DESCALE_ITERATIONS : Final = 16
 
 ########################################################################################
 # Phases
@@ -215,6 +219,7 @@ class MainSettings:
     divisor      : float
     multiplier   : float
     scaler       : str
+    tiling       : int
 
 @dataclass
 class ModelSettings:
@@ -610,172 +615,7 @@ def existence_checks() -> None:
 # Progress Bar
 ########################################################################################
 
-# def clamp(l: float | None, x: float, r:float | None) -> float:
-#     if l is not None:
-#         x = max(l, x)
-#     if r is not None:
-#         x = min(r, x)
-#     return x
-#
-#
-# def make_bar(percentage: float, width: int = 40) -> str:
-#     blocks = " ▏▎▍▌▋▊▉█"
-#
-#     units = percentage / 100.0 * width
-#     full = int(units)
-#     fraction = int((units - full) * 8)
-#
-#     return ( "█" * full                                       +
-#              (blocks[fraction] if percentage < 100.0 else "") +
-#              " " * max(0, width - full - 1)                   )
-#
-# class ProgressBar:
-#
-#     def __init__(self, total_cost: float) -> None:
-#         self.total_cost = total_cost
-#         self.total_cost_done = 0.0
-#         self.unit_class_name = PhaseForward.__name__
-#         self.unit_cost = 0.0
-#         self.high_speed = False
-#         self.unit_cost_done = 0.0
-#         self.progress_average_speed = 0.0
-#         self.refresh_average_speed = 0.0
-#         self.bonus_cost_done = 0.0
-#         self.last_progress_instant = time.perf_counter()
-#         self.last_render_instant = self.last_progress_instant
-#         self.last_refresh_instant = self.last_progress_instant
-#         self.last_progress_percentage = 0.0
-#         self.last_render_percentage = 0.0
-#         self.lock = Lock()
-#         self.stop_event = Event()
-#         self.refresh_thread = Thread( target = self._refresh_call ,
-#                                       daemon = True               )
-#         self.refresh_thread.start()
-#         self.timespans = {k.__name__: 0 for k in UNIT_CLASSES}
-#         self.costs = {k.__name__: 0 for k in UNIT_CLASSES}
-#         self.started = {k.__name__: False for k in UNIT_CLASSES}
-#         self._render()
-#
-#     def new_unit(self, unit: Unit) -> None:
-#         with (self.lock):
-#             if self.unit_cost > 0.0:
-#                 self.progress(100.0)
-#             self.progress_average_speed = (
-#                 self.costs[type(unit).__name__] / self.timespans[type(unit).__name__]
-#                     if self.timespans[type(unit).__name__] != 0
-#                     else 0 )
-#             self.unit_cost = unit_cost(unit)
-#             self.unit_class_name = type(unit).__name__
-#             self.unit_cost_done = 0.0
-#             self.bonus_cost_done = 0.0
-#             self.last_progress_instant = time.perf_counter()
-#             self.last_refresh_instant = time.perf_counter()
-#             self.last_progress_percentage = 0.0
-#
-#     def progress(self, percentage: float) -> None:
-#         delta = percentage - self.last_progress_percentage
-#         self.last_progress_percentage = percentage
-#         chunk_cost = self.unit_cost * delta / 100.0
-#         old_part = clamp(None, self.bonus_cost_done, chunk_cost)
-#         new_part = chunk_cost - old_part
-#         now = time.perf_counter()
-#         delta = now - self.last_progress_instant
-#         self.last_progress_instant = now
-#         if self.started[self.unit_class_name] and delta > 0.0:
-#             self.timespans[self.unit_class_name] += delta
-#             self.costs[self.unit_class_name] += chunk_cost
-#             current_speed = chunk_cost / delta
-#             self.progress_average_speed = (
-#                 current_speed if self.progress_average_speed == 0.0
-#                               else ( 0.8 * self.progress_average_speed +
-#                                      0.2 * current_speed               ) )
-#         self.started[self.unit_class_name] = True
-#         self._old_progress(old_part)
-#         self._new_progress(new_part)
-#         self._render()
-#
-#     def _old_progress(self, chunk_cost: float) -> None:
-#         self.bonus_cost_done -= clamp(0, chunk_cost, None)
-#
-#     def _new_progress(self, chunk_cost: float) -> None:
-#         self.total_cost_done = clamp( None                              ,
-#                                       self.total_cost_done + chunk_cost ,
-#                                       self.total_cost                   )
-#         self.unit_cost_done = clamp( None                              ,
-#                                      self.unit_cost_done +  chunk_cost ,
-#                                      self.unit_cost                    )
-#
-#     def refresh(self) -> None:
-#         with self.lock:
-#             now = time.perf_counter()
-#             delta = now - self.last_refresh_instant
-#             self.last_refresh_instant = now
-#             bonus_chunk_cost = clamp( 0.0,
-#                                       delta * self.progress_average_speed ,
-#                                       self.unit_cost - self.unit_cost_done )
-#             self.bonus_cost_done += bonus_chunk_cost
-#             self.total_cost_done = clamp( None,
-#                                           self.total_cost_done + bonus_chunk_cost ,
-#                                           self.total_cost                         )
-#             self.unit_cost_done = clamp( None                                   ,
-#                                          self.unit_cost_done + bonus_chunk_cost ,
-#                                          self.unit_cost                         )
-#             self._render()
-#
-#     def _render(self) -> None:
-#         now = time.perf_counter()
-#         delta = now - self.last_render_instant
-#         self.last_render_instant = now
-#         percentage = 100.0 * ( 1.0 if self.total_cost == 0.0
-#                                    else self.total_cost_done / self.total_cost )
-#         if delta > 0.0:
-#             speed = ( (percentage - self.last_render_percentage) *
-#                       self.total_cost                            /
-#                       (100 * delta)                              )
-#             decay = math.exp(-delta / 0.6)
-#             self.refresh_average_speed = (
-#                 speed if self.refresh_average_speed == 0.0
-#                       else ( decay * self.refresh_average_speed +
-#                              (1 - decay)* speed                 ) )
-#
-#         self.last_render_percentage = percentage
-#
-#         bar = make_bar(percentage)
-#
-#         line = (
-#             f" [{bar}]"
-#             f" {percentage:6.2f}% "
-#             f"({self.total_cost_done:6.2f}/{self.total_cost:6.2f} Mpx), "
-#             f"{self.refresh_average_speed:5.2f} Mpx/s"
-#         )
-#
-#         print( f"\r\033[K" + line ,
-#                end=""             ,
-#                flush=True         )
-#
-#         if savelevel() >= SaveLevel.debug:
-#             progress_file_handle.write(sys.modules[__name__].now() + ": " + line + "\n")
-#             progress_file_handle.flush()
-#
-#     def complete(self) -> None:
-#         self.stop_event.set()
-#         self.refresh_thread.join()
-#         with self.lock:
-#             self.total_cost_done = self.total_cost
-#             self.last_render_percentage = 100.0
-#             self.refresh_average_speed = 0.0
-#             self._render()
-#
-#     def _refresh_call(self) -> None:
-#         while not self.stop_event.wait(0.1):
-#             self.refresh()
-#
-#     def __enter__(self) -> "ProgressBar":
-#         return self
-#
-#     def __exit__(self, exc_type, exc_value, traceback) -> None:
-#         self.stop_event.set()
-#         self.refresh_thread.join()
+# TODO 'ProgressBar' refactoring (and turning into zero the first percentage of a unit)
 
 class ProgressBar:
 
@@ -1184,7 +1024,6 @@ class ProgressBar:
             print("\033[?25h", end="", flush=True)
             self.cursor_hidden = False
 
-
 ########################################################################################
 # Image Loading
 ########################################################################################
@@ -1199,31 +1038,7 @@ def current_height() -> int: return current_image.height
 def input_width()    -> int: return input_image.width
 def input_height()   -> int: return input_image.height
 
-# def load(path: Path, input: bool = False) -> pyvips.Image:
-#
-#     global input_format
-#     global input_mode
-#
-#     source_image = pyvips.Image.new_from_file(str(path), access = "sequential")
-#
-#     if input:
-#
-#         input_format = source_image.get("vips-loader").removesuffix("load")
-#         input_mode = ( f"{source_image.bands}bands--"                +
-#                        f"{source_image.interpretation}"              +
-#                        ("+alpha" if source_image.hasalpha() else "") )
-#
-#     source_image = source_image.colourspace("srgb")
-#
-#     if source_image.bands == 3:
-#         source_image = source_image.addalpha()
-#
-#     if source_image.bands > 4:
-#         source_image = source_image[:4]
-#
-#     source_image = source_image.cast("uchar")
-#
-#     return source_image.copy_memory()
+# TODO 'load' refactoring --------------------------------------------------------------
 
 def load(unit: Load, path: Path, bar: ProgressBar | None = None) -> pyvips.Image:
 
@@ -1319,6 +1134,85 @@ def load_input_image() -> None:
 
     input_image = load(Load(image.width, image.height), input_file_path())
     current_image = input_image.copy()
+
+########################################################################################
+# Image Descaling
+########################################################################################
+
+def luminance(image: pyvips.Image) -> pyvips.Image:
+    image = image[:3] if image.bands > 3 else image
+
+    if image.bands == 1:
+        return image.cast("uchar")
+
+    return image.colourspace("b-w").cast("uchar")
+
+
+def to_numpy(image: pyvips.Image) -> np.ndarray:
+    return numpy.ndarray(
+        buffer=image.write_to_memory(),
+        dtype=numpy.uint8,
+        shape=(image.height, image.width),
+    )
+
+def roundtrip(image: pyvips.Image, factor: float) -> pyvips.Image:
+    width = max(1, round(image.width / factor))
+    height = max(1, round(image.height / factor))
+
+    reduced = image.resize(
+        width / image.width,
+        vscale=height / image.height,
+        kernel="lanczos3",
+    )
+
+    return reduced.resize(
+        image.width / reduced.width,
+        vscale=image.height / reduced.height,
+        kernel="lanczos3",
+    )
+
+def similarity(
+    reference: numpy.ndarray,
+    image: pyvips.Image,
+    factor: float,
+) -> float:
+    reconstructed = to_numpy(roundtrip(image, factor))
+
+    return float(
+        skimage.metrics.structural_similarity(
+            reference,
+            reconstructed,
+            data_range=255,
+        )
+    )
+
+def descale(image: pyvips.Image) -> float:
+    img = image.copy()
+    img = luminance(image)
+    reference = to_numpy(image)
+
+    low = 1.0
+    high = 2.0
+
+    while similarity(reference, img, high) >= DESCALE_TARGET:
+        low = high
+        high *= 2.0
+
+        if (
+            round(img.width / high) <= 1
+            or round(img.height / high) <= 1
+        ):
+            break
+
+    for _ in range(DESCALE_ITERATIONS):
+        middle = (low + high) / 2.0
+
+        if similarity(reference, img, middle) >= DESCALE_TARGET:
+            low = middle
+        else:
+            high = middle
+
+    return (low + high) / 2.0
 
 ########################################################################################
 # Nested Dictionary Underscore-Based Flattening
@@ -1510,7 +1404,8 @@ def settings_from_core_options() -> Settings:
         MainSettings(
             float_from_core_options(CoreOption.main_divisor),
             float_from_core_options(CoreOption.main_multiplier),
-            str_from_core_options(CoreOption.main_scaler)
+            str_from_core_options(CoreOption.main_scaler),
+            int(flex_options["tile"])
         ),
 
         ModelSettings(
@@ -1550,19 +1445,73 @@ def load_settings() -> None:
               f"{len(Argument) - 1 + len(CoreOption)} expected" )
 
 ########################################################################################
+# Settings Recording
+########################################################################################
+
+def create_settings_file() -> None:
+
+    if savelevel() >= SaveLevel.text:
+
+        with open(SETTINGS_FILE_PATH, "w") as settings_handle:
+            settings_handle.write(export_settings(settings))
+
+########################################################################################
+# Session Construction
+########################################################################################
+
+session: Session
+
+def create_session() -> None:
+
+    global session
+
+    stamp = f"{INVOCATION_DATE}--{INVOCATION_TIME}--{INVOCATION_USEC}"
+
+    session = Session (
+
+        Invocation(stamp, SOFTWARE_VERSION, savelevel().name)                  ,
+        ImageInfo(input_format, input_mode, input_width(), input_height())     ,
+        ImageInfo(OUTPUT_FORMAT, OUTPUT_MODE, output_width(), output_height()) ,
+        settings
+    )
+
+########################################################################################
+# Session Recording
+########################################################################################
+
+def create_session_file() -> None:
+
+    if savelevel() >= SaveLevel.text:
+
+        with open(SESSION_FILE_PATH, "w") as session_handle:
+            session_handle.write(export_session(session))
+
+########################################################################################
+# Defaults Resolution
+########################################################################################
+
+def resolve_defaults() -> None:
+
+    if settings.main.tiling == 0:
+        settings.main.tiling = 4
+
+    if settings.main.divisor == 0:
+        settings.main.divisor = descale(input_image)
+
+########################################################################################
 # Disjoint Settings Validation
 ########################################################################################
 
 def disjoint_settings_validation() -> None:
 
-    assume( settings.main.multiplier >= 1.0 , "main multiplier < 1"       )
-    assume( settings.main.divisor    >= 1.0 , "main divisor < 1"          )
-    assume( settings.soft.multiplier >= 2   , "soft-phase multiplier < 2" )
-    assume( settings.soft.divisor    >= 1.0 , "soft-phase divisor < 1"    )
-    assume( settings.soft.iterations >= 0   , "soft-phase iterations < 0" )
-    assume( settings.hard.multiplier >= 2   , "hard-phase multiplier < 2" )
-    assume( settings.hard.divisor    >= 1.0 , "hard-phase divisor < 1"    )
-    assume( settings.hard.iterations >= 0   , "hard-phase iterations < 0" )
+    assume( settings.main.multiplier >= 1.0  , "main multiplier < 1"       )
+    assume( settings.main.divisor    >= 1.0  , "main divisor < 1 and != 0" )
+    assume( settings.soft.multiplier >= 2    , "soft-phase multiplier < 2" )
+    assume( settings.soft.divisor    >= 1.0  , "soft-phase divisor < 1"    )
+    assume( settings.soft.iterations >= 0    , "soft-phase iterations < 0" )
+    assume( settings.hard.multiplier >= 2    , "hard-phase multiplier < 2" )
+    assume( settings.hard.divisor    >= 1.0  , "hard-phase divisor < 1"    )
+    assume( settings.hard.iterations >= 0    , "hard-phase iterations < 0" )
 
 
     assume( settings.soft.iterations <= MAX_ITERATIONS ,
@@ -1641,48 +1590,6 @@ def combined_settings_validation() -> None:
             f"attempt to generate an intermediate image larger than {MAX_MPX} Mpx" )
 
 ########################################################################################
-# Settings Recording
-########################################################################################
-
-def create_settings_file() -> None:
-
-    if savelevel() >= SaveLevel.text:
-
-        with open(SETTINGS_FILE_PATH, "w") as settings_handle:
-            settings_handle.write(export_settings(settings))
-
-########################################################################################
-# Session Construction
-########################################################################################
-
-session: Session
-
-def create_session() -> None:
-
-    global session
-
-    stamp = f"{INVOCATION_DATE}--{INVOCATION_TIME}--{INVOCATION_USEC}"
-
-    session = Session (
-
-        Invocation(stamp, SOFTWARE_VERSION, flex_options["save"])   ,
-        ImageInfo(input_format, input_mode, input_width(), input_height()) ,
-        ImageInfo(OUTPUT_FORMAT, OUTPUT_MODE, output_width(), output_height()) ,
-        settings
-    )
-
-########################################################################################
-# Session Recording
-########################################################################################
-
-def create_session_file() -> None:
-
-    if savelevel() >= SaveLevel.text:
-
-        with open(SESSION_FILE_PATH, "w") as session_handle:
-            session_handle.write(export_session(session))
-
-########################################################################################
 # Progress Bar Logging
 ########################################################################################
 
@@ -1715,38 +1622,7 @@ def init_run_system() -> None:
     forward_j = 0
     forward_k = 0
 
-# def save(unit: StepForward, path: Path, bar: ProgressBar) -> None:
-#
-#     if unit.save:
-#
-#         bar.new_unit(unit)
-#
-#         image           = current_image.copy()
-#         last_percentage = 0.0
-#         started         = False
-#
-#         def start_bar(image: pyvips.Image, progress: Any) -> None:
-#
-#             nonlocal started
-#
-#             if not started:
-#                 started = True
-#                 bar.progress(0.0)
-#
-#         def update_bar(image: pyvips.Image, progress: Any) -> None:
-#
-#             nonlocal last_percentage
-#
-#             percentage = float(progress.percent)
-#             if percentage > last_percentage:
-#                 last_percentage = percentage
-#                 bar.progress(percentage)
-#
-#         image.set_progress(True)
-#         image.signal_connect("preeval", start_bar)
-#         image.signal_connect("eval", update_bar)
-#
-#         image.write_to_file(str(path))
+# TODO 'save' refactoring --------------------------------------------------------------
 
 def save(unit: Save, image: pyvips.Image, path: Path, bar: ProgressBar) -> None:
 
@@ -1808,51 +1684,7 @@ def save(unit: Save, image: pyvips.Image, path: Path, bar: ProgressBar) -> None:
     finally:
         signal.signal(signal.SIGINT, previous_sigint)
 
-
-# def scale(unit: Scaling, bar: ProgressBar) -> None:
-#
-#     global current_image
-#
-#     if unit.out_width == unit.in_width and unit.out_height == unit.in_height:
-#         return
-#
-#     bar.new_unit(unit)
-#
-#     kernels         = {"lanczos": "lanczos3", "bicubic": "cubic"}
-#     kernel          = kernels.get(unit.algorithm)
-#     hscale          = unit.out_width / unit.in_width
-#     vscale          = unit.out_height / unit.in_height
-#     image           = current_image.resize(hscale, vscale = vscale, kernel = kernel)
-#     last_percentage = 0.0
-#     started         = False
-#
-#     def start_bar(image: pyvips.Image, progress: Any) -> None:
-#
-#         nonlocal started
-#
-#         if not started:
-#             started = True
-#             bar.progress(0.0)
-#
-#     def update_bar(image: pyvips.Image, progress: Any) -> None:
-#
-#         nonlocal last_percentage
-#
-#         percentage = float(progress.percent)
-#         if percentage > last_percentage:
-#             last_percentage = percentage
-#             bar.progress(percentage)
-#
-#     image.set_progress(True)
-#     image.signal_connect("preeval", start_bar)
-#     image.signal_connect("eval", update_bar)
-#     image.signal_connect("preeval" , lambda image, progress:
-#                                          log_scaling_progress("preeval", progress))
-#     image.signal_connect("eval"    , lambda image, progress:
-#                                          log_scaling_progress("eval", progress))
-#     image.signal_connect("posteval", lambda image, progress:
-#                                          log_scaling_progress("posteval", progress))
-#     current_image = image.copy_memory()
+# TODO 'scale' refactoring -------------------------------------------------------------
 
 def scale(unit: Scaling, bar: ProgressBar) -> None:
 
@@ -1939,16 +1771,15 @@ def scale_ai(unit: ScalingAI, bar: ProgressBar) -> None:
 
     process = subprocess.Popen(
 
-        [ str(RENV_FILE_PATH)                                ,
-          "-i", str(TEMP_INPUT_FILE_PATH)                    ,
-          "-o", str(TEMP_OUTPUT_FILE_PATH)                   ,
-          "-m", str(MODEL_FOLDER_PATH)                       ,
-          "-n", unit.model                                   ,
-          "-t", "0" if flex_options["tile"] == "0"
-                    else str(64 * int(flex_options["tile"])) ,
-          "-g", "0"                                          ,
-          "-j", "1:1:1"                                      ,
-          "-s", str(unit.multiplier)                         ],
+        [ str(RENV_FILE_PATH)                  ,
+          "-i", str(TEMP_INPUT_FILE_PATH)      ,
+          "-o", str(TEMP_OUTPUT_FILE_PATH)     ,
+          "-m", str(MODEL_FOLDER_PATH)         ,
+          "-n", unit.model                     ,
+          "-t", str(64 * settings.main.tiling) ,
+          "-g", "0"                            ,
+          "-j", "1:1:1"                        ,
+          "-s", str(unit.multiplier)           ],
 
         stdout  = subprocess.PIPE   ,
         stderr  = subprocess.STDOUT ,
@@ -2202,16 +2033,18 @@ def main():
         log("the input image has been loaded")
         load_settings()
         log("settings have been loaded")
-        disjoint_settings_validation()
-        log("settings have passed disjoint validation")
-        combined_settings_validation()
-        log("settings have passed combined validation")
         create_settings_file()
         log("the settings file has been written")
         create_session()
         log("the session has been created")
         create_session_file()
         log("the session file has been written")
+        resolve_defaults()
+        log("defaults have been resolved")
+        disjoint_settings_validation()
+        log("settings have passed disjoint validation")
+        combined_settings_validation()
+        log("settings have passed combined validation")
         init_run_system()
         log("the run system is operative")
         create_progress_file()
