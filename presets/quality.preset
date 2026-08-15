@@ -1,0 +1,12 @@
+main_reduction  = null
+main_format     = "4k"
+main_laststep   = "bicubic"
+main_tiling     = 256
+soft_enhancer   = "4xHFA2k"
+soft_scaler     = "bicubic"
+soft_divisor    = null
+soft_iterations = 2
+hard_enhancer   = "realesrgan-x4plus-anime"
+hard_scaler     = "lanczos"
+hard_divisor    = null
+hard_iterations = 2

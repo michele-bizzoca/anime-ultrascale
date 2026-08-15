@@ -2,7 +2,6 @@
 # Imports
 ########################################################################################
 
-# Qualified
 import sys
 import os
 import time
@@ -21,14 +20,14 @@ import numpy
 import signal
 import skimage
 
-# Unqualified
 from pathlib import Path
-from enum import IntEnum
+from enum import IntEnum, Enum
 from datetime import datetime
 from dataclasses import dataclass
 from threading import Event, Thread, Lock
-from typing import (cast, Callable, TypeVar, NoReturn,
-                    TypeAlias, Final, TextIO, BinaryIO, Any)
+from typing import Callable, TypeVar, NoReturn, TypeAlias, Final, TextIO, Any
+
+# Notes: batch, progress messages, variable output extension
 
 ########################################################################################
 # Type Variables
@@ -40,19 +39,23 @@ T = TypeVar("T")
 # Constants
 ########################################################################################
 
-SOFTWARE_VERSION   : Final = "1.0"
-OUTPUT_FORMAT      : Final = "png"
-OUTPUT_MODE        : Final = "4bands--srgb+alpha"
+SOFTWARE_VERSION   : Final = "2.0"
+OUTPUT_MODE        : Final = "png--4bands--srgb--alpha"
 TEMP_FOLDER        : Final = "temp"
 MODEL_FOLDER       : Final = "models"
 SESSION_FOLDER     : Final = "sessions"
+PRESET_FOLDER      : Final = "presets"
 RENV_FOLDER        : Final = "renv"
 SESSION_FILE       : Final = "session.json"
-SETTINGS_FILE      : Final = "settings.cfg"
+AUTO_PRESET        : Final = "quality.preset"
+DEFAULT_SOFT_MODEL : Final = "4xHFA2k"
+DEFAULT_HARD_MODEL : Final = "realesrgan-x4plus-anime"
+DEFAULT_FORMAT     : Final = "4k"
+PRESET_FILE        : Final = "session.preset"
 LOG_FILE           : Final = "log.txt"
 TEMP_INPUT_FILE    : Final = "in.png"
 TEMP_OUTPUT_FILE   : Final = "output.png"
-RENV_FILE          : Final = "realesrgan-ncnn-vulkan"
+RENV_RUNNER        : Final = "realesrgan-ncnn-vulkan"
 INVOCATION_FILE    : Final = "invocation.txt"
 SCALING_FILE       : Final = "scaling.txt"
 SCALING_AI_FILE    : Final = "scaling_ai.txt"
@@ -83,45 +86,53 @@ PHASES : Final = [
 ########################################################################################
 
 INVOCATION_INSTANT : Final = datetime.fromtimestamp(psutil.Process().create_time())
+INVOCATION_PATH    : Final = Path(__file__).resolve().parent
+INVOCATION_PID     : Final = os.getpid()
+
 INVOCATION_DATE    : Final = INVOCATION_INSTANT.strftime('%Y-%m-%d')
 INVOCATION_TIME    : Final = INVOCATION_INSTANT.strftime('%H-%M-%S')
 INVOCATION_USEC    : Final = INVOCATION_INSTANT.strftime('%f')
-INVOCATION_PID     : Final = os.getpid()
 
 ########################################################################################
 # Paths
 ########################################################################################
 
-PARENT_PATH       : Final = Path(__file__).resolve().parent
-MODEL_FOLDER_PATH : Final = PARENT_PATH / MODEL_FOLDER
-RENV_FOLDER_PATH  : Final = PARENT_PATH / RENV_FOLDER
+MODEL_FOLDER_PATH   : Final = INVOCATION_PATH / MODEL_FOLDER
+RENV_FOLDER_PATH    : Final = INVOCATION_PATH / RENV_FOLDER
+PRESET_FOLDER_PATH  : Final = INVOCATION_PATH / PRESET_FOLDER
 
-
-SESSION_FOLDER_PATH : Final = ( PARENT_PATH            /
+SESSION_FOLDER_PATH : Final = ( INVOCATION_PATH        /
                                 SESSION_FOLDER         /
                                 INVOCATION_DATE        /
                                 f"{INVOCATION_TIME}--"  
                                 f"{INVOCATION_USEC}--"  
                                 f"{INVOCATION_PID}"    )
 
-TEMP_FOLDER_PATH : Final = ( PARENT_PATH            /
+TEMP_FOLDER_PATH : Final = ( INVOCATION_PATH        /
                              TEMP_FOLDER            /
                              f"{INVOCATION_DATE}--"      
                              f"{INVOCATION_TIME}--"      
                              f"{INVOCATION_USEC}--"     
                              f"{INVOCATION_PID}"    )
 
-INVOCATION_FILE_PATH  : Final = SESSION_FOLDER_PATH / INVOCATION_FILE
-LOG_FILE_PATH         : Final = SESSION_FOLDER_PATH / LOG_FILE
-SESSION_FILE_PATH     : Final = SESSION_FOLDER_PATH / SESSION_FILE
-SETTINGS_FILE_PATH    : Final = SESSION_FOLDER_PATH / SETTINGS_FILE
-SCALING_FILE_PATH     : Final = SESSION_FOLDER_PATH / SCALING_FILE
-SCALING_AI_FILE_PATH  : Final = SESSION_FOLDER_PATH / SCALING_AI_FILE
-PROGRESS_FILE_PATH    : Final = SESSION_FOLDER_PATH / PROGRESS_FILE
-EXIT_FILE_PATH        : Final = SESSION_FOLDER_PATH / EXIT_FILE
-TEMP_INPUT_FILE_PATH  : Final = TEMP_FOLDER_PATH    / TEMP_INPUT_FILE
-TEMP_OUTPUT_FILE_PATH : Final = TEMP_FOLDER_PATH    / TEMP_OUTPUT_FILE
-RENV_FILE_PATH        : Final = RENV_FOLDER_PATH    / RENV_FILE
+INVOCATION_FILE_PATH     : Final = SESSION_FOLDER_PATH / INVOCATION_FILE
+LOG_FILE_PATH            : Final = SESSION_FOLDER_PATH / LOG_FILE
+SESSION_FILE_PATH        : Final = SESSION_FOLDER_PATH / SESSION_FILE
+PRESET_FILE_PATH         : Final = SESSION_FOLDER_PATH / PRESET_FILE
+SCALING_FILE_PATH        : Final = SESSION_FOLDER_PATH / SCALING_FILE
+SCALING_AI_FILE_PATH     : Final = SESSION_FOLDER_PATH / SCALING_AI_FILE
+PROGRESS_FILE_PATH       : Final = SESSION_FOLDER_PATH / PROGRESS_FILE
+EXIT_FILE_PATH           : Final = SESSION_FOLDER_PATH / EXIT_FILE
+TEMP_INPUT_FILE_PATH     : Final = TEMP_FOLDER_PATH    / TEMP_INPUT_FILE
+TEMP_OUTPUT_FILE_PATH    : Final = TEMP_FOLDER_PATH    / TEMP_OUTPUT_FILE
+RENV_RUNNER_PATH         : Final = RENV_FOLDER_PATH    / RENV_RUNNER
+AUTO_PRESET_PATH         : Final = PRESET_FOLDER_PATH  / AUTO_PRESET
+DEFAULT_SOFT_BIN_PATH    : Final = MODEL_FOLDER_PATH   / f"{DEFAULT_SOFT_MODEL}.bin"
+DEFAULT_SOFT_PARAM_PATH  : Final = MODEL_FOLDER_PATH   / f"{DEFAULT_SOFT_MODEL}.param"
+DEFAULT_SOFT_CONFIG_PATH : Final = MODEL_FOLDER_PATH   / f"{DEFAULT_SOFT_MODEL}.config"
+DEFAULT_HARD_BIN_PATH    : Final = PRESET_FOLDER_PATH  / f"{DEFAULT_HARD_MODEL}.bin"
+DEFAULT_HARD_PARAM_PATH  : Final = PRESET_FOLDER_PATH  / f"{DEFAULT_HARD_MODEL}.param"
+DEFAULT_HARD_CONFIG_PATH : Final = PRESET_FOLDER_PATH  / f"{DEFAULT_HARD_MODEL}.config"
 
 ########################################################################################
 # Save Levels
@@ -136,63 +147,90 @@ class SaveLevel(IntEnum):
     debug     = 4
     research  = 5
 
-def descriptor(level: SaveLevel):
-    if level == SaveLevel.error:
-        return "ERROR"
-    if level == SaveLevel.debug:
-        return "DEBUG"
-    else:
-        return "NORMAL"
+def savelevel_descriptor(savelevel: SaveLevel):
+    if   savelevel == SaveLevel.error: return "error"
+    elif savelevel == SaveLevel.debug: return "debug"
+    else:                              return "normal"
 
 ########################################################################################
-# Scaler
+# Scalers
 ########################################################################################
 
 class Scaler(IntEnum):
 
-    bicubic = 0
-    lanczos = 1
+    bilinear = 0
+    bicubic  = 1
+    lanczos  = 2
+
+def scaler_descriptor(scaler: Scaler):
+    if   scaler == Scaler.bilinear: return "linear"
+    elif scaler == Scaler.bicubic:  return "cubic"
+    else:                           return "lanczos3"
 
 ########################################################################################
 # Arguments
 ########################################################################################
 
-class Argument(IntEnum):
+class Arguments(IntEnum):
 
-    script_filepath   = 0
-    input_filepath    = 1
-    output_filepath   = 2
+    program_path = 0
+    input_path   = 1
+    output_path  = 2
 
-class PathOption(IntEnum):
-    settings_filepath = 0
+class FullOptions(IntEnum):
+    main_format     = 0
+    main_reduction  = 1
+    main_laststep   = 2
+    main_tiling     = 3
+    soft_enhancer   = 4
+    soft_iterations = 5
+    soft_divisor    = 6
+    soft_scaler     = 7
+    hard_enhancer   = 8
+    hard_iterations = 9
+    hard_divisor    = 10
+    hard_scaler     = 11
 
-class CoreOption(IntEnum):
-    main_divisor      = 0
-    main_multiplier   = 1
-    main_scaler       = 2
-    soft_model        = 3
-    soft_divisor      = 4
-    soft_multiplier   = 5
-    soft_iterations   = 6
-    soft_scaler       = 7
-    hard_model        = 8
-    hard_divisor      = 9
-    hard_multiplier   = 10
-    hard_iterations   = 11
-    hard_scaler       = 12
+class BasicOptions(IntEnum):
+    main_format     = 1
+    soft_enhancer   = 2
+    soft_iterations = 3
+    hard_enhancer   = 4
+    hard_iterations = 5
 
-@dataclass
-class FlexOption:
-    name      : str
-    letter    : str
-    values    : list[str]
-    default   : str
+class TwoOptions(IntEnum):
+    format_or_preset_1 = 0
+    format_or_preset_2 = 0
 
-FLEX_OPTIONS : Final = [
+class OneOption(IntEnum):
+    format_or_preset = 0
 
-    FlexOption ("save", "s", [level.name for level in SaveLevel], "endpoints"),
-    FlexOption ("tile", "t", [str(i) for i in range(MAX_TILING)], "0")
-]
+class ZeroOptions(IntEnum):
+    pass
+
+class FlexOptions(Enum):
+    logging = 0
+
+def full_option_name(core_option: FullOptions) -> str:
+    [x, y] = core_option.name.split("_")
+    return ("-" if x == "hard" else "") + "--" + y
+
+def full_option_letter(core_option: FullOptions) -> str:
+    [x, y] = core_option.name.split("_")
+    return "-" + (y[0].upper() if x == "hard" else y[0])
+
+def flex_option_name(extra_option: FlexOptions) -> str:
+    return "--" + extra_option.name
+
+def flex_option_letter(extra_option: FlexOptions) -> str:
+    return "-" + extra_option.name[0]
+
+option_ids = ( { full_option_name(x)   : x for x in list(FullOptions) } |
+               { full_option_letter(x) : x for x in list(FullOptions) } |
+               { flex_option_name(x)   : x for x in list(FlexOptions) } |
+               { flex_option_letter(x) : x for x in list(FlexOptions) } )
+
+Options: TypeAlias = FullOptions | BasicOptions | TwoOptions | OneOption | ZeroOptions
 
 ########################################################################################
 # Session
@@ -208,7 +246,6 @@ class Invocation:
 @dataclass
 class ImageInfo:
 
-    format : str
     mode   : str
     width  : int
     height : int
@@ -216,19 +253,18 @@ class ImageInfo:
 @dataclass
 class MainSettings:
 
-    divisor      : float
-    multiplier   : float
-    scaler       : str
-    tiling       : int
+    format    : str
+    reduction : float | None
+    laststep  : str   | None
+    tiling    : int   | None
 
 @dataclass
 class ModelSettings:
 
-    model      : str
-    divisor    : float
-    multiplier : int
+    enhancer   : str
     iterations : int
-    scaler     : str
+    divisor    : float | None
+    scaler     : str   | None
 
 @dataclass
 class Settings:
@@ -250,16 +286,16 @@ class Session:
 ########################################################################################
 
 @dataclass
-class Scaling:
-    algorithm  : str
+class Scale:
+    scaler     : str
     in_width   : int
     in_height  : int
     out_width  : int
     out_height : int
 
 @dataclass
-class ScalingAI:
-    model      : str
+class Enhance:
+    enhancer   : str
     multiplier : int
     in_width   : int
     in_height  : int
@@ -267,8 +303,8 @@ class ScalingAI:
     out_height : int
 
 @dataclass
-class PureAI:
-    model      : str
+class Realesrgan:
+    enhancer   : str
     multiplier : int
     in_width   : int
     in_height  : int
@@ -295,20 +331,20 @@ class StepForward:
 class PhaseForward:
     pass
 
-Unit: TypeAlias = ( Scaling | ScalingAI | PureAI      |
-                    Save    | Load      | StepForward | PhaseForward )
+Unit: TypeAlias = ( Scale | Enhance | Realesrgan  |
+                    Save  | Load    | StepForward | PhaseForward )
 
-UNIT_CLASSES : Final = [ Scaling , ScalingAI , PureAI      ,
-                         Save    , Load      , StepForward , PhaseForward ]
+UNIT_CLASSES : Final = [ Scale , Enhance , Realesrgan  ,
+                         Save  , Load    , StepForward , PhaseForward ]
 
 def unit_cost(unit: Unit) -> float:
 
-    if   isinstance(unit, Scaling) and not ( unit.in_width  == unit.out_width and
-                                             unit.in_height == unit.out_height  ):
+    if   isinstance(unit, Scale) and not ( unit.in_width  == unit.out_width and
+                                           unit.in_height == unit.out_height  ):
         return unit.out_width * unit.out_height * 0.1  / 1000000
-    elif isinstance(unit, ScalingAI):
+    elif isinstance(unit, Enhance):
         return unit.in_width  * unit.in_height  * 1.33 / 1000000
-    elif isinstance(unit, PureAI):
+    elif isinstance(unit, Realesrgan):
         return unit.in_width  * unit.in_height  * 1.00 / 1000000
     elif isinstance(unit, Save):
         return unit.width     * unit.height     * 0.33 / 1000000
@@ -319,18 +355,20 @@ def unit_cost(unit: Unit) -> float:
     return 0
 
 ########################################################################################
-# Current Time
+# Now-String
 ########################################################################################
 
-def now() -> str: return datetime.now().strftime('on %Y/%m/%d at %H:%M:%S and %f')
+def now_string(now: datetime) -> str:
+
+    return now.strftime('on %Y/%m/%d at %H:%M:%S and %f')
 
 ########################################################################################
 # Early Error Reporting
 ########################################################################################
 
-def early_fail( message   : str                        ,
-                suggest   : bool = True                ,
-                exception : BaseException | None = None) -> NoReturn:
+def early_fail( message   : str                         ,
+                suggest   : bool = True                 ,
+                exception : BaseException | None = None ) -> NoReturn:
 
     tail = " Run with --help for usage information." if suggest else ""
     line = message[:1].upper() + message[1:] + "." + tail
@@ -354,14 +392,12 @@ def early_assume( condition : bool                        ,
 fixed_arguments    : list[str]
 positional_options : list[str]
 flex_options       : dict[str, str]
-option_sorting_now : str
 
 def sort_options() -> None:
 
     global fixed_arguments
     global positional_options
     global flex_options
-    global option_sorting_now
 
     if len(sys.argv) == 2:
         if sys.argv[1] in ["-h", "--help"]:
@@ -371,59 +407,37 @@ def sort_options() -> None:
             print(SOFTWARE_VERSION)
             exit()
 
-    fixed_arguments    = sys.argv[:len(Argument)]
+    fixed_arguments    = sys.argv[:len(Arguments)]
     positional_options = []
     flex_options       = {}
 
-    flex_option_by_name   = {}
-    flex_option_by_letter = {}
+    early_assume(len(sys.argv) >= len(Arguments), "incomplete I/O specification")
 
-    for option in FLEX_OPTIONS:
-        flex_option_by_name[option.name]     = option
-        flex_option_by_letter[option.letter] = option
-
-    early_assume(len(sys.argv) >= len(Argument), "incomplete I/O specification")
-
-    i = len(Argument)
+    i = len(Arguments)
     while i < len(sys.argv):
 
         arg = sys.argv[i]
 
-        if arg.startswith("--"):
-            early_assume( arg[2:] in flex_option_by_name   ,
-                          f"unknown floating option {arg}" )
-            option = flex_option_by_name[arg[2:]]
-
-        elif arg.startswith("-"):
-            early_assume( arg[1:] in flex_option_by_letter ,
-                          f"unknown floating option {arg}" )
-            option = flex_option_by_letter[arg[1:]]
-
-        else:
+        if not arg.startswith("-"):
             early_assume( not flex_options                             ,
                           "positional option following a floating one" )
             positional_options.append(arg)
             i += 1; continue
 
-        early_assume( i + 1 < len(sys.argv)                      ,
-                      f"missing value for floating option {arg}" )
+        early_assume(arg in option_ids.keys(), f"unknown floating option {arg}" )
+        option = option_ids[arg]
 
-        early_assume( not sys.argv[i + 1].startswith("-")        ,
+        early_assume( i + 1 < len(sys.argv) and
+                      not sys.argv[i + 1].startswith("-")        ,
                       f"missing value for floating option {arg}" )
 
         early_assume( option.name not in flex_options              ,
                       f"multiple values for floating option {arg}" )
 
-        early_assume( sys.argv[i + 1] in option.values           ,
-                      f"unknown value for floating option {arg}" )
-
         flex_options[option.name] = sys.argv[i + 1]
         i += 2; continue
 
-    for option in FLEX_OPTIONS:
-        flex_options.setdefault(option.name, option.default)
-
-    option_sorting_now = now()
+    sort_options.now = datetime.now()
 
 ########################################################################################
 # Save Level
@@ -437,35 +451,29 @@ def savelevel() -> SaveLevel:
 # Session Folder Creation
 ########################################################################################
 
-session_folder_now: str
-
 def create_session_folder() -> None:
-
-    global session_folder_now
 
     if savelevel() >= SaveLevel.text:
         SESSION_FOLDER_PATH.mkdir(parents = True, exist_ok = True)
 
-    session_folder_now = now()
+    create_session_folder.now = datetime.now()
 
 ########################################################################################
 # Exit Message
 ########################################################################################
 
 exit_file_handle: TextIO
-record_outcome_now: str
 
 def create_exit_file() -> None:
 
     global exit_file_handle
-    global record_outcome_now
 
     if savelevel() >= SaveLevel.debug:
         exit_file_handle = open(EXIT_FILE_PATH, "w")
         def close_exit_file(): exit_file_handle.close()
         atexit.register(close_exit_file)
 
-    record_outcome_now = now()
+    create_exit_file.now = datetime.now()
 
 def record_outcome(message: str) -> None:
 
@@ -488,11 +496,13 @@ def create_log_file() -> None:
         def close_log_file(): log_file_handle.close()
         atexit.register(close_log_file)
 
-def log(message: str, now_ : str | None = None, level: SaveLevel = SaveLevel.text):
+    create_log_file.now = datetime.now()
+
+def log(message: str, level: SaveLevel = SaveLevel.text, now : datetime | None = None):
 
     if savelevel() >= SaveLevel.text and savelevel() >= level:
-        now_ = now() if now_ is None else now_
-        message = f"{now_}, level {descriptor(level)}: {message}"
+        now = datetime.now() if now is None else now
+        message = f"{now_string(now)}, level {savelevel_descriptor(level)}: {message}"
         log_file_handle.write(message + "\n")
         log_file_handle.flush()
 
@@ -504,7 +514,7 @@ def fail( message   : str                         ,
           suggest   : bool = True                 ,
           exception : BaseException | None = None ) -> NoReturn:
 
-    log(message, now(), SaveLevel.error)
+    log(message, SaveLevel.error)
     early_fail(message, suggest, exception)
 
 def assume( condition : bool                        ,
@@ -522,12 +532,11 @@ def assume( condition : bool                        ,
 def create_invocation_file() -> None:
 
     if savelevel() >= SaveLevel.text:
-        with open(INVOCATION_FILE_PATH, "w") as INVOCATION_FILE_HANDLE:
-            stamp = f"{INVOCATION_DATE}--{INVOCATION_TIME}--{INVOCATION_USEC}"
-            INVOCATION_FILE_HANDLE.write( f"PID: {INVOCATION_PID}\n"         +
-                                          f"Timestamp: {stamp}\n"            +
-                                          f"PWD: {Path.cwd()}\n"             +
-                                          f"Command: {' '.join(sys.argv)}\n" )
+        stamp = f"{INVOCATION_DATE}--{INVOCATION_TIME}--{INVOCATION_USEC}"
+        INVOCATION_FILE_PATH.write_text( f"PID: {INVOCATION_PID}\n"         +
+                                         f"Timestamp: {stamp}\n"            +
+                                         f"PWD: {Path.cwd()}\n"             +
+                                         f"Command: {' '.join(sys.argv)}\n" )
 
 ########################################################################################
 # Temporary Files Support
@@ -568,7 +577,7 @@ def create_scaling_file() -> None:
 def scaling_update(job: str, event: str, progress: Any) -> None:
 
     if savelevel() >= SaveLevel.debug:
-        scaling_file_handle.write( f"{now()}: "
+        scaling_file_handle.write( f"{now_string(datetime.now())}: "
                                    f"job={job}, "
                                    f"event={event}, "
                                    f"percent={progress.percent}, "
@@ -597,25 +606,34 @@ def create_scaling_ai_file() -> None:
 # User I/O Files
 ########################################################################################
 
-def input_file_path()  -> Path : return Path(fixed_arguments[Argument.input_filepath])
-def output_file_path() -> Path : return Path(fixed_arguments[Argument.output_filepath])
+def input_file_path()  -> Path : return Path(fixed_arguments[Arguments.input_path])
+def output_file_path() -> Path : return Path(fixed_arguments[Arguments.output_path])
 
 ########################################################################################
-# I/O Files Existence Checks
+# Existence Checks
 ########################################################################################
 
-def existence_checks() -> None:
+def io_existence_checks() -> None:
+    assume(input_file_path().is_file(), "input file does not exist")
+    assume(output_file_path().parent.is_dir(), "output folder does not exist")
+    assume(output_file_path().suffix.lower() == ".png", "output extension is not png")
 
-    assume(RENV_FILE_PATH.is_file()                   , "missing Real ESRGAN runner"  )
-    assume(input_file_path().is_file()                , "input file does not exist"   )
-    assume(output_file_path().parent.is_dir()         , "output folder does not exist")
-    assume(output_file_path().suffix.lower() == ".png", "output extension is not png" )
+def internal_existence_checks() -> None:
+    assume(RENV_RUNNER_PATH.is_file(), "missing Real ESRGAN runner")
+    assume(AUTO_PRESET_PATH.is_file(), "missing automatic preset")
+    assume(DEFAULT_SOFT_BIN_PATH.is_file(), "missing default soft model's '.bin'")
+    assume(DEFAULT_SOFT_PARAM_PATH.is_file(), "missing default soft model's '.param'")
+    assume(DEFAULT_SOFT_CONFIG_PATH.is_file(), "missing default soft model's '.config'")
+    assume(DEFAULT_HARD_BIN_PATH.is_file(), "missing default hard model's '.bin'")
+    assume(DEFAULT_HARD_PARAM_PATH.is_file(), "missing default hard model's '.param'")
+    assume(DEFAULT_HARD_CONFIG_PATH.is_file(), "missing default hard model's '.config'")
 
 ########################################################################################
 # Progress Bar
 ########################################################################################
 
 # TODO 'ProgressBar' refactoring (and turning into zero the first percentage of a unit)
+#                                (and moving out breakpoints estimation)
 
 class ProgressBar:
 
@@ -866,7 +884,7 @@ class ProgressBar:
             self.current_unit_type
         ]
 
-        if elapsed_time == 0.0:
+        if elapsed_time == 0.0: # change
             return 10.0
 
         zero_percentage = 100.0 * self.pre_zero_elapsed_time_by_type[
@@ -880,8 +898,8 @@ class ProgressBar:
             self.current_unit_type
         ]
 
-        if elapsed_time == 0.0:
-            if self.current_unit_type == PureAI.__name__:
+        if elapsed_time == 0.0: # change
+            if self.current_unit_type == Realesrgan.__name__:
                 return 50.0
 
             return 90.0
@@ -998,7 +1016,7 @@ class ProgressBar:
             savelevel() >= SaveLevel.debug
             and percentage_text != self.last_logged_percentage_text
         ):
-            progress_file_handle.write(now() + ": " + line + "\n")
+            progress_file_handle.write(now_string(datetime.now()) + ": " + line + "\n")
             progress_file_handle.flush()
             self.last_logged_percentage_text = percentage_text
 
@@ -1028,9 +1046,8 @@ class ProgressBar:
 # Image Loading
 ########################################################################################
 
+initial_mode  : str
 input_image   : pyvips.Image
-input_format  : str
-input_mode    : str
 current_image : pyvips.Image
 
 def current_width()  -> int: return current_image.width
@@ -1120,19 +1137,19 @@ def load(unit: Load, path: Path, bar: ProgressBar | None = None) -> pyvips.Image
 
 def load_input_image() -> None:
 
+    global initial_mode
     global input_image
     global current_image
-    global input_format
-    global input_mode
 
-    image = pyvips.Image.new_from_file( str(input_file_path()) ,
-                                        access = "sequential"  )
-    input_format = image.get("vips-loader").removesuffix("load")
-    input_mode = ( f"{image.bands}bands--"
-                   f"{image.interpretation}"
-                   f"{'+alpha' if image.hasalpha() else ''}" )
+    initial_image = pyvips.Image.new_from_file( str(input_file_path()) ,
+                                                access = "sequential"  )
+    initial_mode = ( f"{initial_image.get('vips-loader').removesuffix('load')}--"
+                     f"{initial_image.bands}bands--"
+                     f"{initial_image.interpretation}--"
+                     f"{'alpha' if initial_image.hasalpha() else 'opaque'}" )
 
-    input_image = load(Load(image.width, image.height), input_file_path())
+    input_image = load( Load(initial_image.width, initial_image.height) ,
+                        input_file_path()                               )
     current_image = input_image.copy()
 
 ########################################################################################
@@ -1306,124 +1323,180 @@ def import_settings(s : str) -> Settings:
                              config = dacite.Config(check_types=True) )
 
 ########################################################################################
-# Path Options -> Settings
+# Format + Presets -> Settings
 ########################################################################################
 
-def settings_from_path_options() -> Settings:
+def interpret_format(s: str) -> tuple[int, int] | None:
 
-    path      = Path(positional_options[PathOption.settings_filepath])
-    extension = path.suffix[1:]
+    def parse_k(s: str, h: bool) -> tuple[int, int]:
+        f = int(s[:-1])
+        k1 = (960.0 if h else 540.0) * f / input_width()
+        k2 = (540.0 if h else 540.0) * f / input_height()
+        k = k1 if s[-1:] == "k" else k2
+        w = round(input_width() * k)
+        h = round(input_height() * k)
+        return w, h
 
-    with open(path) as handle:
-        text = handle.read()
-
-    if extension == "json":
-        return import_session(text).settings
-    elif extension == "cfg":
-        return import_settings(text)
+    if re.fullmatch("w[0-9]+", s):
+        w = int(s[1:])
+        h = round((float(w) / input_width()) * input_height())
+    elif re.fullmatch("h[0-9]+", s):
+        h = int(s[1:])
+        w = round((float(h) / input_height()) * input_width())
+    elif re.fullmatch("[0-9]+%", s):
+        k = float(s[:-1]) / 100
+        w = round(input_width() * k)
+        h = round(input_height() * k)
+    elif re.fullmatch("[0-9]+(\\.[0-9]+)?", s):
+        k = float(s)
+        w = round(input_width() * k)
+        h = round(input_height() * k)
+    elif re.fullmatch("[0-9]+[kK]", s):
+        w, h = parse_k(s, input_width() > input_height())
+    elif re.fullmatch("[0-9]+(kh|kv|KH|KV)?", s):
+        w, h = parse_k(s[:-1], s[-1:] in "hH")
     else:
-        fail("settings file type is unknown")
+        return None
+
+    return w, h
+
+def settings_from_format_and_presets(o1: str, o2: str) -> Settings:
+
+    f1 = interpret_format(o1)
+    f2 = interpret_format(o2)
+
+    assume(not (f1 is None and f2 is None),
+           "unrecognized format")
+
+    assume(not (f1 is not None and f2 is not None),
+           "format specified twice")
+
+    if f1 is None:
+        format_ = o2
+        preset = o1
+    else:
+        format_ = o1
+        preset = o2
+
+    if preset.endswith(".preset"):
+        preset_path = Path(preset)
+        assume(preset_path.is_file(),
+               "the preset file does not exists")
+    else:
+        preset_path = PRESET_FOLDER_PATH / (preset + ".preset")
+        assume(preset_path.is_file(),
+               "the specified preset is unavailable")
+
+    settings = import_settings(preset_path.read_text())
+    settings.main.format = format_
+
+    return settings
+
+def settings_from_zero_options() -> Settings:
+
+   o1 = DEFAULT_FORMAT
+   o2 = AUTO_PRESET.split('.')[0]
+
+   return settings_from_format_and_presets(o1, o2)
+
+def settings_from_two_options() -> Settings:
+
+   o1 = positional_options[TwoOptions.format_or_preset_1]
+   o2 = positional_options[TwoOptions.format_or_preset_2]
+
+   return settings_from_format_and_presets(o1, o2)
+
+def settings_from_one_option() -> Settings:
+
+    o1 = positional_options[OneOption.format_or_preset]
+    o2 = ( DEFAULT_FORMAT if interpret_format(o1) is None
+                          else AUTO_PRESET.split('.')[0] )
+
+    return settings_from_format_and_presets(o1, o2)
 
 ########################################################################################
-# Core Options -> Settings
+# Basic or Full Options -> Settings
 ########################################################################################
 
-def str_from_core_options(index: CoreOption) -> str:
+FORMAT_REGEX: Final = "[wh][0-9+]|[0-9]+%|[0-9]+(\\.[0-9]+)?|[0-9]+(k|kh|kv|K|KH|KV)"
+ALGORITHM_REGEX: Final = "[0-9a-zA-Z_-]+"
 
-    name = index.name.replace("_", " ")
-    assume(index < len(positional_options), f'the argument {name} is missing')
-    return positional_options[index]
+def parse_basic(index: Options) -> tuple[str, str]:
+    return index.name.replace("_", " "), positional_options[index]
 
-def number_from_core_options (
+def parse_int(index: Options) -> int:
+    name, s = parse_basic(index)
+    try: return int(s)
+    except BaseException as e:
+        fail(f"the argument '{name}' is not an integer", True, e)
 
-    index     : CoreOption,
-    read      : Callable[[str], T],
-    modifiers : str
+def parse_float(index: Options) -> float:
+    name, s = parse_basic(index)
+    s = positional_options[index]
+    try: return float(s)
+    except BaseException as e:
+        fail(f"the argument '{name}' is not a real", True, e)
 
-) -> tuple[T, str | None]:
+def parse_str(index:Options, regex: str) -> str:
+    name,s  = parse_basic(index)
+    if re.fullmatch(regex, s) is not None: return s
+    fail(f"the argument '{name}' has an unexpected format" )
 
-    text = str_from_core_options(index)
-    name = index.name.replace("_", " ")
+def with_auto(parser):
+    def f(*args):
+        _, s = parse_basic(args[0])
+        return None if s == "auto" else parser(*args)
+    return f
 
-    assume(text != "", f'the argument {name} is empty')
-    assume(len(text) > 1 or text not in modifiers, f'the argument {name} has no value')
-
-    prefix = text[0]  if text[0]  in modifiers else None
-    suffix = text[-1] if text[-1] in modifiers else None
-
-    assume( prefix is None or suffix is None,
-            f'the argument {name} has multiple modifiers' )
-
-    if prefix is not None: return read(text[1:]), prefix
-    if suffix is not None: return read(text[:-1]), suffix
-    return read(text), None
-
-def int_from_core_options(index: CoreOption) -> int:
-
-    value, _ = number_from_core_options(index, int, "")
-    return value
-
-def float_from_core_options (
-
-    index: CoreOption
-
-) -> float:
-
-    value, modifier = number_from_core_options(index, float, "wh%")
-
-    divisors = [ CoreOption.main_divisor ,
-                 CoreOption.soft_divisor ,
-                 CoreOption.hard_divisor ]
-
-    multipliers = [ CoreOption.main_multiplier ]
-
-    if modifier is not None:
-
-        if modifier == 'w' and index in divisors:
-            value = input_width() / value
-
-        elif modifier == "w" and index in multipliers:
-            value = value / input_width()
-
-        elif modifier == 'h' and index in divisors:
-            value = input_height() / value
-
-        elif modifier == "h" and index in multipliers:
-            value = value / input_height()
-
-        elif modifier == "%":
-            value = value / 100
-
-        else:
-            fail("unexpected real number modifier")
-
-    return value
-
-def settings_from_core_options() -> Settings:
+def settings_from_basic_options() -> Settings:
 
     return Settings (
 
         MainSettings(
-            float_from_core_options(CoreOption.main_divisor),
-            float_from_core_options(CoreOption.main_multiplier),
-            str_from_core_options(CoreOption.main_scaler),
-            int(flex_options["tile"])
+            parse_str(FullOptions.main_format, FORMAT_REGEX),
+            None,
+            None,
+            None
         ),
 
         ModelSettings(
-            str_from_core_options(CoreOption.soft_model),
-            float_from_core_options(CoreOption.soft_divisor),
-            int_from_core_options(CoreOption.soft_multiplier),
-            int_from_core_options(CoreOption.soft_iterations),
-            str_from_core_options(CoreOption.soft_scaler)
+            parse_str(FullOptions.soft_enhancer, ALGORITHM_REGEX),
+            parse_int(FullOptions.soft_iterations),
+            None,
+            None
         ),
 
         ModelSettings(
-            str_from_core_options(CoreOption.hard_model),
-            float_from_core_options(CoreOption.hard_divisor),
-            int_from_core_options(CoreOption.hard_multiplier),
-            int_from_core_options(CoreOption.hard_iterations),
-            str_from_core_options(CoreOption.hard_scaler)
+            parse_str(FullOptions.hard_enhancer, ALGORITHM_REGEX),
+            parse_int(FullOptions.hard_iterations),
+            None,
+            None
+        )
+    )
+
+def settings_from_full_options() -> Settings:
+
+    return Settings (
+
+        MainSettings(
+            parse_str(FullOptions.main_format, FORMAT_REGEX),
+            with_auto(parse_int)(FullOptions.main_reduction),
+            with_auto(parse_str)(FullOptions.main_laststep, ALGORITHM_REGEX),
+            with_auto(parse_int)(FullOptions.main_tiling)
+        ),
+
+        ModelSettings(
+            parse_str(FullOptions.soft_enhancer, ALGORITHM_REGEX),
+            parse_int(FullOptions.soft_iterations),
+            with_auto(parse_float)(FullOptions.soft_divisor),
+            with_auto(parse_str)(FullOptions.soft_scaler, ALGORITHM_REGEX)
+        ),
+
+        ModelSettings(
+            parse_str(FullOptions.hard_enhancer, ALGORITHM_REGEX),
+            parse_int(FullOptions.hard_iterations),
+            with_auto(parse_float)(FullOptions.hard_divisor),
+            with_auto(parse_str)(FullOptions.hard_scaler, ALGORITHM_REGEX)
         )
     )
 
@@ -1437,25 +1510,27 @@ def load_settings() -> None:
 
     global settings
 
-    if len(positional_options) == len(PathOption):
-        settings = settings_from_path_options()
-    elif len(positional_options) == len(CoreOption):
-        settings = settings_from_core_options()
+    if len(positional_options) == len(ZeroOptions):
+        settings = settings_from_zero_options()
+    elif len(positional_options) == len(OneOption):
+        settings = settings_from_one_option()
+    elif len(positional_options) == len(TwoOptions):
+        settings = settings_from_two_options()
+    elif len(positional_options) == len(BasicOptions):
+        settings = settings_from_basic_options()
+    elif len(positional_options) == len(OneOption):
+        settings = settings_from_full_options()
     else:
-        fail( "incorrect parameter count, "
-              f"{len(Argument) - 1 + len(PathOption)} or "
-              f"{len(Argument) - 1 + len(CoreOption)} expected" )
+        fail( "incorrect parameter count")
 
 ########################################################################################
 # Settings Recording
 ########################################################################################
 
-def create_settings_file() -> None:
+def create_presets_file() -> None:
 
     if savelevel() >= SaveLevel.text:
-
-        with open(SETTINGS_FILE_PATH, "w") as settings_handle:
-            settings_handle.write(export_settings(settings))
+        PRESET_FILE_PATH.write_text(export_settings(settings))
 
 ########################################################################################
 # Session Construction
@@ -1471,9 +1546,9 @@ def create_session() -> None:
 
     session = Session (
 
-        Invocation(stamp, SOFTWARE_VERSION, savelevel().name)                  ,
-        ImageInfo(input_format, input_mode, input_width(), input_height())     ,
-        ImageInfo(OUTPUT_FORMAT, OUTPUT_MODE, output_width(), output_height()) ,
+        Invocation(stamp, SOFTWARE_VERSION, savelevel().name)   ,
+        ImageInfo(initial_mode, input_width(), input_height())  ,
+        ImageInfo(OUTPUT_MODE, output_width(), output_height()) ,
         settings
     )
 
@@ -1758,7 +1833,7 @@ def scale(unit: Scaling, bar: ProgressBar) -> None:
         signal.signal(signal.SIGINT, previous_sigint)
 
     current_image = scaled_image
-    
+
 def scale_ai(unit: ScalingAI, bar: ProgressBar) -> None:
 
     global current_image
