@@ -27,7 +27,7 @@ Upscaling**](https://github.com/michele-bizzoca/anime-upscaling),  which you can
 
 Later, I  turned  Anime Upscaling into a fully automatic program and added extra
 features to it, like  automatic upscaling inversion, progress bar, preset files,
-advanced  logging  and  format  expressions.  Its  name  is  [**Anime Ultrascale
-**](https://github.com/michele-bizzoca/anime-ultrascale). It  is  written  as  a
+advanced  logging  and  format  expressions.  Its  name is [**Anime Ultrascale**
+](https://github.com/michele-bizzoca/anime-ultrascale).  It   is  written  as  a
 single  Python  file  which  can  be run anywhere. Installation is available for 
 Ubuntu.
