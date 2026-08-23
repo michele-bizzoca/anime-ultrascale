@@ -1,7 +1,7 @@
 main_reduction  = null
 main_format     = "4k"
 main_laststep   = "bicubic"
-main_tiling     = 256
+main_tiling     = 4
 soft_enhancer   = "4xHFA2k"
 soft_scaler     = "bicubic"
 soft_divisor    = 4
