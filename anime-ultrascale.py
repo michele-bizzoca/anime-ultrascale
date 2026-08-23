@@ -2310,11 +2310,11 @@ HELP = textwrap.dedent("""\
     USAGE
 
     (1) anime-ultrascale 
-            INPUT OUTPUT
-            MAIN_FORMAT MAIN_REDUCTION MAIN_CLOSURE MAIN_TILING
-            SOFT_ENHANCER SOFT_ITERATIONS SOFT_MULTIPLIER SOFT_DIVISOR SOFT_SCALER 
-            HARD_ENHANCER HARD_ITERATIONS HARD_MULTIPLIER HARD_DIVISOR HARD_SCALER 
-            [OPTIONS]
+        INPUT OUTPUT
+        MAIN_FORMAT MAIN_REDUCTION MAIN_CLOSURE MAIN_TILING
+        SOFT_ENHANCER SOFT_ITERATIONS SOFT_MULTIPLIER SOFT_DIVISOR SOFT_SCALER 
+        HARD_ENHANCER HARD_ITERATIONS HARD_MULTIPLIER HARD_DIVISOR HARD_SCALER 
+        [OPTIONS]
         
     (2) anime-ultrascale INPUT OUTPUT FORMAT PRESET [OPTIONS]
         anime-ultrascale INPUT OUTPUT PRESET FORMAT [OPTIONS]
@@ -2347,21 +2347,22 @@ HELP = textwrap.dedent("""\
     POSITIONAL ARGUMENTS
 
     INPUT (str)
-        Input image in any of the following formats: PNG, JPG/JPEG, BMP, TIF/TIFF, 
-        WEBP.
+        Input image in any of the following formats: PNG, JPG/JPEG, BMP, 
+        TIF/TIFF, WEBP.
 
     OUTPUT.png (str)
-        Output image in any of the following formats: PNG (RGBA), JPG/JPEG (RGB), 
-        BMP (RGB), TIF/TIFF (RGBA), WEBP (RGBA).
+        Output image in any of the following formats: PNG (RGBA), JPG/JPEG 
+        (RGB), BMP (RGB), TIF/TIFF (RGBA), WEBP (RGBA).
 
     {MAIN_FORMAT │ FORMAT} (str) (auto: 4k)
-        Output format, all the following variants are accepted: (a) 2.0, (b) 200%, 
-        (c) w2160, (d)h2160, (e) 4k, 4kh, 4kv (f) 4K, 4KH, 4KV. (a-b) multiplies the
-        input format. (c-d) fixes the output width/height (e) fits the output in a
-        multiple of 960 x 540 px / 540 x 960 px; h and v select the horizontal and
-        vertical orientation, and when absent the input's orientation is chosen;
-        for example, 4kh fits to 3840 x 2160 px (f) like the previous, but fits to
-        the larger dimension instead of the smaller.
+        Output format, all the following variants are accepted: (a) 2.0, (b) 
+        200%, (c) w2160, (d)h2160, (e) 4k, 4kh, 4kv (f) 4K, 4KH, 4KV. (a-b) 
+        multiplies the input format. (c-d) fixes the output width/height (e) 
+        fits the output in a multiple of 960 x 540 px / 540 x 960 px; h and v
+        select the horizontal and vertical orientation, and when absent the 
+        input's orientation is chosen; for example, 4kh fits to 3840 x 2160
+        px (f) like the previous, but fits to the larger dimension instead 
+        of the smaller.
         
     MAIN_REDUCTION (float) (auto: automatic upscaling inversion)  
         The divisor of upscaling inversion.
@@ -2370,35 +2371,38 @@ HELP = textwrap.dedent("""\
         The algorithm to be used in the final downscaling.
         
     MAIN_TILING (int) (auto: 4)
-        The size of each tile, to be multiplied with 64 px. For example, 4 leads 
-        to a tile size of 256 px.
+        The size of each tile, to be multiplied with 64 px. For example, 4 
+        leads to a tile size of 256 px.
         
     SOFT_ENHANCER (str)
-        The name of the Real ESRGAN model to be used during preliminary upscaling
-        and conservative detail enhancement. It has be stored in the 'models' folder
-        as a '.bin'/'.param' file pair.
+        The name of the Real ESRGAN model to be used during preliminary 
+        upscaling and conservative detail enhancement. It has be stored in 
+        the 'models' folder as a '.bin'/'.param' file pair.
        
     SOFT_ITERATIONS (str)
-        The number of upscalings performed during conservative detail enhancement.
+        The number of upscalings performed during conservative detail 
+        enhancement.
     
     SOFT_MULTIPLIER (int) (auto: deduced by SOFT_ENHANCER)
        The upscaling factor of the SOFT_ENHANCER.
     
     SOFT_DIVISOR (float) (auto: sqrt(SOFT_MULTIPLIER))
-       The downscaling to be applied before upscalings during conservative detail 
-       enhancement.
+       The downscaling to be applied before upscalings during conservative 
+       detail enhancement.
        
     SOFT_SCALER (str) (auto: bicubic)
-       The downscaling algorithm to be used during conservative detail enhancement.
+       The downscaling algorithm to be used during conservative detail 
+       enhancement.
        
-    HARD_ENHANCER / HARD_ITERATIONS / HARD_MULTIPLIER / HARD_DIVISOR / HARD_SCALER
+    HARD_{ENHANCER │ ITERATIONS │ MULTIPLIER │ DIVISOR │ SCALER}
        Just as their SOFT counterparts, but these apply to the strong detail-
        enhancement phase. 
 
     PRESET (str) (auto: quality)
-        The name of a stored preset. It has to be stored in the 'presets' folder as 
-        a '.preset' file. Each execution with log level 'text' or higher saves its 
-        presets in 'sessions/<date>/<time+pid>/session.preset'.
+        The name of a stored preset. It has to be stored in the 'presets' 
+        folder as a '.preset' file. Each execution with log level 'text' 
+        or higher saves its presets in 'sessions/<date>/<time+pid>/session
+        .preset'.
 
     {-h│--help} (or no argument)
         Shows this help message.
@@ -2412,8 +2416,8 @@ HELP = textwrap.dedent("""\
         than 200 Mpx.
          
         MAIN_REDUCTION  >= 1
-        MAIN_TILING     >= 1 and <= 16
         MAIN_CLOSURE    in ['bilinear', 'bicubic', 'lanczos']
+        MAIN_TILING     >= 1 and <= 16
 
         SOFT_ITERATIONS >= 0
         SOFT_MULTIPLIER >= 2
@@ -2437,26 +2441,28 @@ HELP = textwrap.dedent("""\
             
     DESCRIPTION
 
-    Anime-Ultrascale performs extreme image enlargement by controlled alternation
-    of downscaling and AI upscaling, where downscaling is performed by traditional
-    algorithms, and AI upscaling is performed using Real ESRGAN models.
+    Anime-Ultrascale performs extreme image enlargement by controlled 
+    alternation of downscaling and AI upscaling, where downscaling is 
+    performed by traditional algorithms, and AI upscaling is performed 
+    using Real ESRGAN models.
 
     The program consists of four phases: 
-        - upscaling inversion: detecting and applying the strongest information-
-          preserving downscaling, as AI models will assume no size inflation
+        - upscaling inversion: detecting and applying the strongest 
+          information-preserving downscaling, as AI models will assume no 
+          size inflation
         - preliminary upscaling: upscaling to the target format
         - conservative detail enhancement: upscaling and downscaling back the 
-          image zero or more times while preserving original details (adds detail 
-          moderately)
-        - strong detail enhancement: upscaling and downscaling back the image zero 
-          or more times while partly reinterpreting original details (adds detail
-          considerably)
+          image zero or more times while preserving original details (adds 
+          detail moderately)
+        - strong detail enhancement: upscaling and downscaling back the image
+          zero or more times while partly reinterpreting original details 
+          (adds detail considerably)
 
     PROGRESS
     
-    A progress bar keeps track of the overall progress of the program. The cost
-    unit is the Mpx, intended as the average time needed by a Real ESRGAN model
-    to process 1 Mpx of input data.
+    A progress bar keeps track of the overall progress of the program. The 
+    cost unit is the Mpx, intended as the average time needed by a Real ESRGAN
+    model to process 1 Mpx of input data.
      
     DEPLOYMENT
 
@@ -2464,17 +2470,18 @@ HELP = textwrap.dedent("""\
     stored in the 'renv' folder.
     
     Real ESRGAN models, namely pairs of '.bin'/'.param' files with the same
-    basename, have to be stored in the 'models' folder. The basename is considered 
-    to be the model's name. When a model multiplier is specified as 'auto', it
-    is searched for in the model name.
+    basename, have to be stored in the 'models' folder. The basename is 
+    considered to be the model's name. When a model multiplier is specified 
+    as 'auto', it is searched for in the model name.
 
-    Presets, namely '.preset' files, have to be stored in the 'presets' folder. 
-    The basename is considered to be the preset's name. Unless specified otherwise, 
-    every execution saves a preset among the log files. The preset file syntax is 
-    elementary, for reference look at a generated preset.
+    Presets, namely '.preset' files, have to be stored in the 'presets' 
+    folder. The basename is considered to be the preset's name. Unless 
+    specified otherwise, every execution saves a preset among the log files. 
+    The preset file syntax is elementary, for reference look at a generated 
+    preset.
     
-    Log files are stored in the 'sessions' folder, at 'session/<date>/<time+pid>'.
-    The most important log files are:
+    Log files are stored in the 'sessions' folder, at 'session/<date>/<time+
+    pid>'. The most important log files are:
         - 'session.preset': already discussed
         - 'session.json': invocation details, I/O details, ground presets
         - 'log.txt': history of the execution with timestamps
