@@ -9,7 +9,7 @@ usage   information,  run  the  program  with
 'pyproject.toml'.
 
 The   program  resides  in  the  Python  file
-'anime-ultrascale.py',  which  can be used on
+'anime-ultrascale.py',  which  can be used in
 any  system  as  long as a Python environment
 satisfying 'pyproject.toml' is installed.
 

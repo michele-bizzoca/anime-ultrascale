@@ -39,7 +39,7 @@ T = TypeVar("T")
 # Constants
 ########################################################################################
 
-DEVELOPMENT_MODE     : Final = True
+DEVELOPMENT_MODE     : Final = False
 
 SOFTWARE_VERSION     : Final = "2.0"
 OUTPUT_MODE          : Final = "png--4bands--srgb--alpha"
@@ -2214,10 +2214,18 @@ def main():
     #    early_fail("unexpected error", False, e)
 
     try:
-        log("options have been sorted", SaveLevel.text, sort_options_now)
-        log("the session folder has been created", SaveLevel.text, create_session_folder_now)
-        log("the outcome record system is operative", SaveLevel.text, create_exit_file_now)
-        log("the main logging system is operative", SaveLevel.text, create_log_file_now)
+        log( "options have been sorted" ,
+             SaveLevel.text             ,
+             sort_options_now           )
+        log( "the session folder has been created" ,
+             SaveLevel.text                        ,
+             create_session_folder_now             )
+        log( "the outcome record system is operative" ,
+             SaveLevel.text                           ,
+             create_exit_file_now                     )
+        log( "the main logging system is operative" ,
+             SaveLevel.text                         ,
+             create_log_file_now                    )
         create_invocation_file()
         log("the invocation file has been written")
         create_temp_folder()
@@ -2301,75 +2309,98 @@ HELP = textwrap.dedent("""\
 
     USAGE
 
-    anime-ultrascale INPUT OUTPUT
-        MAIN_DIVISOR MAIN_MULTIPLIER
-        SOFT_MODEL SOFT_DIVISOR SOFT_MULTIPLIER SOFT_ITERATIONS
-        HARD_MODEL HARD_DIVISOR HARD_MULTIPLIER HARD_ITERATIONS
-        MAIN_SCALER FINAL_SCALER
-        [OPTIONS]
+    (1) anime-ultrascale 
+            INPUT OUTPUT
+            MAIN_FORMAT MAIN_REDUCTION MAIN_CLOSURE MAIN_TILING
+            SOFT_ENHANCER SOFT_ITERATIONS SOFT_MULTIPLIER SOFT_DIVISOR SOFT_SCALER 
+            HARD_ENHANCER HARD_ITERATIONS HARD_MULTIPLIER HARD_DIVISOR HARD_SCALER 
+            [OPTIONS]
+        
+    (2) anime-ultrascale INPUT OUTPUT FORMAT PRESET [OPTIONS]
+        anime-ultrascale INPUT OUTPUT PRESET FORMAT [OPTIONS]
+    
+    (3) anime-ultrascale INPUT OUTPUT FORMAT [OPTIONS]
+        anime-ultrascale INPUT OUTPUT PRESET [OPTIONS]
+    
+    (4) anime-ultrascale INPUT OUTPUT [OPTIONS]
+        anime-ultrascale INPUT OUTPUT [OPTIONS]
+    
+    (5) anime-ultrascale {-h│--help│-v│--version}
+    
+    (6) anime-ultrascale 
 
-    anime-ultrascale INPUT OUTPUT.png
-                     {SESSION.json│SETTINGS.cfg}
-                     [OPTIONS]
-
-    anime-ultrascale {-h│--help│-v│--version}
-
+    EXAMPLES
+    
+    (1) anime-ultrascale 
+            picture.jpg enhanced_picture.png
+            4k auto bicubic 4
+            4xHFA2k 2 4 auto auto
+            realesrgan-x4plus-anime 2 auto auto auto
+            --log text
+        
+    (2) anime-ultrascale picture.jpg enhanced_picture.png 4k quality --log text
+    
+    (3) anime-ultrascale picture.jpg enhanced_picture.png 4k --log text
+    
+    (4) anime-ultrascale picture.jpg enhanced_picture.png --log text
+    
     POSITIONAL ARGUMENTS
 
     INPUT (str)
-        Input image in any of the following formats: PNG, JPG/JPEG,
-        BMP, TIF/TIFF.
+        Input image in any of the following formats: PNG, JPG/JPEG, BMP, TIF/TIFF, 
+        WEBP.
 
     OUTPUT.png (str)
-        Output image in any of the following formats: PNG (RGBA),
-        JPG/JPEG (RGB), BMP (RGB), TIF/TIFF (RGBA).
+        Output image in any of the following formats: PNG (RGBA), JPG/JPEG (RGB), 
+        BMP (RGB), TIF/TIFF (RGBA), WEBP (RGBA).
 
-    MAIN_DIVISOR (float)
-        Main-phase downscaling divisor. Use it to revert an upscaling
-        already present in the input image.
+    {MAIN_FORMAT │ FORMAT} (str) (auto: 4k)
+        Output format, all the following variants are accepted: (a) 2.0, (b) 200%, 
+        (c) w2160, (d)h2160, (e) 4k, 4kh, 4kv (f) 4K, 4KH, 4KV. (a-b) multiplies the
+        input format. (c-d) fixes the output width/height (e) fits the output in a
+        multiple of 960 x 540 px / 540 x 960 px; h and v select the horizontal and
+        vertical orientation, and when absent the input's orientation is chosen;
+        for example, 4kh fits to 3840 x 2160 px (f) like the previous, but fits to
+        the larger dimension instead of the smaller.
+        
+    MAIN_REDUCTION (float) (auto: automatic upscaling inversion)  
+        The divisor of upscaling inversion.
+       
+    MAIN_CLOSURE (str) (auto: bicubic)
+        The algorithm to be used in the final downscaling.
+        
+    MAIN_TILING (int) (auto: 4)
+        The size of each tile, to be multiplied with 64 px. For example, 4 leads 
+        to a tile size of 256 px.
+        
+    SOFT_ENHANCER (str)
+        The name of the Real ESRGAN model to be used during preliminary upscaling
+        and conservative detail enhancement. It has be stored in the 'models' folder
+        as a '.bin'/'.param' file pair.
+       
+    SOFT_ITERATIONS (str)
+        The number of upscalings performed during conservative detail enhancement.
+    
+    SOFT_MULTIPLIER (int) (auto: deduced by SOFT_ENHANCER)
+       The upscaling factor of the SOFT_ENHANCER.
+    
+    SOFT_DIVISOR (float) (auto: sqrt(SOFT_MULTIPLIER))
+       The downscaling to be applied before upscalings during conservative detail 
+       enhancement.
+       
+    SOFT_SCALER (str) (auto: bicubic)
+       The downscaling algorithm to be used during conservative detail enhancement.
+       
+    HARD_ENHANCER / HARD_ITERATIONS / HARD_MULTIPLIER / HARD_DIVISOR / HARD_SCALER
+       Just as their SOFT counterparts, but these apply to the strong detail-
+       enhancement phase. 
 
-    MAIN_MULTIPLIER (float)
-        Main-phase upscaling multiplier. It determines the output
-        width and height, namely output = (input / MAIN_DIVISOR) *
-        MAIN_MULTIPLIER.
+    PRESET (str) (auto: quality)
+        The name of a stored preset. It has to be stored in the 'presets' folder as 
+        a '.preset' file. Each execution with log level 'text' or higher saves its 
+        presets in 'sessions/<date>/<time+pid>/session.preset'.
 
-    SOFT_MODEL (str)
-        Real ESRGAN model specialized in preserving detail (basename
-        only).
-
-    SOFT_DIVISOR (float)
-        Soft-phase downscaling divisor. Use it to lose detail.
-
-    SOFT_MULTIPLIER (int)
-        Soft-phase upscaling multiplier. Use it to restore detail. It
-        has to be supported by the model SOFT_MODEL.
-
-    SOFT_ITERATIONS (int)
-        Soft-phase iterations.
-
-    HARD_MODEL (str)
-        Real ESRGAN model specialized in adding detail (basename only).
-
-    HARD_DIVISOR (float)
-        Hard-phase downscaling divisor. Use it to lose detail.
-
-    HARD_MULTIPLIER (int)
-        Hard-phase upscaling multiplier. Use it to enhance detail. It
-        has to be supported by the model SOFT_MODEL.
-
-    HARD_ITERATIONS (int)
-        Hard-phase iterations.
-
-    MAIN_SCALER (str)
-        The downscaling algorithm used in intermediate steps.
-
-    FINAL_SCALER (str)
-        The downscaling algorithm used in the final step.
-
-    {SESSION.json│SETTINGS.cfg} (str)
-        A session or settings file to import settings from.
-
-    {-h│--help}
+    {-h│--help} (or no argument)
         Shows this help message.
 
     {-v│--version}
@@ -2377,91 +2408,131 @@ HELP = textwrap.dedent("""\
 
     CONSTRAINTS
 
-        MAIN_DIVISOR    >= 1
-        MAIN_MULTIPLIER >= 1
+        No initial, intermediate or final image can be either empty or larger
+        than 200 Mpx.
+         
+        MAIN_REDUCTION  >= 1
+        MAIN_TILING     >= 1 and <= 16
+        MAIN_CLOSURE    in ['bilinear', 'bicubic', 'lanczos']
 
-        SOFT_MULTIPLIER >= 2
-        SOFT_DIVISOR    >= 1
-        SOFT_DIVISOR    <= SOFT_MULTIPLIER
         SOFT_ITERATIONS >= 0
+        SOFT_MULTIPLIER >= 2
+        SOFT_DIVISOR    >= 1 and <= SOFT_MULTIPLIER
+        SOFT_SCALER     in ['bilinear', 'bicubic', 'lanczos']
 
-        HARD_MULTIPLIER >= 2
-        HARD_DIVISOR    >= 1
-        HARD_DIVISOR    <= HARD_MULTIPLIER
         HARD_ITERATIONS >= 0
-
-        MAIN_SCALER     in ['bicubic', 'lanczos']
-        FINAL_SCALER    in ['bicubic', 'lanczos']
-
+        HARD_MULTIPLIER >= 2
+        HARD_DIVISOR    >= 1 and <= HARD_MULTIPLIER
+        HARD_SCALER     in ['bilinear', 'bicubic', 'lanczos']
+        
     OPTIONS
 
-    {-t│--tile} (int)
-        The width/height of the square used to tile the total area.
-            0            -> automatic selection
-            1 <= n <= 16 -> n * 64px
-
-    {-s│--save} (str)
-        Determines the session data that is saved.
-            nothing   -> nothing
-            text      -> basic textual data
-            endpoints -> as 'text' + input/output images
-            research  -> as 'endpoints' + intermediate images
-            debug     -> as 'research' + debug textual data
-
+    {-l│--log} (str)
+        Determines which session data is saved.
+            'nothing'   -> nothing
+            'text'      -> basic textual data, preset included
+            'endpoints' -> as 'text'      + input/output images
+            'debug'     -> as 'endpoints' + debug textual data
+            'research'  -> as 'debug'     + intermediate images
+            
     DESCRIPTION
 
-    Anime-Ultrascale performs extreme image enlargement by controlled
-    alternation of downscaling and AI upscaling, where downscaling is
-    performed by the bicubic and lanczos algorithms, and AI upscaling
-    is performed using Real ESRGAN models.
+    Anime-Ultrascale performs extreme image enlargement by controlled alternation
+    of downscaling and AI upscaling, where downscaling is performed by traditional
+    algorithms, and AI upscaling is performed using Real ESRGAN models.
 
-    Knowledge of the three phases (main, soft, hard) is required for
-    correct usage. These are described in a dedicated article, see
-    the repositories section.
+    The program consists of four phases: 
+        - upscaling inversion: detecting and applying the strongest information-
+          preserving downscaling, as AI models will assume no size inflation
+        - preliminary upscaling: upscaling to the target format
+        - conservative detail enhancement: upscaling and downscaling back the 
+          image zero or more times while preserving original details (adds detail 
+          moderately)
+        - strong detail enhancement: upscaling and downscaling back the image zero 
+          or more times while partly reinterpreting original details (adds detail
+          considerably)
 
-    DIRECTORY TREE
+    PROGRESS
+    
+    A progress bar keeps track of the overall progress of the program. The cost
+    unit is the Mpx, intended as the average time needed by a Real ESRGAN model
+    to process 1 Mpx of input data.
+     
+    DEPLOYMENT
 
-    Real ESRGAN models, following the usual .bin/.param convention,
-    have to be stored in the 'models' folder.
+    The official Real ESRGAN executable, 'realesrgan-ncnn-vulkan', has to be 
+    stored in the 'renv' folder.
+    
+    Real ESRGAN models, namely pairs of '.bin'/'.param' files with the same
+    basename, have to be stored in the 'models' folder. The basename is considered 
+    to be the model's name. When a model multiplier is specified as 'auto', it
+    is searched for in the model name.
 
-    The official Real ESRGAN executable, 'realesrgan-ncnn-vulkan',
-    has to be stored in the 'renv' folder.
+    Presets, namely '.preset' files, have to be stored in the 'presets' folder. 
+    The basename is considered to be the preset's name. Unless specified otherwise, 
+    every execution saves a preset among the log files. The preset file syntax is 
+    elementary, for reference look at a generated preset.
+    
+    Log files are stored in the 'sessions' folder, at 'session/<date>/<time+pid>'.
+    The most important log files are:
+        - 'session.preset': already discussed
+        - 'session.json': invocation details, I/O details, ground presets
+        - 'log.txt': history of the execution with timestamps
+        - <png-input>: the input image in png format (lowest image counter)
+        - <png-output>: the output image in png format (highest image counter)
+    
+    Temporary files are created and deleted in the 'temp' folder, which you
+    don't need to care about.
 
-    Useful additional data, determined by the 'save' option, will
-    be stored in the 'sessions' folder.
+    If this program has been downloaded from the official repository, it will
+    include the models '4xHFA2k' (conservative) and 'realesrgan-x4plus-anime'
+    (strong), as well as the presets 'quality' and 'speed'.
+    
+    If, additionally, the program has been installed using the repository's 
+    'install.sh', the directory tree will be the following:
 
-    Temporary data will be stored in the 'temp' folder.
-
-    If this program has been installed from the official repository
-    using 'install.sh', the repository's folder will contain:
-
-    ┌── LICENSE
-    ├── README
-    ├── anime-ultrascale.py
-    ├── anime-ultrascale
-    ├── pyproject.toml
-    ├── install
-    ├── .bin
-    │     └── anime-ultrascale
-    ├── .venv
-    │     └── ·······
+    ┌── anime-ultrascale.py
     ├── renv
     │     └── realesrgan-ncnn-vulkan
     ├── models
-    │     ├── <model>.bin
-    │     ├── <model>.param
-    │     └── ·······
+    │     ├── 4xHFA2k.bin
+    │     ├── 4xHFA2k.param
+    │     ├── realesrgan-x4plus-anime.bin
+    │     └── realesrgan-x4plus-anime.param
+    ├── presets
+    │     ├── quality.preset
+    │     └── speed.preset
     ├── sessions
     │     ├── <date>
     │     │      ├── <time+pid>
     │     │      │        └── ·······
     │     │      └── ·······
     │     └── ·······
-    └── temp
-          ├── <date+time+pid>
-          │      └── ·······
-          └── ·······
-
+    ├── temp
+    │     ├── <date+time+pid>
+    │     │      └── ·······
+    │     └── ·······
+    ├── LICENSE
+    ├── README
+    ├── README.md
+    ├── pyproject.toml
+    ├── install
+    ├── third-party
+    │     ├── LICENSES
+    │     ├── realesrgan-ncnn-vulkan
+    │     ├── 4xHFA2k.bin
+    │     ├── 4xHFA2k.param
+    │     ├── realesrgan-x4plus-anime.bin
+    │     └── realesrgan-x4plus-anime.param        
+    ├── setup-files
+    │     ├── installer
+    │     └── launcher
+    ├── .bin
+    │     └── anime-ultrascale
+    ├── .venv
+    │     └── ·······
+    └── .gitignore      
+    
     REPOSITORIES
 
     Concept -> https://github.com/michele-bizzoca/anime-upscaling
