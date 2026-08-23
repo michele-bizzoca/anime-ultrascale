@@ -18,14 +18,13 @@ the  same  size  and  detail level of the original which, when downscaled, turns
 into  the  picture  you  downloaded.  This  is  possible  thanks  to  artificial
 intelligence models.
 
-With  the purpose of bridging the gap between AI technology and user experience,
-I  devised  a  workflow  for  extreme  restoration of anime images, which can be
-executed with freely available and simple-to-use tools. It is presented, with an
-example    of    170x    resolution    increase,   in   the   article   [**Anime
-Upscaling**](https://github.com/michele-bizzoca/anime-upscaling),  which you can
-[**Read Online**](https://michele-bizzoca.github.io/anime-upscaling/).
+I  summarized  my experience on this topic in a workflow for extreme restoration 
+of  anime  images, which can be executed with freely available and simple-to-use 
+tools.  It  is  presented,  with  an example of 170x resolution increase, in the 
+article [**Anime Upscaling**](https://github.com/michele-bizzoca/anime-upscaling), 
+which you can [**Read Online**](https://michele-bizzoca.github.io/anime-upscaling/).
 
-Later, I  turned  Anime Upscaling into a fully automatic program and added extra
+Later, I  turned Anime Upscaling into a fully automatic program, and added extra
 features to it, like  automatic upscaling inversion, progress bar, preset files,
 advanced  logging  and  format  expressions.  Its  name is [**Anime Ultrascale**
 ](https://github.com/michele-bizzoca/anime-ultrascale).  It   is  written  as  a
