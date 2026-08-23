@@ -2384,7 +2384,7 @@ HELP = textwrap.dedent("""\
         enhancement.
     
     multiplier (int) (auto: deduced by enhancer)
-       The upscaling factor of the SOFT_ENHANCER.
+       The upscaling factor of enhancer.
     
     divisor (float) (auto: sqrt(multiplier))
        The downscaling to be applied before upscalings during conservative
@@ -2415,19 +2415,19 @@ HELP = textwrap.dedent("""\
         No  initial,  intermediate  or  final image can be either empty or 
         larger than 200 Mpx.
          
-        MAIN_REDUCTION  >= 1
-        MAIN_CLOSURE    in ['bilinear', 'bicubic', 'lanczos']
-        MAIN_TILING     >= 1 and <= 16
+        REDUCTION  >= 1
+        CLOSURE    in ['bilinear', 'bicubic', 'lanczos']
+        TILING     >= 1 and <= 16
 
-        SOFT_ITERATIONS >= 0
-        SOFT_MULTIPLIER >= 2
-        SOFT_DIVISOR    >= 1 and <= SOFT_MULTIPLIER
-        SOFT_SCALER     in ['bilinear', 'bicubic', 'lanczos']
+        iterations >= 0
+        multiplier >= 2
+        divisor    >= 1 and <= SOFT_MULTIPLIER
+        scaler     in ['bilinear', 'bicubic', 'lanczos']
 
-        HARD_ITERATIONS >= 0
-        HARD_MULTIPLIER >= 2
-        HARD_DIVISOR    >= 1 and <= HARD_MULTIPLIER
-        HARD_SCALER     in ['bilinear', 'bicubic', 'lanczos']
+        ITERATIONS >= 0
+        MULTIPLIER >= 2
+        DIVISOR    >= 1 and <= HARD_MULTIPLIER
+        SCALER     in ['bilinear', 'bicubic', 'lanczos']
         
     OPTIONS
 
