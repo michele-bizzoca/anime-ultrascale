@@ -41,7 +41,7 @@ T = TypeVar("T")
 
 DEVELOPMENT_MODE     : Final = False
 
-SOFTWARE_VERSION     : Final = "2.0"
+SOFTWARE_VERSION     : Final = "1.0"
 OUTPUT_MODE          : Final = "png--4bands--srgb--alpha"
 SUPPORTED_FORMATS    : Final = ["png", "jpg", "jpeg", "bmp", "webp", "tif", "tiff"]
 OPAQUE_FORMATS       : Final = ["jpg", "jpeg", "bmp"]
