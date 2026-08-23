@@ -22,12 +22,12 @@ With  the purpose of bridging the gap between AI technology and user experience,
 I  devised  a  workflow  for  extreme  restoration of anime images, which can be
 executed with freely available and simple-to-use tools. It is presented, with an
 example    of    170x    resolution    increase,   in   the   article   [**Anime
-Upscaling**] (https://github.com/michele-bizzoca/anime-upscaling), which you can
+Upscaling**](https://github.com/michele-bizzoca/anime-upscaling),  which you can
 [**Read Online**](https://michele-bizzoca.github.io/anime-upscaling/).
 
-Later,  I  turned  Anime  Upscaling  into  a  fully  automatic program and added
-extra  features to it, like  automatic upscaling inversion, progress bar, preset 
-files,  advanced   logging   and   format   expressions.  Its  name  is [**Anime 
-Ultrascale**]   (https://github.com/michele-bizzoca/anime-ultrascale).   It   is 
-written  as  a  single  Python  file  which can be run anywhere. Installation is 
-available for Ubuntu.
+Later, I  turned  Anime Upscaling into a fully automatic program and added extra
+features to it, like  automatic upscaling inversion, progress bar, preset files,
+advanced  logging  and  format  expressions.  Its  name  is  [**Anime Ultrascale
+**](https://github.com/michele-bizzoca/anime-ultrascale). It  is  written  as  a
+single  Python  file  which  can  be run anywhere. Installation is available for 
+Ubuntu.
