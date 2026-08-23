@@ -3,6 +3,5 @@
 /temp
 /sessions
 /.bin
-/.venv
+/.venv*
 /.idea
-/.idea-venv
