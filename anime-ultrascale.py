@@ -1,6 +1,6 @@
-########################################################################################
+####################################################################################################
 # Imports
-########################################################################################
+####################################################################################################
 
 import sys
 import os
@@ -9,6 +9,8 @@ import atexit
 import re
 import math
 import json
+
+#---------------------------------------------------------------------------------------------------
 
 import dacite
 import pyvips
@@ -22,128 +24,130 @@ import signal
 import skimage
 import wcwidth
 
+#---------------------------------------------------------------------------------------------------
+
 from pathlib import Path
 from enum import IntEnum, Enum
 from datetime import datetime
 from dataclasses import dataclass
 from threading import Event, Thread, Lock
-from typing import TypeVar, NoReturn, TypeAlias, Final, TextIO, Any, cast
+from typing import TypeVar, NoReturn, TypeAlias, Final, TextIO, Any, cast, NamedTuple
 
-########################################################################################
-# Type Variables
-########################################################################################
-
-T = TypeVar("T")
-
-########################################################################################
+####################################################################################################
 # Constants
-########################################################################################
+####################################################################################################
 
-DEVELOPMENT_MODE     : Final = False
+SOFTWARE_VERSION   : Final = "1.0"
+DEVELOPMENT_MODE   : Final = False
 
-SOFTWARE_VERSION     : Final = "1.0"
-OUTPUT_MODE          : Final = "png--4bands--srgb--alpha"
-SUPPORTED_FORMATS    : Final = ["png", "jpg", "jpeg", "bmp", "webp", "tif", "tiff"]
-OPAQUE_FORMATS       : Final = ["jpg", "jpeg", "bmp"]
+#---------------------------------------------------------------------------------------------------
 
-MAX_MPX              : Final = 200
-MAX_TILING           : Final = 16
-MAX_ITERATIONS       : Final = 16
+RENV_FOLDER        : Final = "renv"
+MODEL_FOLDER       : Final = "models"
+PRESET_FOLDER      : Final = "presets"
+SESSION_FOLDER     : Final = "sessions"
+TEMP_FOLDER        : Final = "temp"
 
-TEMP_FOLDER          : Final = "temp"
-MODEL_FOLDER         : Final = "models"
-SESSION_FOLDER       : Final = "sessions"
-PRESET_FOLDER        : Final = "presets"
-RENV_FOLDER          : Final = "renv"
+#---------------------------------------------------------------------------------------------------
 
-SESSION_FILE         : Final = "session.json"
-PRESET_FILE          : Final = "session.preset"
-LOG_FILE             : Final = "log.txt"
-INVOCATION_FILE      : Final = "invocation.txt"
-SCALING_FILE         : Final = "scaling.txt"
-SCALING_AI_FILE      : Final = "scaling_ai.txt"
-PROGRESS_FILE        : Final = "progress.txt"
-TEMP_INPUT_FILE      : Final = "in.png"
-TEMP_OUTPUT_FILE     : Final = "output.png"
-EXIT_FILE            : Final = "exit.txt"
-AUTO_PRESET_FILE     : Final = "quality.preset"
-RENV_FILE            : Final = "realesrgan-ncnn-vulkan"
+RENV_FILE          : Final = "realesrgan-ncnn-vulkan"
+SESSION_FILE       : Final = "session.json"
+PRESET_FILE        : Final = "preset.preset"
+LOG_FILE           : Final = "log.txt"
+INVOCATION_FILE    : Final = "invocation.txt"
+SCALING_FILE       : Final = "scaling.txt"
+ENHANCEMENT_FILE   : Final = "enhancement.txt"
+PROGRESS_FILE      : Final = "progress.txt"
+EXIT_FILE          : Final = "exit.txt"
+TEMP_INPUT_FILE    : Final = "input.png"
+TEMP_OUTPUT_FILE   : Final = "output.png"
+DEMO_FILE          : Final = "quality.preset"
 
-DEFAULT_SAVE_LEVEL   : Final = "text"
-DEFAULT_MAIN_FORMAT  : Final = "4k"
-DEFAULT_MAIN_CLOSURE : Final = "bicubic"
-DEFAULT_MAIN_TILING  : Final = 4
-DEFAULT_SOFT_SCALER  : Final = "bicubic"
-DEFAULT_HARD_SCALER  : Final = "lanczos"
+#---------------------------------------------------------------------------------------------------
 
-PROGRESS_BAR_SIZE    : Final = 35
-DESCALE_TARGET       : Final = 0.95
-DESCALE_ITERATIONS   : Final = 8
+DEFAULT_PRESET     : Final = "quality"
+DEFAULT_LOGLEVEL   : Final = "text"
+DEFAULT_CLOSURE    : Final = "bicubic"
+DEFAULT_TILING     : Final = 4
+DEFAULT_ENHANCER   : Final = "bicubic"
+DEFAULT_ENHANCER_  : Final = "lanczos"
 
-########################################################################################
+#---------------------------------------------------------------------------------------------------
+
+OUTPUT_MODE        : Final = "png--srgb--alpha"
+ALPHA_EXTENSIONS   : Final = ["png", "webp", "tif", "tiff"]
+OPAQUE_EXTENSIONS  : Final = ["jpg", "jpeg", "bmp"]
+
+#---------------------------------------------------------------------------------------------------
+
+MAX_MPX            : Final = 300
+MAX_TILING         : Final = 16
+MAX_ITERATIONS     : Final = 16
+
+#---------------------------------------------------------------------------------------------------
+
+PROMPT_WIDTH       : Final = 80
+DESCALE_SIMILARITY : Final = 0.95
+DESCALE_ITERATIONS : Final = 8
+
+####################################################################################################
 # Phases
-########################################################################################
+####################################################################################################
 
 PHASES : Final = [
+    ( "input"     , [ "import"      , "downscaling" ,          ] ) ,
+    ( "main"      , [ "upscaling"   , "downscaling" ,          ] ) ,
+    ( "soft"      , [ "downscaling" , "upscaling"   ,          ] ) ,
+    ( "hard"      , [ "downscaling" , "upscaling"   ,          ] ) ,
+    ( "output"    , [ "downscaling" , "export"      , "saving" ] ) ]
 
-    ( "input"     , ["import"      , "downscaling" ]) ,
-    ( "main"      , ["upscaling"   , "downscaling" ]) ,
-    ( "soft"      , ["downscaling" , "upscaling"   ]) ,
-    ( "hard"      , ["downscaling" , "upscaling"   ]) ,
-    ( "output"    , ["downscaling" , "export"      ])
-]
-
-########################################################################################
+####################################################################################################
 # Invocation Data
-########################################################################################
+####################################################################################################
 
 INVOCATION_INSTANT : Final = datetime.fromtimestamp(psutil.Process().create_time())
 INVOCATION_PATH    : Final = Path(__file__).resolve().parent
 INVOCATION_PID     : Final = os.getpid()
+
+#---------------------------------------------------------------------------------------------------
 
 INVOCATION_DATE  : Final = INVOCATION_INSTANT.strftime('%Y-%m-%d')
 INVOCATION_TIME  : Final = INVOCATION_INSTANT.strftime('%H-%M-%S')
 INVOCATION_USEC  : Final = INVOCATION_INSTANT.strftime('%f')
 INVOCATION_STAMP : Final = f"{INVOCATION_DATE}--{INVOCATION_TIME}--{INVOCATION_USEC}"
 
-########################################################################################
-# Paths
-########################################################################################
+####################################################################################################
+# Folder Paths
+####################################################################################################
 
-MODEL_FOLDER_PATH   : Final = INVOCATION_PATH / MODEL_FOLDER
-RENV_FOLDER_PATH    : Final = INVOCATION_PATH / RENV_FOLDER
-PRESET_FOLDER_PATH  : Final = INVOCATION_PATH / PRESET_FOLDER
+RENV_FOLDER_PATH     : Final = INVOCATION_PATH / RENV_FOLDER
+MODEL_FOLDER_PATH    : Final = INVOCATION_PATH / MODEL_FOLDER
+PRESET_FOLDER_PATH   : Final = INVOCATION_PATH / PRESET_FOLDER
+SESSION_FOLDER_PATH  : Final = ( INVOCATION_PATH / SESSION_FOLDER / INVOCATION_DATE /
+                                 f"{INVOCATION_TIME}--{INVOCATION_USEC}--{INVOCATION_PID}" )
+TEMP_FOLDER_PATH     : Final = ( INVOCATION_PATH / TEMP_FOLDER / f"{INVOCATION_DATE}--" 
+                                 f"{INVOCATION_TIME}--{INVOCATION_USEC}--{INVOCATION_PID}" )
 
-SESSION_FOLDER_PATH : Final = ( INVOCATION_PATH        /
-                                SESSION_FOLDER         /
-                                INVOCATION_DATE        /
-                                f"{INVOCATION_TIME}--"  
-                                f"{INVOCATION_USEC}--"  
-                                f"{INVOCATION_PID}"    )
+####################################################################################################
+# File Paths
+####################################################################################################
 
-TEMP_FOLDER_PATH : Final = ( INVOCATION_PATH        /
-                             TEMP_FOLDER            /
-                             f"{INVOCATION_DATE}--"      
-                             f"{INVOCATION_TIME}--"      
-                             f"{INVOCATION_USEC}--"     
-                             f"{INVOCATION_PID}"    )
+INVOCATION_FILE_PATH  : Final = SESSION_FOLDER_PATH / INVOCATION_FILE
+LOG_FILE_PATH         : Final = SESSION_FOLDER_PATH / LOG_FILE
+SESSION_FILE_PATH     : Final = SESSION_FOLDER_PATH / SESSION_FILE
+PRESET_FILE_PATH      : Final = SESSION_FOLDER_PATH / PRESET_FILE
+SCALING_FILE_PATH     : Final = SESSION_FOLDER_PATH / SCALING_FILE
+SCALING_AI_FILE_PATH  : Final = SESSION_FOLDER_PATH / ENHANCEMENT_FILE
+PROGRESS_FILE_PATH    : Final = SESSION_FOLDER_PATH / PROGRESS_FILE
+EXIT_FILE_PATH        : Final = SESSION_FOLDER_PATH / EXIT_FILE
+TEMP_INPUT_FILE_PATH  : Final = TEMP_FOLDER_PATH    / TEMP_INPUT_FILE
+TEMP_OUTPUT_FILE_PATH : Final = TEMP_FOLDER_PATH    / TEMP_OUTPUT_FILE
+RENV_FILE_PATH        : Final = RENV_FOLDER_PATH    / RENV_FILE
+DEMO_FILE_PATH        : Final = PRESET_FOLDER_PATH  / DEMO_FILE
 
-INVOCATION_FILE_PATH     : Final = SESSION_FOLDER_PATH / INVOCATION_FILE
-LOG_FILE_PATH            : Final = SESSION_FOLDER_PATH / LOG_FILE
-SESSION_FILE_PATH        : Final = SESSION_FOLDER_PATH / SESSION_FILE
-PRESET_FILE_PATH         : Final = SESSION_FOLDER_PATH / PRESET_FILE
-SCALING_FILE_PATH        : Final = SESSION_FOLDER_PATH / SCALING_FILE
-SCALING_AI_FILE_PATH     : Final = SESSION_FOLDER_PATH / SCALING_AI_FILE
-PROGRESS_FILE_PATH       : Final = SESSION_FOLDER_PATH / PROGRESS_FILE
-EXIT_FILE_PATH           : Final = SESSION_FOLDER_PATH / EXIT_FILE
-TEMP_INPUT_FILE_PATH     : Final = TEMP_FOLDER_PATH    / TEMP_INPUT_FILE
-TEMP_OUTPUT_FILE_PATH    : Final = TEMP_FOLDER_PATH    / TEMP_OUTPUT_FILE
-RENV_RUNNER_PATH         : Final = RENV_FOLDER_PATH    / RENV_FILE
-AUTO_PRESET_PATH         : Final = PRESET_FOLDER_PATH  / AUTO_PRESET_FILE
-
-########################################################################################
+####################################################################################################
 # Save Levels
-########################################################################################
+####################################################################################################
 
 class SaveLevel(IntEnum):
 
@@ -155,14 +159,16 @@ class SaveLevel(IntEnum):
     debug     = 5
     research  = 6
 
+#---------------------------------------------------------------------------------------------------
+
 def savelevel_descriptor(savelevel: SaveLevel):
     if   savelevel == SaveLevel.error: return "error"
     elif savelevel == SaveLevel.debug: return "debug"
     else:                              return "normal"
 
-########################################################################################
+####################################################################################################
 # Scalers
-########################################################################################
+####################################################################################################
 
 class Scaler(IntEnum):
 
@@ -170,22 +176,24 @@ class Scaler(IntEnum):
     bicubic  = 1
     lanczos  = 2
 
+#---------------------------------------------------------------------------------------------------
+
 def scaler_descriptor(scaler: Scaler):
     if   scaler == Scaler.bilinear: return "linear"
     elif scaler == Scaler.bicubic:  return "cubic"
     else:                           return "lanczos3"
 
-########################################################################################
+####################################################################################################
 # Arguments
-########################################################################################
+####################################################################################################
 
-class Arguments(IntEnum):
+class BasicArgument(IntEnum):
 
     program_path = 0
     input_path   = 1
     output_path  = 2
 
-class FullOptions(IntEnum):
+class ConfigArgument(IntEnum):
     main_format     = 0
     main_reduction  = 1
     main_closure    = 2
@@ -201,57 +209,37 @@ class FullOptions(IntEnum):
     hard_divisor    = 12
     hard_scaler     = 13
 
-class BasicOptions(IntEnum):
-    main_format     = 1
-    soft_enhancer   = 2
-    soft_iterations = 3
-    hard_enhancer   = 4
-    hard_iterations = 5
+class QuickArgument(IntEnum):
+    format_or_preset_a = 0
+    format_or_preset_b = 0
 
-class TwoOptions(IntEnum):
-    format_or_preset_1 = 0
-    format_or_preset_2 = 0
-
-class OneOption(IntEnum):
-    format_or_preset = 0
-
-class ZeroOptions(IntEnum):
-    pass
-
-class FlexOptions(Enum):
+class RegularOption(Enum):
     log = 0
 
-class Flags(Enum):
+class Flag(Enum):
     quiet = 0
 
-def full_option_name(core_option: FullOptions) -> str:
-    [x, y] = core_option.name.split("_")
-    return "--" + (y[0].upper() if x == "hard" else y[0]) + y[1:]
+#---------------------------------------------------------------------------------------------------
 
-def full_option_letter(core_option: FullOptions) -> str:
-    [x, y] = core_option.name.split("_")
-    return "-" + (y[0].upper() if x == "hard" else y[0])
+def option_string(option: str, override: bool = True) -> str:
+    if override:
+        [x, y] = option.split("_")
+        return "--" + (y[0].upper() if x == "hard" else y[0]) + y[1:]
+    else:
+        return "--" + option
 
-def extra_option_name(extra_option: FlexOptions) -> str:
-    return "--" + extra_option.name
+override_options_map = ( { option_string(x.name)             : x for x in list(ConfigArgument) } |
+                         { option_string(x.name)[1:3]        : x for x in list(ConfigArgument) } )
 
-def extra_option_letter(extra_option: FlexOptions) -> str:
-    return "-" + extra_option.name[0]
+regular_options_map  = ( { option_string(x.name, False)      : x for x in list(RegularOption) } |
+                         { option_string(x.name, False)[1:3] : x for x in list(RegularOption) } )
 
-full_options_map = ( { full_option_name(x)   : x for x in list(FullOptions) } |
-                     { full_option_letter(x) : x for x in list(FullOptions) } )
+flags_map            = ( { option_string(x.name, False)      : x for x in list(Flag)          } |
+                         { option_string(x.name, False)[1:3] : x for x in list(Flag)          } )
 
-flex_options_map = ( { extra_option_name(x)   : x for x in list(FlexOptions) } |
-                     { extra_option_letter(x) : x for x in list(FlexOptions) } )
-
-flags_map = ( { extra_option_name(x)   : x for x in list(Flags) } |
-              { extra_option_letter(x) : x for x in list(Flags) } )
-
-Options: TypeAlias = FullOptions | BasicOptions | TwoOptions | OneOption | ZeroOptions
-
-########################################################################################
+####################################################################################################
 # Session
-########################################################################################
+####################################################################################################
 
 @dataclass
 class Invocation:
@@ -299,79 +287,77 @@ class Session:
     output     : ImageInfo
     settings   : Settings
 
-########################################################################################
+####################################################################################################
 # Work Units
-########################################################################################
+####################################################################################################
+
+class Size(NamedTuple):
+    width  : int
+    height : int
 
 @dataclass
 class Scale:
-    scaler     : Scaler
-    multiplier : float
-    in_width   : int
-    in_height  : int
-    out_width  : int
-    out_height : int
+    scaler      : Scaler
+    multiplier  : float
+    input_size  : Size
+    output_size : Size
 
 @dataclass
 class Enhance:
-    enhancer   : str
-    multiplier : int
-    in_width   : int
-    in_height  : int
-    out_width  : int
-    out_height : int
+    enhancer    : str
+    multiplier  : int
+    input_size  : Size
+    output_size : Size
 
 @dataclass
 class Realesrgan:
-    enhancer   : str
-    multiplier : int
-    in_width   : int
-    in_height  : int
-    out_width  : int
-    out_height : int
+    enhancer    : str
+    multiplier  : int
+    input_size  : Size
+    output_size : Size
 
 @dataclass
 class Save:
-    width  : int
-    height : int
+    size : Size
 
 @dataclass
 class Load:
-    width  : int
-    height : int
+    size : Size
 
 @dataclass
 class StepForward:
-    save   : bool
-    width  : int
-    height : int
+    save : bool
+    size : Size
 
 @dataclass
 class PhaseForward:
     pass
 
-Unit: TypeAlias = ( Scale | Enhance | Realesrgan  |
-                    Save  | Load    | StepForward | PhaseForward )
+#---------------------------------------------------------------------------------------------------
 
-UNIT_CLASSES : Final = [ Scale , Enhance , Realesrgan  ,
-                         Save  , Load    , StepForward , PhaseForward ]
+Unit: TypeAlias = Scale | Enhance | Realesrgan | Save | Load | StepForward | PhaseForward
+
+def unit_classes() -> list[type]:
+    return [Scale, Enhance, Realesrgan, Save, Load, StepForward, PhaseForward]
 
 def unit_cost(unit: Unit) -> float:
 
-    if   isinstance(unit, Scale) and not ( unit.in_width  == unit.out_width and
-                                           unit.in_height == unit.out_height  ):
-        return unit.out_width * unit.out_height * 0.1  / 1000000
+    if   isinstance(unit, Scale) and not unit.input_size == unit.output_size:
+        px = return unit.output_size.width * unit.output_size.height * 0.10
     elif isinstance(unit, Enhance):
-        return unit.in_width  * unit.in_height  * 1.33 / 1000000
+        return unit.input_size.width * unit.input_size.height * 1.35
     elif isinstance(unit, Realesrgan):
-        return unit.in_width  * unit.in_height  * 1.00 / 1000000
+        return unit.input_size.width * unit.input_size.height * 1.00
     elif isinstance(unit, Save):
-        return unit.width     * unit.height     * 0.33 / 1000000
+        return unit.size.width * unit.size.height * 0.30
     elif isinstance(unit, Load):
-        return unit.width     * unit.height     * 0.05 / 1000000
+        return unit.size.width * unit.size.height * 0.05
     elif isinstance(unit, StepForward) and unit.save:
-        return unit.width     * unit.height     * 0.33 / 1000000
-    return 0
+        return unit.size.width * unit.size.height * 0.30
+    else:
+        px = 0
+
+    return px / 1000000
 
 ########################################################################################
 # Time String
