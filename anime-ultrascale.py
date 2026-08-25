@@ -2254,27 +2254,33 @@ def dry_check() -> None:
 
     if savelevel() <= SaveLevel.dry:
         print("")
-        print(f" input format   : {input_width()} x {input_height()} px")
-        print(f" input mode     : {input_mode}")
-        print(f" inversion      : {cast(float, settings.main.reduction):.2f}x")
-        print(f" output format  : {output_width} x {output_height} px")
-        print(f" output mode    : {output_mode}")
         print(f" tile size      : {cast(int, settings.main.tiling) * 64} px")
-        print(f" finisher       : {cast(str, settings.main.closure)}")
+        print(f" input format   : {input_width()} x {input_height()} px")
+        print(f" input mode     : {input_mode.replace('--', ', ')}")
+        print(f" inversion      : {cast(str, settings.soft.scaler)} (" 
+              f"{1 / cast(float, settings.main.reduction):.2f}".rstrip("0").rstrip(".")
+              + "x)")
+        print(f" normalization  : {settings.soft.enhancer} (" 
+              f"{cast(float, settings.main.reduction) * main_multiplier:.2f}"
+                  .rstrip("0").rstrip(".")
+              + "x)")
         print(f" conservative")
-        print(f"    iterations  : {settings.soft.iterations}")
-        print(f"    downscaling : {cast(str, settings.soft.scaler)} "
+        print(f"    downscaling : {cast(str, settings.soft.scaler)} ("
               f"{1 / cast(float, settings.soft.divisor):.2f}".rstrip("0").rstrip(".")
-              + "x")
+              + "x)")
         print(f"    upscaling   : {settings.soft.enhancer} "
-              f"{cast(int, settings.soft.multiplier)}x")
+              f"({cast(int, settings.soft.multiplier)}x)")
+        print(f"    iterations  : {settings.soft.iterations}")
         print(f" strong")
-        print(f"    iterations  : {settings.hard.iterations}")
-        print(f"    downscaling : {cast(str, settings.hard.scaler)} "
+        print(f"    downscaling : {cast(str, settings.hard.scaler)} ("
               f"{1 / cast(float, settings.hard.divisor):.2f}".rstrip("0").rstrip(".")
-              + "x")
+              + "x)")
         print(f"    upscaling   : {settings.hard.enhancer} "
-              f"{cast(int, settings.hard.multiplier)}x")
+              f"({cast(int, settings.hard.multiplier)}x)")
+        print(f"    iterations  : {settings.hard.iterations}")
+        print(f" finisher       : {cast(str, settings.main.closure)}")
+        print(f" output format  : {output_width} x {output_height} px")
+        print(f" output mode    : {output_mode.replace('--', ', ')}")
         print(f" total work     : "
               f"{sum([unit_cost(unit) for unit in execution_plan]):.2f} Mpx")
         print("")
@@ -2553,6 +2559,7 @@ HELP = textwrap.dedent("""\
 
     {-l│--log} (str)
         Determines  which  session  data  is  saved: 
+            'dry'       -> nothing (changes the output to terminal infos)
             'nothing'   -> nothing
             'text'      -> basic textual data, preset included
             'endpoints' -> as 'text'      + input/output images
