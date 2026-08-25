@@ -1,4 +1,4 @@
-main_format     = "4k"
+main_format     = null
 main_reduction  = null
 main_closure    = null
 main_tiling     = null

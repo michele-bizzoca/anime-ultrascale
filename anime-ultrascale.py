@@ -414,7 +414,8 @@ def early_assume( condition : bool                        ,
 input_file_path    : Path
 output_file_path   : Path
 positional_options : list[str]
-flex_options       : dict[FlexOptions, str]
+flex_options       : dict[FlexOptions, str] = {}
+full_options       : dict[FullOptions, str] = {}
 sort_options_now   : datetime
 
 def sort_options() -> None:
@@ -423,6 +424,7 @@ def sort_options() -> None:
     global output_file_path
     global positional_options
     global flex_options
+    global full_options
     global sort_options_now
 
     if len(sys.argv) == 1:
@@ -456,19 +458,31 @@ def sort_options() -> None:
             positional_options.append(arg)
             i += 1; continue
 
-        early_assume( arg in flex_options_map.keys() ,
-                      f"unknown flex option {arg}"   )
-        option = flex_options_map[arg]
+        early_assume(i + 1 < len(sys.argv) and
+                     not sys.argv[i + 1].startswith("-"),
+                     f"missing value for flex option {arg}")
 
-        early_assume( i + 1 < len(sys.argv) and
-                      not sys.argv[i + 1].startswith("-")    ,
-                      f"missing value for flex option {arg}" )
+        early_assume( arg in flex_options_map.keys() or
+                      arg in full_options_map.keys()  ,
+                      f"unknown option {arg}"   )
 
-        early_assume( option.name not in flex_options          ,
-                      f"multiple values for flex option {arg}" )
+        if arg in flex_options_map.keys():
+            omap  = flex_options_map
+            olist = flex_options
+        elif arg in full_options_map.keys():
+            omap  = full_options_map
+            olist = full_options
+        else:
+            early_fail(f"Unknown option {arg}")
 
-        flex_options[option] = sys.argv[i + 1]
-        i += 2; continue
+        option = omap[arg]
+
+        early_assume( option.name not in olist            ,
+                      f"multiple values for option {arg}" )
+
+        olist[option] = sys.argv[i + 1]
+
+        i += 2
 
     sort_options_now = datetime.now()
 
@@ -1476,30 +1490,22 @@ def settings_from_two_options() -> Settings:
 # Basic / Full Options -> Settings
 ########################################################################################
 
-def option_info(index: Options) -> tuple[str, str]:
-    return index.name.replace("_", " "), positional_options[index]
-
-def parse_int(index: Options) -> int:
-    name, s = option_info(index)
+def parse_int(name: str, s: str) -> int:
     try: return int(s)
     except BaseException as e:
         fail(f"the argument '{name}' is not an integer", True, e)
 
-def parse_float(index: Options) -> float:
-    name, s = option_info(index)
-    s = positional_options[index]
+def parse_float(name: str, s: str) -> float:
     try: return float(s)
     except BaseException as e:
         fail(f"the argument '{name}' is not a real", True, e)
 
-def parse_str(index:Options) -> str:
-    _, s  = option_info(index)
+def parse_str(name: str, s: str) -> str:
     return s
 
 def with_auto(parser):
-    def f(*args):
-        _, s = option_info(args[0])
-        return None if s == "auto" else parser(*args)
+    def f(name: str, s: str):
+        return None if s == "auto" else parser(name, s)
     return f
 
 def settings_from_basic_options() -> Settings:
@@ -1532,29 +1538,32 @@ def settings_from_basic_options() -> Settings:
 
 def settings_from_full_options() -> Settings:
 
-    return Settings (
+   def feed(index: FullOptions, parser):
+       return parser(index.name.replace("_", " "), positional_options[index])
+
+   return Settings (
 
         MainSettings(
-            parse_str(FullOptions.main_format),
-            with_auto(parse_int)(FullOptions.main_reduction),
-            with_auto(parse_str)(FullOptions.main_closure),
-            with_auto(parse_int)(FullOptions.main_tiling)
+            feed(FullOptions.main_format, parse_str),
+            feed(FullOptions.main_reduction, with_auto(parse_int)),
+            feed(FullOptions.main_closure, with_auto(parse_str)),
+            feed(FullOptions.main_tiling, with_auto(parse_int))
         ),
 
         ModelSettings(
-            parse_str(FullOptions.soft_enhancer),
-            parse_int(FullOptions.soft_iterations),
-            with_auto(parse_int)(FullOptions.soft_multiplier),
-            with_auto(parse_float)(FullOptions.soft_divisor),
-            with_auto(parse_str)(FullOptions.soft_scaler)
+            feed(FullOptions.soft_enhancer, parse_str),
+            feed(FullOptions.soft_iterations, parse_int),
+            feed(FullOptions.soft_multiplier, with_auto(parse_int)),
+            feed(FullOptions.soft_divisor, with_auto(parse_float)),
+            feed(FullOptions.soft_scaler, with_auto(parse_str))
         ),
 
         ModelSettings(
-            parse_str(FullOptions.hard_enhancer),
-            parse_int(FullOptions.hard_iterations),
-            with_auto(parse_int)(FullOptions.hard_multiplier),
-            with_auto(parse_float)(FullOptions.hard_divisor),
-            with_auto(parse_str)(FullOptions.hard_scaler)
+            feed(FullOptions.hard_enhancer, parse_str),
+            feed(FullOptions.hard_iterations, parse_int),
+            feed(FullOptions.hard_multiplier, with_auto(parse_int)),
+            feed(FullOptions.hard_divisor, with_auto(parse_float)),
+            feed(FullOptions.hard_scaler, with_auto(parse_str))
         )
     )
 
@@ -1627,6 +1636,59 @@ def resolve_defaults() -> None:
         settings.hard.divisor = math.sqrt(cast(int, settings.hard.multiplier))
     if settings.hard.scaler is None:
         settings.hard.scaler = "lanczos"
+
+########################################################################################
+# Overrides Resolution
+########################################################################################
+
+def resolve_overrides() -> None:
+
+    def feed(index: FullOptions, parser):
+        x = full_options.get(index, None)
+        if x is None: return None
+        return parser(index.name.replace("_", " "), x)
+
+    settings.main.format = ( feed(FullOptions.main_format, parse_str) or
+                             settings.main.format                      )
+
+    settings.main.reduction = ( feed(FullOptions.main_reduction,with_auto(parse_int)) or
+                                settings.main.reduction                                )
+
+    settings.main.closure = ( feed(FullOptions.main_closure, with_auto(parse_str)) or
+                              settings.main.closure                                 )
+
+    settings.main.tiling = ( feed(FullOptions.main_tiling, with_auto(parse_int)) or
+                             settings.main.tiling                                 )
+
+    settings.soft.enhancer = ( feed(FullOptions.soft_enhancer, parse_str) or
+                               settings.soft.enhancer                      )
+
+    settings.soft.iterations = ( feed(FullOptions.soft_iterations, parse_int) or
+                                 settings.soft.iterations                      )
+
+    settings.soft.multiplier = (feed(FullOptions.soft_multiplier,with_auto(parse_int))or
+                                 settings.soft.multiplier                              )
+
+    settings.soft.divisor = ( feed(FullOptions.soft_divisor, with_auto(parse_float)) or
+                              settings.soft.divisor                                   )
+
+    settings.soft.scaler = ( feed(FullOptions.soft_scaler, with_auto(parse_str)) or
+                             settings.soft.scaler                                 )
+
+    settings.hard.enhancer = ( feed(FullOptions.hard_enhancer, parse_str) or
+                               settings.hard.enhancer                      )
+
+    settings.hard.iterations = ( feed(FullOptions.hard_iterations, parse_int) or
+                                 settings.hard.iterations                      )
+
+    settings.hard.multiplier = (feed(FullOptions.hard_multiplier,with_auto(parse_int))or
+                                 settings.hard.multiplier                              )
+
+    settings.hard.divisor = ( feed(FullOptions.hard_divisor, with_auto(parse_float)) or
+                              settings.hard.divisor                                   )
+
+    settings.hard.scaler = ( feed(FullOptions.hard_scaler, with_auto(parse_str)) or
+                             settings.hard.scaler                                 )
 
 ########################################################################################
 # Dimensions Computation
@@ -2246,6 +2308,8 @@ def main():
         log("the presets file has been written")
         resolve_defaults()
         log("defaults have been resolved")
+        resolve_overrides()
+        log("overrides have been resolved")
         compute_dimensions()
         log("output dimensions have been computed")
         create_session()
@@ -2429,7 +2493,7 @@ HELP = textwrap.dedent("""\
         DIVISOR    >= 1 and <= HARD_MULTIPLIER
         SCALER     in ['bilinear', 'bicubic', 'lanczos']
         
-    OPTIONS
+    REGULAR OPTIONS
 
     {-l│--log} (str)
         Determines  which  session  data  is  saved: 
@@ -2438,7 +2502,18 @@ HELP = textwrap.dedent("""\
             'endpoints' -> as 'text'      + input/output images
             'debug'     -> as 'endpoints' + debug textual data
             'research'  -> as 'debug'     + intermediate images
-        
+    
+    OVERRIDE OPTIONS
+    
+    Every  parameter  specified using positional arguments (possibly using
+    the  default mechanic), except for INPUT and OUTPUT, can be overridden 
+    with an option. Positional arguments are treated differently depending
+    on  whether  they have been presented with an underscore or not. These
+    two examples summarize the rules:
+    
+        ENHANCER  -> {-e│--enhancer}
+        ENHANCER_ -> {-E│---enhancer}
+    
     DESCRIPTION
 
     Anime-Ultrascale  performs  extreme  image  enlargement  by controlled 
