@@ -221,6 +221,9 @@ class ZeroOptions(IntEnum):
 class FlexOptions(Enum):
     log = 0
 
+class Flags(Enum):
+    quiet = 0
+
 def full_option_name(core_option: FullOptions) -> str:
     [x, y] = core_option.name.split("_")
     return "--" + (y[0].upper() if x == "hard" else y[0]) + y[1:]
@@ -229,17 +232,20 @@ def full_option_letter(core_option: FullOptions) -> str:
     [x, y] = core_option.name.split("_")
     return "-" + (y[0].upper() if x == "hard" else y[0])
 
-def flex_option_name(extra_option: FlexOptions) -> str:
+def extra_option_name(extra_option: FlexOptions) -> str:
     return "--" + extra_option.name
 
-def flex_option_letter(extra_option: FlexOptions) -> str:
+def extra_option_letter(extra_option: FlexOptions) -> str:
     return "-" + extra_option.name[0]
 
 full_options_map = ( { full_option_name(x)   : x for x in list(FullOptions) } |
                      { full_option_letter(x) : x for x in list(FullOptions) } )
 
-flex_options_map = ( { flex_option_name(x)   : x for x in list(FlexOptions) } |
-                     { flex_option_letter(x) : x for x in list(FlexOptions) } )
+flex_options_map = ( { extra_option_name(x)   : x for x in list(FlexOptions) } |
+                     { extra_option_letter(x) : x for x in list(FlexOptions) } )
+
+flags_map = ( { extra_option_name(x)   : x for x in list(Flags) } |
+              { extra_option_letter(x) : x for x in list(Flags) } )
 
 Options: TypeAlias = FullOptions | BasicOptions | TwoOptions | OneOption | ZeroOptions
 
@@ -396,7 +402,7 @@ def early_fail( message   : str                         ,
     suggestion = " Run with --help for usage information." if suggest else ""
     text = message[:1].upper() + message[1:] + "." + suggestion
     if exception is None or not DEVELOPMENT_MODE:
-        raise RuntimeError(text)
+        raise SystemExit(text)
     else:
         raise RuntimeError(text) from exception
 
@@ -415,8 +421,9 @@ def early_assume( condition : bool                        ,
 input_file_path    : Path
 output_file_path   : Path
 positional_options : list[str]
-flex_options       : dict[FlexOptions, str] = {}
-full_options       : dict[FullOptions, str] = {}
+flex_options       : dict[FlexOptions, str]
+full_options       : dict[FullOptions, str]
+flags              : set[Flags]
 sort_options_now   : datetime
 
 def sort_options() -> None:
@@ -426,6 +433,7 @@ def sort_options() -> None:
     global positional_options
     global flex_options
     global full_options
+    global flags
     global sort_options_now
 
     if len(sys.argv) == 1:
@@ -444,6 +452,8 @@ def sort_options() -> None:
     output_file_path = Path(sys.argv[Arguments.output_path])
     positional_options = []
     flex_options       = {}
+    full_options       = {}
+    flags              = set()
 
     early_assume( len(sys.argv) >= len(Arguments) ,
                   "incomplete I/O specification"  )
@@ -457,6 +467,12 @@ def sort_options() -> None:
             early_assume( not flex_options                         ,
                           "positional option following a flex one" )
             positional_options.append(arg)
+            i += 1; continue
+
+        if arg in flags_map.keys():
+            early_assume( flags_map[arg] not in flags,
+                          f"multiple instances of flag {arg}" )
+            flags.add(flags_map[arg])
             i += 1; continue
 
         early_assume(i + 1 < len(sys.argv) and
@@ -730,8 +746,9 @@ class ProgressBar:
         )
         self.refresh_thread.start()
 
-        print("\033[?25l", end="", flush=True)
-        self.cursor_hidden = True
+        if Flags.quiet not in flags:
+            print("\033[?25l", end="", flush=True)
+            self.cursor_hidden = True
         self._render()
 
     def new_unit(self, unit: Unit) -> None:
@@ -1075,12 +1092,13 @@ class ProgressBar:
         else:
             msg = f"collateral work at {self.current_width} x {self.current_height} px ..."
 
-        print("\033[1A\033[2K\r", end="")
-        print("\033[1A\033[2K\r", end="")
-        print("\n", end="")
-        print(line, end="")
-        print("\033[1B\033[2K\r", end="")
-        print(" " * (wcwidth.wcswidth(line) - wcwidth.wcswidth(msg)) + msg, end="", flush=True)
+        if Flags.quiet not in flags:
+            print("\033[1A\033[2K\r", end="")
+            print("\033[1A\033[2K\r", end="")
+            print("\n", end="")
+            print(line, end="")
+            print("\033[1B\033[2K\r", end="")
+            print(" " * (wcwidth.wcswidth(line) - wcwidth.wcswidth(msg)) + msg, end="", flush=True)
 
         if (
             savelevel() >= SaveLevel.debug
@@ -2324,7 +2342,7 @@ def main():
         raise e
 
     except KeyboardInterrupt as e:
-        early_fail("interrupted by user", False, e)
+        early_fail(" └─→ Interrupted by user", False, e)
 
     except BaseException as e:
         early_fail("unexpected error", False, e)
@@ -2398,7 +2416,7 @@ def main():
 
     except KeyboardInterrupt as e:
         record_outcome("interrupt")
-        fail("interrupted by user", False, e)
+        fail(" └─→ Interrupted by user", False, e)
 
     except BaseException as e:
         record_outcome(traceback.format_exc())
@@ -2412,17 +2430,17 @@ def main():
         raise e
 
     except KeyboardInterrupt as e:
-        print()
+        if Flags.quiet not in flags: print()
         record_outcome("interrupt")
-        fail("interrupted by user", False, e)
+        fail(" └─→ Interrupted by user", False, e)
 
     except BaseException as e:
-        print()
+        if Flags.quiet not in flags: print()
         record_outcome(traceback.format_exc())
         fail("unexpected error", False, e)
 
     else:
-        print()
+        if Flags.quiet not in flags: print()
         record_outcome("success")
 
 ########################################################################################
@@ -2557,7 +2575,7 @@ HELP = textwrap.dedent("""\
         
     REGULAR OPTIONS
 
-    {-l│--log} (str)
+    {-l│--log} (type: str)
         Determines  which  session  data  is  saved: 
             'dry'       -> nothing (changes the output to terminal infos)
             'nothing'   -> nothing
@@ -2566,6 +2584,9 @@ HELP = textwrap.dedent("""\
             'debug'     -> as 'endpoints' + debug textual data
             'research'  -> as 'debug'     + intermediate images
     
+    {-q│--quiet} (ignored by --log dry)
+        No standard output.
+        
     OVERRIDE OPTIONS
     
     Every  parameter  specified using positional arguments (possibly using
