@@ -223,7 +223,7 @@ class FlexOptions(Enum):
 
 def full_option_name(core_option: FullOptions) -> str:
     [x, y] = core_option.name.split("_")
-    return ("-" if x == "hard" else "") + "--" + y
+    return "--" + (y[0].upper() if x == "hard" else y[0]) + y[1:]
 
 def full_option_letter(core_option: FullOptions) -> str:
     [x, y] = core_option.name.split("_")
@@ -2575,7 +2575,7 @@ HELP = textwrap.dedent("""\
     two examples summarize the rules:
     
         ENHANCER  -> {-e│--enhancer}
-        ENHANCER_ -> {-E│---enhancer}
+        ENHANCER_ -> {-E│--Enhancer}
     
     DESCRIPTION
 
