@@ -147,12 +147,13 @@ AUTO_PRESET_PATH         : Final = PRESET_FOLDER_PATH  / AUTO_PRESET_FILE
 
 class SaveLevel(IntEnum):
 
-    nothing   = 0
-    text      = 1
-    error     = 2
-    endpoints = 3
-    debug     = 4
-    research  = 5
+    dry       = 0
+    nothing   = 1
+    text      = 2
+    error     = 3
+    endpoints = 4
+    debug     = 5
+    research  = 6
 
 def savelevel_descriptor(savelevel: SaveLevel):
     if   savelevel == SaveLevel.error: return "error"
@@ -1115,9 +1116,10 @@ class ProgressBar:
 # Image Loading
 ########################################################################################
 
-initial_mode  : str
+input_mode    : str
 input_image   : pyvips.Image
 current_image : pyvips.Image
+output_mode   : str
 
 def current_width()  -> int: return current_image.width
 def current_height() -> int: return current_image.height
@@ -1134,9 +1136,6 @@ def load(unit: Load, path: Path, bar: ProgressBar | None = None) -> pyvips.Image
     image = pyvips.Image.new_from_file(str(path), access="sequential")
 
     image = image.colourspace("srgb")
-
-    if image.bands == 3:
-        image = image.addalpha()
 
     if image.bands > 4:
         image = image[:4]
@@ -1206,16 +1205,27 @@ def load(unit: Load, path: Path, bar: ProgressBar | None = None) -> pyvips.Image
 
 def load_input_image() -> None:
 
-    global initial_mode
+    global input_mode
     global input_image
     global current_image
+    global output_mode
 
     initial_image = pyvips.Image.new_from_file( str(input_file_path)  ,
                                                 access = "sequential" )
-    initial_mode = ( f"{initial_image.get('vips-loader').removesuffix('load')}--"
-                     f"{initial_image.bands}bands--"
-                     f"{initial_image.interpretation}--"
-                     f"{'alpha' if initial_image.hasalpha() else 'opaque'}" )
+
+    ifmt = f"{input_file_path.suffix.lower()[1:]}"
+ #   ibands = f"{initial_image.bands}bands"
+    imode = initial_image.interpretation
+    ialpha = 'alpha' if initial_image.hasalpha() else 'opaque'
+
+    ofmt = f"{output_file_path.suffix.lower()[1:]}"
+ #   obands = ( str( initial_image.bands -
+ #                   (initial_image.hasalpha() and ofmt in OPAQUE_FORMATS) ) + "bands" )
+    omode = "srgb"
+    oalpha = ialpha
+
+    input_mode  = f"{ifmt}--{imode}--{ialpha}"
+    output_mode = f"{ofmt}--{omode}--{oalpha}"
 
     input_image = load( Load(initial_image.width, initial_image.height) ,
                         input_file_path                                 )
@@ -1713,7 +1723,6 @@ def compute_dimensions() -> None:
     output_height = f[1]
     main_multiplier = output_width / input_width()
 
-
 ########################################################################################
 # Session Construction
 ########################################################################################
@@ -1729,8 +1738,8 @@ def create_session() -> None:
     session = Session (
 
         Invocation(stamp, SOFTWARE_VERSION, savelevel().name)   ,
-        ImageInfo(initial_mode, input_width(), input_height())  ,
-        ImageInfo(OUTPUT_MODE, output_width, output_height) ,
+        ImageInfo(input_mode, input_width(), input_height())  ,
+        ImageInfo(output_file_path.suffix.lower()[1:] , output_width, output_height) ,
         settings
     )
 
@@ -1833,7 +1842,7 @@ def combined_settings_validation() -> None:
     assume( input_mpx() * total_factor() ** 2 < MAX_MPX                            ,
             f"attempt to generate an intermediate image larger than {MAX_MPX} Mpx" )
 
-    assume( not ( "alpha" in initial_mode and
+    assume( not ( "alpha" in input_mode and
                   output_file_path.suffix.lower()[1:] in OPAQUE_FORMATS) ,
             f"the output format can't carry the input's alpha channel")
 
@@ -2088,7 +2097,7 @@ def step_forward(unit: StepForward, bar: ProgressBar):
 
     if step == "export":
         log(f"the output image has been saved, {current_width()}x"
-            f"{current_height()}px {OUTPUT_MODE}")
+            f"{current_height()}px {output_mode}")
 
     forward_j = (forward_j + 1) % len(steps)
 
@@ -2238,6 +2247,42 @@ def plan_output_phase() -> None:
     plan_phase_forward()
 
 ########################################################################################
+# Dry Check
+########################################################################################
+
+def dry_check() -> None:
+
+    if savelevel() <= SaveLevel.dry:
+        print("")
+        print(f" input format   : {input_width()} x {input_height()} px")
+        print(f" input mode     : {input_mode}")
+        print(f" inversion      : {cast(float, settings.main.reduction):.2f}x")
+        print(f" output format  : {output_width} x {output_height} px")
+        print(f" output mode    : {output_mode}")
+        print(f" tile size      : {cast(int, settings.main.tiling) * 64} px")
+        print(f" finisher       : {cast(str, settings.main.closure)}")
+        print(f" conservative")
+        print(f"    iterations  : {settings.soft.iterations}")
+        print(f"    downscaling : {cast(str, settings.soft.scaler)} "
+              f"{1 / cast(float, settings.soft.divisor):.2f}".rstrip("0").rstrip(".")
+              + "x")
+        print(f"    upscaling   : {settings.soft.enhancer} "
+              f"{cast(int, settings.soft.multiplier)}x")
+        print(f" strong")
+        print(f"    iterations  : {settings.hard.iterations}")
+        print(f"    downscaling : {cast(str, settings.hard.scaler)} "
+              f"{1 / cast(float, settings.hard.divisor):.2f}".rstrip("0").rstrip(".")
+              + "x")
+        print(f"    upscaling   : {settings.hard.enhancer} "
+              f"{cast(int, settings.hard.multiplier)}x")
+        print(f" total work     : "
+              f"{sum([unit_cost(unit) for unit in execution_plan]):.2f} Mpx")
+        print("")
+
+        exit()
+
+
+########################################################################################
 # Execution
 ########################################################################################
 
@@ -2269,11 +2314,14 @@ def main():
         create_exit_file()
         create_log_file()
 
+    except SystemExit as e:
+        raise e
+
     except KeyboardInterrupt as e:
         early_fail("interrupted by user", False, e)
 
-    #except BaseException as e:
-    #    early_fail("unexpected error", False, e)
+    except BaseException as e:
+        early_fail("unexpected error", False, e)
 
     try:
         log( "options have been sorted" ,
@@ -2336,6 +2384,11 @@ def main():
         log("the hard phase has been planned")
         plan_output_phase()
         log("the output phase has been planned")
+        dry_check()
+        log("the dry check has been performed")
+
+    except SystemExit as e:
+        raise e
 
     except KeyboardInterrupt as e:
         record_outcome("interrupt")
@@ -2348,6 +2401,9 @@ def main():
     try:
         execute_plan()
         log("the plan has been executed")
+
+    except SystemExit as e:
+        raise e
 
     except KeyboardInterrupt as e:
         print()
