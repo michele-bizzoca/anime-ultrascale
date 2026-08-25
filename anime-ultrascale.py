@@ -2270,7 +2270,7 @@ def plan_output_phase() -> None:
 
 def dry_check() -> None:
 
-    if savelevel() <= SaveLevel.dry:
+    if savelevel() <= SaveLevel.dry and Flags.quiet not in flags:
         print("")
         print(f" tile size      : {cast(int, settings.main.tiling) * 64} px")
         print(f" input format   : {input_width()} x {input_height()} px")
@@ -2303,7 +2303,7 @@ def dry_check() -> None:
               f"{sum([unit_cost(unit) for unit in execution_plan]):.2f} Mpx")
         print("")
 
-        exit()
+    exit()
 
 
 ########################################################################################
@@ -2584,7 +2584,7 @@ HELP = textwrap.dedent("""\
             'debug'     -> as 'endpoints' + debug textual data
             'research'  -> as 'debug'     + intermediate images
     
-    {-q│--quiet} (ignored by --log dry)
+    {-q│--quiet}
         No standard output.
         
     OVERRIDE OPTIONS
