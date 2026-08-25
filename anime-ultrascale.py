@@ -2495,8 +2495,8 @@ HELP = textwrap.dedent("""\
         TIF/TIFF, WEBP.
 
     OUTPUT.png (type: str)
-        Output image in any of the following formats: PNG (RGBA), JPG/JPEG
-        (RGB), BMP (RGB), TIF/TIFF (RGBA), WEBP (RGBA).
+        Output  image  in  any  of  the  following  formats: PNG (RGB[A]), 
+        JPG/JPEG (RGB), BMP (RGB), TIF/TIFF (RGB[A]), WEBP (RGB[A]).
 
     FORMAT (type: str) (auto: 4k)
         Output  format,  all the following examples are accepted: (a) 2.0,
