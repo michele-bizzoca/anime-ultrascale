@@ -31,7 +31,7 @@ from enum import IntEnum, Enum
 from datetime import datetime
 from dataclasses import dataclass
 from threading import Event, Thread, Lock
-from typing import TypeVar, NoReturn, TypeAlias, Final, TextIO, Any, cast, NamedTuple
+from typing import NoReturn, TypeAlias, Final, TextIO, Any, cast, NamedTuple
 
 ####################################################################################################
 # Constants
@@ -125,8 +125,8 @@ MODEL_FOLDER_PATH    : Final = INVOCATION_PATH / MODEL_FOLDER
 PRESET_FOLDER_PATH   : Final = INVOCATION_PATH / PRESET_FOLDER
 SESSION_FOLDER_PATH  : Final = ( INVOCATION_PATH / SESSION_FOLDER / INVOCATION_DATE /
                                  f"{INVOCATION_TIME}--{INVOCATION_USEC}--{INVOCATION_PID}" )
-TEMP_FOLDER_PATH     : Final = ( INVOCATION_PATH / TEMP_FOLDER / f"{INVOCATION_DATE}--" 
-                                 f"{INVOCATION_TIME}--{INVOCATION_USEC}--{INVOCATION_PID}" )
+TEMP_FOLDER_PATH     : Final = ( INVOCATION_PATH / TEMP_FOLDER /
+                                 f"{INVOCATION_STAMP}--{INVOCATION_PID}" )
 
 ####################################################################################################
 # File Paths
@@ -146,10 +146,16 @@ RENV_FILE_PATH        : Final = RENV_FOLDER_PATH    / RENV_FILE
 DEMO_FILE_PATH        : Final = PRESET_FOLDER_PATH  / DEMO_FILE
 
 ####################################################################################################
-# Save Levels
+# Shorthands
 ####################################################################################################
 
-class SaveLevel(IntEnum):
+EXTENSIONS = ALPHA_EXTENSIONS + OPAQUE_EXTENSIONS
+
+####################################################################################################
+# Log Levels
+####################################################################################################
+
+class LogLevel(IntEnum):
 
     dry       = 0
     nothing   = 1
@@ -161,10 +167,10 @@ class SaveLevel(IntEnum):
 
 #---------------------------------------------------------------------------------------------------
 
-def savelevel_descriptor(savelevel: SaveLevel):
-    if   savelevel == SaveLevel.error: return "error"
-    elif savelevel == SaveLevel.debug: return "debug"
-    else:                              return "normal"
+def loglevel_descriptor(loglevel: LogLevel):
+    if   loglevel == LogLevel.error: return "error"
+    elif loglevel == LogLevel.debug: return "debug"
+    else:                            return "normal"
 
 ####################################################################################################
 # Scalers
@@ -238,7 +244,7 @@ flags_map            = ( { option_string(x.name, False)      : x for x in list(F
                          { option_string(x.name, False)[1:3] : x for x in list(Flag)          } )
 
 ####################################################################################################
-# Session
+# Sessions
 ####################################################################################################
 
 @dataclass
@@ -359,204 +365,175 @@ def unit_cost(unit: Unit) -> float:
 
     return px / 1000000
 
-########################################################################################
-# Time String
-########################################################################################
+####################################################################################################
+# Time Recording
+####################################################################################################
 
-def timestring(now: datetime) -> str:
+call_time: dict[object, datetime]
 
-    return now.strftime('on %Y/%m/%d at %H:%M:%S and %f')
+def register(function: object):
+    global call_time
+    call_time[function] = datetime.now()
 
-########################################################################################
-# File Opening with Automatic Closure
-########################################################################################
+def timestring(function: object) -> str:
+    return call_time[function].strftime('on %Y/%m/%d at %H:%M:%S and %f')
 
-def open_and_close_at_exit(path: Path) -> TextIO:
+####################################################################################################
+# Safe Opening
+####################################################################################################
+
+def safe_open(path: Path) -> TextIO:
     handle = open(path, "w+")
-    def close_handle():handle.close()
-    atexit.register(close_handle)
+    def close():handle.close()
+    atexit.register(close)
     return handle
 
-########################################################################################
-# Early Error Reporting
-########################################################################################
+####################################################################################################
+# Early Failure
+####################################################################################################
 
 def early_fail( message   : str                         ,
                 suggest   : bool = True                 ,
                 exception : BaseException | None = None ) -> NoReturn:
 
-    suggestion = " Run with --help for usage information." if suggest else ""
-    text = message[:1].upper() + message[1:] + "." + suggestion
-    if exception is None or not DEVELOPMENT_MODE:
-        raise SystemExit(text)
-    else:
+    suggestion = " Run with --help for usage information."
+    text = f"{message[:1].upper()}{message[1:]}.{suggestion if suggest else ''}"
+    if exception is not None and DEVELOPMENT_MODE:
         raise RuntimeError(text) from exception
+    else:
+        raise SystemExit(text)
 
-def early_assume( condition : bool                        ,
-                  message   : str                         ,
-                  suggest   : bool = True                 ,
-                  exception : BaseException | None = None ) -> None:
-
-    if not condition:
-        early_fail(message, suggest, exception)
-
-########################################################################################
+####################################################################################################
 # Options Sorting
-########################################################################################
+####################################################################################################
 
-input_file_path    : Path
-output_file_path   : Path
-positional_options : list[str]
-flex_options       : dict[FlexOptions, str]
-full_options       : dict[FullOptions, str]
-flags              : set[Flags]
-sort_options_now   : datetime
+input_file_path      : Path
+output_file_path     : Path
+positional_arguments : list[str]
+override_options     : dict[ConfigArgument, str]
+regular_options      : dict[RegularOption, str]
+flags                : set[Flag]
 
 def sort_options() -> None:
 
     global input_file_path
     global output_file_path
-    global positional_options
-    global flex_options
-    global full_options
+    global positional_arguments
+    global override_options
+    global regular_options
     global flags
-    global sort_options_now
 
-    if len(sys.argv) == 1:
-        print(HELP, end="")
+    if len(sys.argv) == 1 or len(sys.argv) == 2 and sys.argv[1] in ["-h", "--help"]:
+        print_help()
         exit()
 
-    if len(sys.argv) == 2:
-        if sys.argv[1] in ["-h", "--help"]:
-            print(HELP, end = "")
-            exit()
-        elif sys.argv[1] in ["-v", "--version"]:
-            print(SOFTWARE_VERSION)
-            exit()
+    if len(sys.argv) == 2 and sys.argv[1] in ["-v", "--version"]:
+        print(SOFTWARE_VERSION)
+        exit()
 
-    input_file_path = Path(sys.argv[Arguments.input_path])
-    output_file_path = Path(sys.argv[Arguments.output_path])
-    positional_options = []
-    flex_options       = {}
-    full_options       = {}
-    flags              = set()
+    if len(sys.argv) <= 2:
+        early_fail("low-argument invocation asking for neither help nor version")
 
-    early_assume( len(sys.argv) >= len(Arguments) ,
-                  "incomplete I/O specification"  )
+    input_file_path      = Path(sys.argv[1])
+    output_file_path     = Path(sys.argv[2])
+    positional_arguments = []
+    override_options     = {}
+    regular_options      = {}
+    flags                = set()
 
-    i = len(Arguments)
+    if not input_file_path.is_file(): early_fail("invalid input file path")
+    if not output_file_path.is_file(): early_fail("invalid input file path")
+    if not input_file_path.suffix[1:] in EXTENSIONS: early_fail("invalid input file extension")
+    if not output_file_path.suffix[1:] in EXTENSIONS: early_fail("invalid output file extension")
+
+    i = 3
     while i < len(sys.argv):
 
         arg = sys.argv[i]
 
         if not arg.startswith("-"):
-            early_assume( not flex_options                         ,
-                          "positional option following a flex one" )
-            positional_options.append(arg)
+            if regular_options or override_options or flags:
+                early_fail(f"argument '{arg}' is preceded by options" )
+            positional_arguments.append(arg)
             i += 1; continue
 
         if arg in flags_map.keys():
-            early_assume( flags_map[arg] not in flags,
-                          f"multiple instances of flag {arg}" )
+            if flags_map[arg] in flags:
+                early_fail(f"multiple occurrences of flag '{arg}'" )
             flags.add(flags_map[arg])
             i += 1; continue
 
-        early_assume(i + 1 < len(sys.argv) and
-                     not sys.argv[i + 1].startswith("-"),
-                     f"missing value for flex option {arg}")
+        if i + 1 >= len(sys.argv) or sys.argv[i + 1].startswith["-"]:
+            early_fail(f"missing value for option '{arg}'")
 
-        early_assume( arg in flex_options_map.keys() or
-                      arg in full_options_map.keys()  ,
-                      f"unknown option {arg}"   )
-
-        if arg in flex_options_map.keys():
-            omap  = flex_options_map
-            olist = flex_options
-        elif arg in full_options_map.keys():
-            omap  = full_options_map
-            olist = full_options
+        if arg in regular_options_map.keys():
+            resolver  = regular_options_map
+            collector = regular_options
+        elif arg in override_options.keys():
+            resolver  = override_options_map
+            collector = override_options
         else:
-            early_fail(f"Unknown option {arg}")
+            early_fail(f"the option '{arg}' is invalid")
 
-        option = omap[arg]
-
-        early_assume( option.name not in olist            ,
-                      f"multiple values for option {arg}" )
-
-        olist[option] = sys.argv[i + 1]
-
+        option = resolver[arg]
+        if option.name in collector: early_fail (f"multiple values for option {arg}" )
+        collector[option] = sys.argv[i + 1]
         i += 2
 
-    sort_options_now = datetime.now()
+    register(sort_options)
 
-########################################################################################
-# Save Level
-########################################################################################
+####################################################################################################
+# Log Level
+####################################################################################################
 
-def savelevel() -> SaveLevel:
+loglevel: LogLevel
 
-    return SaveLevel[flex_options.get(FlexOptions.log, DEFAULT_SAVE_LEVEL)]
+def compute_loglevel() -> None:
+    global loglevel
+    loglevel = LogLevel(regular_options.get(RegularOption.log, DEFAULT_LOGLEVEL))
+    register(compute_loglevel)
 
-########################################################################################
-# Session Folder Creation
-########################################################################################
-
-create_session_folder_now : datetime
+####################################################################################################
+# Session Folder
+####################################################################################################
 
 def create_session_folder() -> None:
-
-    global create_session_folder_now
-
-    if savelevel() >= SaveLevel.text:
+    if loglevel >= LogLevel.text:
         SESSION_FOLDER_PATH.mkdir(parents = True, exist_ok = True)
+    register(create_session_folder)
 
-    create_session_folder_now = datetime.now()
+####################################################################################################
+# Exit File
+####################################################################################################
 
-########################################################################################
-# Exit Message
-########################################################################################
+exit_file_handle: TextIO
 
-exit_file_handle     : TextIO
-create_exit_file_now : datetime
-
-def create_exit_file() -> None:
-
+def prepare_exit_file() -> None:
     global exit_file_handle
-    global create_exit_file_now
+    if loglevel >= LogLevel.debug:
+        exit_file_handle = safe_open(EXIT_FILE_PATH)
+    register(prepare_exit_file)
 
-    if savelevel() >= SaveLevel.debug:
-        exit_file_handle = open_and_close_at_exit(EXIT_FILE_PATH)
-
-    create_exit_file_now = datetime.now()
-
-def record_outcome(message: str) -> None:
-
-    if savelevel() >= SaveLevel.debug:
+def record_exit_message(message: str) -> None:
+    if loglevel >= LogLevel.debug:
         exit_file_handle.write(message + "\n")
         exit_file_handle.flush()
 
-########################################################################################
+####################################################################################################
 # Logging
-########################################################################################
+####################################################################################################
 
-log_file_handle     : TextIO
-create_log_file_now : datetime
+log_file_handle: TextIO
 
-def create_log_file() -> None:
-
+def prepare_log_file() -> None:
     global log_file_handle
-    global create_log_file_now
+    if loglevel >= LogLevel.text:
+        log_file_handle = safe_open(LOG_FILE_PATH)
+    register(prepare_log_file)
 
-    if savelevel() >= SaveLevel.text:
-        log_file_handle = open_and_close_at_exit(LOG_FILE_PATH)
+def log(message: str, level: LogLevel = LogLevel.text, now : datetime | None = None):
 
-    create_log_file_now = datetime.now()
-
-def log ( message: str                      ,
-          level: SaveLevel = SaveLevel.text ,
-          now : datetime | None = None      ):
-
-    if savelevel() >= SaveLevel.text and savelevel() >= level:
+    if loglevel >= LogLevel.text and loglevel >= level:
         now = now or datetime.now()
         message = ( f"{timestring(now)}, "
                     f"level {savelevel_descriptor(level).upper()}: "
@@ -2433,270 +2410,274 @@ def main():
 # Help
 ########################################################################################
 
-HELP = textwrap.dedent("""\
-    Anime-Ultrascale
-    A Tool for Extreme Anime Upscaling.
+def print_help() -> None:
 
-    USAGE
+    def printer(s: str): print(textwrap.dedent(textwrap.dedent(s[1:])),end="")
 
-    (1) anime-ultrascale 
-          INPUT OUTPUT
-          FORMAT REDUCTION CLOSURE TILING
-          ENHANCER  ITERATIONS  MULTIPLIER  DIVISOR  SCALER
-          ENHANCER_ ITERATIONS_ MULTIPLIER_ DIVISOR_ SCALER_
-          [OPTIONS]
+    printer("""
+        Anime-Ultrascale
+        A Tool for Extreme Anime Upscaling.
+    
+        USAGE
+    
+        (1) anime-ultrascale 
+              INPUT OUTPUT
+              FORMAT REDUCTION CLOSURE TILING
+              ENHANCER  ITERATIONS  MULTIPLIER  DIVISOR  SCALER
+              ENHANCER_ ITERATIONS_ MULTIPLIER_ DIVISOR_ SCALER_
+              [OPTIONS]
+            
+        (2) anime-ultrascale INPUT OUTPUT FORMAT PRESET [OPTIONS]
+            anime-ultrascale INPUT OUTPUT PRESET FORMAT [OPTIONS]
         
-    (2) anime-ultrascale INPUT OUTPUT FORMAT PRESET [OPTIONS]
-        anime-ultrascale INPUT OUTPUT PRESET FORMAT [OPTIONS]
-    
-    (3) anime-ultrascale INPUT OUTPUT FORMAT [OPTIONS]
-        anime-ultrascale INPUT OUTPUT PRESET [OPTIONS]
-    
-    (4) anime-ultrascale INPUT OUTPUT [OPTIONS]
-        anime-ultrascale INPUT OUTPUT [OPTIONS]
-    
-    (5) anime-ultrascale {-h│--help│-v│--version}
-    
-    (6) anime-ultrascale 
-
-    EXAMPLES
-    
-    (1) anime-ultrascale 
-          input.jpg output.png
-          4k auto auto auto
-          4xHFA2k 2 auto auto auto
-          realesrgan-x4plus-anime 2 auto auto auto
-          --log text
+        (3) anime-ultrascale INPUT OUTPUT FORMAT [OPTIONS]
+            anime-ultrascale INPUT OUTPUT PRESET [OPTIONS]
         
-    (2) anime-ultrascale input.jpg output.png 4k quality
-    
-    (3) anime-ultrascale input.jpg output.png 4k
-    
-    (4) anime-ultrascale input.jpg output.png
-    
-    POSITIONAL ARGUMENTS
-
-    INPUT (type: str)
-        Input image in any of the following formats: PNG, JPG/JPEG, BMP, 
-        TIF/TIFF, WEBP.
-
-    OUTPUT.png (type: str)
-        Output  image  in  any  of  the  following  formats: PNG (RGB[A]), 
-        JPG/JPEG (RGB), BMP (RGB), TIF/TIFF (RGB[A]), WEBP (RGB[A]).
-
-    FORMAT (type: str) (auto: 4k)
-        Output  format,  all the following examples are accepted: (a) 2.0,
-        (b)  200%, (c) w2160, (d)h2160, (e) 4k, 4kh, 4kv (f) 4K, 4KH, 4KV. 
-        (a-b)  multiplies the input format. (c-d) fixes the output width /
-        height (e) fits the input into a multiple of 960 x 540 px or 540 x
-        960  px;  h  and v select the horizontal and vertical orientation, 
-        and  when  absent  the input's orientation is chosen; for example,
-        4kh  fits the input into 3840 x 2160 px (f) like the previous, but
-        instead  of  producing  the largest image fitting into the box, it
-        produces the smallest image filling the box.
+        (4) anime-ultrascale INPUT OUTPUT [OPTIONS]
+            anime-ultrascale INPUT OUTPUT [OPTIONS]
         
-    REDUCTION (type: float) (auto: automatic upscaling inversion)  
-        The divisor of upscaling inversion.
-       
-    CLOSURE (type: str) (auto: bicubic)
-        The algorithm to be used in the final downscaling.
+        (5) anime-ultrascale {-h│--help│-v│--version}
         
-    TILING (type: int) (auto: 4)
-        The  size  of each tile, to be multiplied with 64 px. For example,
-        4 leads to a tile size of 256 px.
+        (6) anime-ultrascale 
+    
+        EXAMPLES
         
-    ENHANCER (type: str)
-        The  name  of  the Real ESRGAN model to be used during preliminary
-        upscaling  and  conservative  detail enhancement. It has be stored 
-        in the 'models' folder as a '.bin'/'.param' file pair.
-       
-    ITERATIONS (type: str)
-        The  number  of upscalings  performed  during  conservative detail 
-        enhancement.
+        (1) anime-ultrascale 
+              input.jpg output.png
+              4k auto auto auto
+              4xHFA2k 2 auto auto auto
+              realesrgan-x4plus-anime 2 auto auto auto
+              --log text
+            
+        (2) anime-ultrascale input.jpg output.png 4k quality
+        
+        (3) anime-ultrascale input.jpg output.png 4k
+        
+        (4) anime-ultrascale input.jpg output.png
+        
+        POSITIONAL ARGUMENTS
     
-    MULTIPLIER (type: int) (auto: deduced by ENHANCER)
-       The upscaling factor of ENHANCER.
+        INPUT (type: str)
+            Input image in any of the following formats: PNG, JPG/JPEG, BMP, 
+            TIF/TIFF, WEBP.
     
-    DIVISOR (type: float) (auto: sqrt(MULTIPLIER))
-       The downscaling to be applied before upscalings during conservative
-       detail enhancement.
-       
-    SCALER (type: str) (auto: bicubic)
-       The  downscaling  algorithm  to  be used during conservative detail 
-       enhancement.
-       
-    {ENHANCER_ │ ITERATIONS_ │ MULTIPLIER_ │ DIVISOR_ │ SCALER_}
-       Just  as  their counterparts without underscore, but these apply to 
-       strong detail enhancement. 
-
-    PRESET (type: str) (auto: quality)
-        The  name of a stored preset. It has to be stored in the 'presets' 
-        folder  as  a '.preset' file. Each execution with log level 'text' 
-        or higher saves its preset as part of session data.
-
-    {-h│--help} (or no argument)
-        Shows this help message.
-
-    {-v│--version}
-        Shows this program's version.
-
-    CONSTRAINTS
-
-        No  initial,  intermediate  or  final image can be either empty or 
-        larger than 200 Mpx.
+        OUTPUT.png (type: str)
+            Output  image  in  any  of  the  following  formats: PNG (RGB[A]), 
+            JPG/JPEG (RGB), BMP (RGB), TIF/TIFF (RGB[A]), WEBP (RGB[A]).
+    
+        FORMAT (type: str) (auto: 4k)
+            Output  format,  all the following examples are accepted: (a) 2.0,
+            (b)  200%, (c) w2160, (d)h2160, (e) 4k, 4kh, 4kv (f) 4K, 4KH, 4KV. 
+            (a-b)  multiplies the input format. (c-d) fixes the output width /
+            height (e) fits the input into a multiple of 960 x 540 px or 540 x
+            960  px;  h  and v select the horizontal and vertical orientation, 
+            and  when  absent  the input's orientation is chosen; for example,
+            4kh  fits the input into 3840 x 2160 px (f) like the previous, but
+            instead  of  producing  the largest image fitting into the box, it
+            produces the smallest image filling the box.
+            
+        REDUCTION (type: float) (auto: automatic upscaling inversion)  
+            The divisor of upscaling inversion.
+           
+        CLOSURE (type: str) (auto: bicubic)
+            The algorithm to be used in the final downscaling.
+            
+        TILING (type: int) (auto: 4)
+            The  size  of each tile, to be multiplied with 64 px. For example,
+            4 leads to a tile size of 256 px.
+            
+        ENHANCER (type: str)
+            The  name  of  the Real ESRGAN model to be used during preliminary
+            upscaling  and  conservative  detail enhancement. It has be stored 
+            in the 'models' folder as a '.bin'/'.param' file pair.
+           
+        ITERATIONS (type: str)
+            The  number  of upscalings  performed  during  conservative detail 
+            enhancement.
+        
+        MULTIPLIER (type: int) (auto: deduced by ENHANCER)
+           The upscaling factor of ENHANCER.
+        
+        DIVISOR (type: float) (auto: sqrt(MULTIPLIER))
+           The downscaling to be applied before upscalings during conservative
+           detail enhancement.
+           
+        SCALER (type: str) (auto: bicubic)
+           The  downscaling  algorithm  to  be used during conservative detail 
+           enhancement.
+           
+        {ENHANCER_ │ ITERATIONS_ │ MULTIPLIER_ │ DIVISOR_ │ SCALER_}
+           Just  as  their counterparts without underscore, but these apply to 
+           strong detail enhancement. 
+    
+        PRESET (type: str) (auto: quality)
+            The  name of a stored preset. It has to be stored in the 'presets' 
+            folder  as  a '.preset' file. Each execution with log level 'text' 
+            or higher saves its preset as part of session data.
+    
+        {-h│--help} (or no argument)
+            Shows this help message.
+    
+        {-v│--version}
+            Shows this program's version.
+    
+        CONSTRAINTS
+    
+            No  initial,  intermediate  or  final image can be either empty or 
+            larger than 200 Mpx.
+             
+            REDUCTION  >= 1
+            CLOSURE    in ['bilinear', 'bicubic', 'lanczos']
+            TILING     >= 1 and <= 16
+    
+            iterations >= 0
+            multiplier >= 2
+            divisor    >= 1 and <= SOFT_MULTIPLIER
+            scaler     in ['bilinear', 'bicubic', 'lanczos']
+    
+            ITERATIONS >= 0
+            MULTIPLIER >= 2
+            DIVISOR    >= 1 and <= HARD_MULTIPLIER
+            SCALER     in ['bilinear', 'bicubic', 'lanczos']
+            
+        REGULAR OPTIONS
+    
+        {-l│--log} (type: str)
+            Determines  which  session  data  is  saved: 
+                'dry'       -> nothing (changes the output to terminal infos)
+                'nothing'   -> nothing
+                'text'      -> basic textual data, preset included
+                'endpoints' -> as 'text'      + input/output images
+                'debug'     -> as 'endpoints' + debug textual data
+                'research'  -> as 'debug'     + intermediate images
+        
+        {-q│--quiet}
+            No standard output.
+            
+        OVERRIDE OPTIONS
+        
+        Every  parameter  specified using positional arguments (possibly using
+        the  default mechanic), except for INPUT and OUTPUT, can be overridden 
+        with an option. Positional arguments are treated differently depending
+        on  whether  they have been presented with an underscore or not. These
+        two examples summarize the rules:
+        
+            ENHANCER  -> {-e│--enhancer}
+            ENHANCER_ -> {-E│--Enhancer}
+        
+        DESCRIPTION
+    
+        Anime-Ultrascale  performs  extreme  image  enlargement  by controlled 
+        alternation  of  downscaling  and  AI  upscaling, where downscaling is 
+        performed  by  traditional  algorithms,  and AI upscaling is performed 
+        using Real ESRGAN models.
+    
+        The program consists of four phases: 
+            - upscaling  inversion:  detecting  and   applying  the  strongest 
+              information-preserving  downscaling, as AI models will assume no 
+              size inflation
+            - preliminary upscaling: upscaling to the target format
+            - conservative  detail enhancement: upscaling and downscaling back 
+              the  image  zero or more times while preserving original details
+              (adds detail moderately)
+            - strong  detail  enhancement:  upscaling and downscaling back the 
+              image  zero  or  more times while partly reinterpreting original
+              details (adds detail considerably)
+    
+        PROGRESS
+        
+        A progress bar keeps track of the overall progress of the program. The 
+        cost  unit  is  the Mpx, intended as the average time needed by a Real 
+        ESRGAN model to process 1 Mpx of input data.
          
-        REDUCTION  >= 1
-        CLOSURE    in ['bilinear', 'bicubic', 'lanczos']
-        TILING     >= 1 and <= 16
-
-        iterations >= 0
-        multiplier >= 2
-        divisor    >= 1 and <= SOFT_MULTIPLIER
-        scaler     in ['bilinear', 'bicubic', 'lanczos']
-
-        ITERATIONS >= 0
-        MULTIPLIER >= 2
-        DIVISOR    >= 1 and <= HARD_MULTIPLIER
-        SCALER     in ['bilinear', 'bicubic', 'lanczos']
+        DEPLOYMENT
+    
+        The  official Real ESRGAN executable, 'realesrgan-ncnn-vulkan', has to 
+        be stored in the 'renv' folder.
         
-    REGULAR OPTIONS
-
-    {-l│--log} (type: str)
-        Determines  which  session  data  is  saved: 
-            'dry'       -> nothing (changes the output to terminal infos)
-            'nothing'   -> nothing
-            'text'      -> basic textual data, preset included
-            'endpoints' -> as 'text'      + input/output images
-            'debug'     -> as 'endpoints' + debug textual data
-            'research'  -> as 'debug'     + intermediate images
+        Real  ESRGAN  models  have to be stored in the 'models' folder. Such a
+        model  consists  in  a  pair  of  '.bin'/'.param'  files with the same
+        basename,  which  is  considered   to  be  the  model's  name.  When a
+        model  multiplier  is  specified  as 'auto', it is searched for in the
+        model name.
     
-    {-q│--quiet}
-        No standard output.
+        Presets  have  to  be  stored  in  the 'presets' folder. A preset is a
+        '.preset'  file  that  contains   every   detail   related   to  image 
+        manipulation. The preset file's basename is considered to be its name.
+        Unless  specified  otherwise,  every  execution  saves   its preset as 
+        part  of  session  data.  The  preset  file  syntax is elementary, for 
+        reference look at a generated preset.
         
-    OVERRIDE OPTIONS
+        Session  files  are saved in the 'sessions' folder at the subdirectory
+        'sessions/<date>/<time+pid>'. The most important session files are:
+            - 'session.preset': image manipulation parameters
+            - 'session.json': invocation details, I/O details, ground presets
+            - 'log.txt': history of the execution with timestamps
+            - <image with lowest counter>: input image in png format 
+            - <image with highest counter>: output image in png format
+        
+        Temporary  files  are  created and deleted in the 'temp' folder, which 
+        you don't need to care about.
     
-    Every  parameter  specified using positional arguments (possibly using
-    the  default mechanic), except for INPUT and OUTPUT, can be overridden 
-    with an option. Positional arguments are treated differently depending
-    on  whether  they have been presented with an underscore or not. These
-    two examples summarize the rules:
+        If  this  program has been downloaded from the official repository, it 
+        will    include    the    models    '4xHFA2k'    (conservative)    and    
+        'realesrgan-x4plus-anime'  (strong),  as well as the presets 'quality' 
+        and 'speed'.
+        
+        If,   additionally,   the   program   has  been  installed  using  the
+        repository's  'install.sh', the directory tree will be the following:
     
-        ENHANCER  -> {-e│--enhancer}
-        ENHANCER_ -> {-E│--Enhancer}
+        ┌── anime-ultrascale.py
+        ├── renv
+        │     └── realesrgan-ncnn-vulkan
+        ├── models
+        │     ├── 4xHFA2k.bin
+        │     ├── 4xHFA2k.param
+        │     ├── realesrgan-x4plus-anime.bin
+        │     └── realesrgan-x4plus-anime.param
+        ├── presets
+        │     ├── quality.preset
+        │     └── speed.preset
+        ├── sessions
+        │     ├── <date>
+        │     │      ├── <time+pid>
+        │     │      │        └── ·······
+        │     │      └── ·······
+        │     └── ·······
+        ├── temp
+        │     ├── <date+time+pid>
+        │     │      └── ·······
+        │     └── ·······
+        ├── LICENSE
+        ├── README
+        ├── README.md
+        ├── pyproject.toml
+        ├── install
+        ├── third-party
+        │     ├── LICENSES
+        │     ├── realesrgan-ncnn-vulkan
+        │     ├── 4xHFA2k.bin
+        │     ├── 4xHFA2k.param
+        │     ├── realesrgan-x4plus-anime.bin
+        │     └── realesrgan-x4plus-anime.param        
+        ├── setup-files
+        │     ├── installer
+        │     └── launcher
+        ├── .bin
+        │     └── anime-ultrascale
+        ├── .venv
+        │     └── ·······
+        └── .gitignore      
+        
+        REPOSITORIES
     
-    DESCRIPTION
-
-    Anime-Ultrascale  performs  extreme  image  enlargement  by controlled 
-    alternation  of  downscaling  and  AI  upscaling, where downscaling is 
-    performed  by  traditional  algorithms,  and AI upscaling is performed 
-    using Real ESRGAN models.
-
-    The program consists of four phases: 
-        - upscaling  inversion:  detecting  and   applying  the  strongest 
-          information-preserving  downscaling, as AI models will assume no 
-          size inflation
-        - preliminary upscaling: upscaling to the target format
-        - conservative  detail enhancement: upscaling and downscaling back 
-          the  image  zero or more times while preserving original details
-          (adds detail moderately)
-        - strong  detail  enhancement:  upscaling and downscaling back the 
-          image  zero  or  more times while partly reinterpreting original
-          details (adds detail considerably)
-
-    PROGRESS
+        Concept -> https://github.com/michele-bizzoca/anime-upscaling
+        Program -> https://github.com/michele-bizzoca/anime-ultrascale
     
-    A progress bar keeps track of the overall progress of the program. The 
-    cost  unit  is  the Mpx, intended as the average time needed by a Real 
-    ESRGAN model to process 1 Mpx of input data.
-     
-    DEPLOYMENT
-
-    The  official Real ESRGAN executable, 'realesrgan-ncnn-vulkan', has to 
-    be stored in the 'renv' folder.
+        LICENSE
     
-    Real  ESRGAN  models  have to be stored in the 'models' folder. Such a
-    model  consists  in  a  pair  of  '.bin'/'.param'  files with the same
-    basename,  which  is  considered   to  be  the  model's  name.  When a
-    model  multiplier  is  specified  as 'auto', it is searched for in the
-    model name.
-
-    Presets  have  to  be  stored  in  the 'presets' folder. A preset is a
-    '.preset'  file  that  contains   every   detail   related   to  image 
-    manipulation. The preset file's basename is considered to be its name.
-    Unless  specified  otherwise,  every  execution  saves   its preset as 
-    part  of  session  data.  The  preset  file  syntax is elementary, for 
-    reference look at a generated preset.
-    
-    Session  files  are saved in the 'sessions' folder at the subdirectory
-    'sessions/<date>/<time+pid>'. The most important session files are:
-        - 'session.preset': image manipulation parameters
-        - 'session.json': invocation details, I/O details, ground presets
-        - 'log.txt': history of the execution with timestamps
-        - <image with lowest counter>: input image in png format 
-        - <image with highest counter>: output image in png format
-    
-    Temporary  files  are  created and deleted in the 'temp' folder, which 
-    you don't need to care about.
-
-    If  this  program has been downloaded from the official repository, it 
-    will    include    the    models    '4xHFA2k'    (conservative)    and    
-    'realesrgan-x4plus-anime'  (strong),  as well as the presets 'quality' 
-    and 'speed'.
-    
-    If,   additionally,   the   program   has  been  installed  using  the
-    repository's  'install.sh', the directory tree will be the following:
-
-    ┌── anime-ultrascale.py
-    ├── renv
-    │     └── realesrgan-ncnn-vulkan
-    ├── models
-    │     ├── 4xHFA2k.bin
-    │     ├── 4xHFA2k.param
-    │     ├── realesrgan-x4plus-anime.bin
-    │     └── realesrgan-x4plus-anime.param
-    ├── presets
-    │     ├── quality.preset
-    │     └── speed.preset
-    ├── sessions
-    │     ├── <date>
-    │     │      ├── <time+pid>
-    │     │      │        └── ·······
-    │     │      └── ·······
-    │     └── ·······
-    ├── temp
-    │     ├── <date+time+pid>
-    │     │      └── ·······
-    │     └── ·······
-    ├── LICENSE
-    ├── README
-    ├── README.md
-    ├── pyproject.toml
-    ├── install
-    ├── third-party
-    │     ├── LICENSES
-    │     ├── realesrgan-ncnn-vulkan
-    │     ├── 4xHFA2k.bin
-    │     ├── 4xHFA2k.param
-    │     ├── realesrgan-x4plus-anime.bin
-    │     └── realesrgan-x4plus-anime.param        
-    ├── setup-files
-    │     ├── installer
-    │     └── launcher
-    ├── .bin
-    │     └── anime-ultrascale
-    ├── .venv
-    │     └── ·······
-    └── .gitignore      
-    
-    REPOSITORIES
-
-    Concept -> https://github.com/michele-bizzoca/anime-upscaling
-    Program -> https://github.com/michele-bizzoca/anime-ultrascale
-
-    LICENSE
-
-    Copyright (c) 2026 Michele Bizzoca
-    Licensed under the MIT License.
+        Copyright (c) 2026 Michele Bizzoca
+        Licensed under the MIT License.
 """)
 
 ########################################################################################
