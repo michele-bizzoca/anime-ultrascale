@@ -132,24 +132,24 @@ TEMP_FOLDER_PATH     : Final = ( INVOCATION_PATH / TEMP_FOLDER /
 # File Paths
 ####################################################################################################
 
-INVOCATION_FILE_PATH  : Final = SESSION_FOLDER_PATH / INVOCATION_FILE
-LOG_FILE_PATH         : Final = SESSION_FOLDER_PATH / LOG_FILE
-SESSION_FILE_PATH     : Final = SESSION_FOLDER_PATH / SESSION_FILE
-PRESET_FILE_PATH      : Final = SESSION_FOLDER_PATH / PRESET_FILE
-SCALING_FILE_PATH     : Final = SESSION_FOLDER_PATH / SCALING_FILE
-SCALING_AI_FILE_PATH  : Final = SESSION_FOLDER_PATH / ENHANCEMENT_FILE
-PROGRESS_FILE_PATH    : Final = SESSION_FOLDER_PATH / PROGRESS_FILE
-EXIT_FILE_PATH        : Final = SESSION_FOLDER_PATH / EXIT_FILE
-TEMP_INPUT_FILE_PATH  : Final = TEMP_FOLDER_PATH    / TEMP_INPUT_FILE
-TEMP_OUTPUT_FILE_PATH : Final = TEMP_FOLDER_PATH    / TEMP_OUTPUT_FILE
-RENV_FILE_PATH        : Final = RENV_FOLDER_PATH    / RENV_FILE
-DEMO_FILE_PATH        : Final = PRESET_FOLDER_PATH  / DEMO_FILE
+INVOCATION_FILE_PATH   : Final = SESSION_FOLDER_PATH / INVOCATION_FILE
+LOG_FILE_PATH          : Final = SESSION_FOLDER_PATH / LOG_FILE
+SESSION_FILE_PATH      : Final = SESSION_FOLDER_PATH / SESSION_FILE
+PRESET_FILE_PATH       : Final = SESSION_FOLDER_PATH / PRESET_FILE
+SCALING_FILE_PATH      : Final = SESSION_FOLDER_PATH / SCALING_FILE
+ENHANCING_FILE_PATH    : Final = SESSION_FOLDER_PATH / ENHANCEMENT_FILE
+PROGRESS_BAR_FILE_PATH : Final = SESSION_FOLDER_PATH / PROGRESS_FILE
+EXIT_FILE_PATH         : Final = SESSION_FOLDER_PATH / EXIT_FILE
+TEMP_INPUT_FILE_PATH   : Final = TEMP_FOLDER_PATH    / TEMP_INPUT_FILE
+TEMP_OUTPUT_FILE_PATH  : Final = TEMP_FOLDER_PATH    / TEMP_OUTPUT_FILE
+RENV_FILE_PATH         : Final = RENV_FOLDER_PATH    / RENV_FILE
+DEMO_FILE_PATH         : Final = PRESET_FOLDER_PATH  / DEMO_FILE
 
 ####################################################################################################
 # Shorthands
 ####################################################################################################
 
-EXTENSIONS = ALPHA_EXTENSIONS + OPAQUE_EXTENSIONS
+EXTENSIONS: Final = ALPHA_EXTENSIONS + OPAQUE_EXTENSIONS
 
 ####################################################################################################
 # Log Levels
@@ -159,8 +159,8 @@ class LogLevel(IntEnum):
 
     dry       = 0
     nothing   = 1
-    text      = 2
-    error     = 3
+    error     = 2
+    text      = 3
     endpoints = 4
     debug     = 5
     research  = 6
@@ -173,7 +173,7 @@ def loglevel_descriptor(loglevel: LogLevel):
     else:                            return "normal"
 
 ####################################################################################################
-# Scalers
+# Scalers and Enhancers
 ####################################################################################################
 
 class Scaler(IntEnum):
@@ -182,12 +182,21 @@ class Scaler(IntEnum):
     bicubic  = 1
     lanczos  = 2
 
+class Enhancer(IntEnum):
+
+    conservative = 0
+    strong = 1
+
 #---------------------------------------------------------------------------------------------------
 
 def scaler_descriptor(scaler: Scaler):
     if   scaler == Scaler.bilinear: return "linear"
     elif scaler == Scaler.bicubic:  return "cubic"
     else:                           return "lanczos3"
+
+def enhancer_descriptor(enhancer: Enhancer):
+    if enhancer == Enhancer.conservative : return "soft"
+    else:                                : return "hard"
 
 ####################################################################################################
 # Arguments
@@ -302,84 +311,104 @@ class Size(NamedTuple):
     height : int
 
 @dataclass
-class Scale:
+class Unit:
+    def __new__(cls, *args, **kwargs):
+        if cls is Unit:
+            raise TypeError
+        return super().__new__(cls)
+
+@dataclass
+class Scale(Unit):
     scaler      : Scaler
-    multiplier  : float
     input_size  : Size
     output_size : Size
 
 @dataclass
-class Enhance:
-    enhancer    : str
+class Enhance(Unit):
+    enhancer    : Enhancer
+    input_size  : Size
+    output_size : Size
+
+@dataclass
+class SoftEnhance(Unit):
+    input_size  : Size
+    output_size : Size
+
+@dataclass
+class HardEnhance(Unit):
     multiplier  : int
     input_size  : Size
     output_size : Size
 
 @dataclass
-class Realesrgan:
-    enhancer    : str
-    multiplier  : int
-    input_size  : Size
-    output_size : Size
-
-@dataclass
-class Save:
+class Save(Unit):
     size : Size
 
 @dataclass
-class Load:
+class Load(Unit):
     size : Size
 
 @dataclass
-class StepForward:
+class StepForward(Unit):
     save : bool
     size : Size
 
 @dataclass
-class PhaseForward:
+class PhaseForward(Unit):
     pass
 
 #---------------------------------------------------------------------------------------------------
 
-Unit: TypeAlias = Scale | Enhance | Realesrgan | Save | Load | StepForward | PhaseForward
-
-def unit_classes() -> list[type]:
-    return [Scale, Enhance, Realesrgan, Save, Load, StepForward, PhaseForward]
-
 def unit_cost(unit: Unit) -> float:
 
     if   isinstance(unit, Scale) and not unit.input_size == unit.output_size:
-        px = return unit.output_size.width * unit.output_size.height * 0.10
+        px = unit.output_size.width * unit.output_size.height * 0.10
     elif isinstance(unit, Enhance):
-        return unit.input_size.width * unit.input_size.height * 1.35
-    elif isinstance(unit, Realesrgan):
-        return unit.input_size.width * unit.input_size.height * 1.00
+        px = unit.input_size.width * unit.input_size.height * 1.35
+    elif isinstance(unit, SoftEnhance):
+        px = unit.input_size.width * unit.input_size.height * 1.00
+    elif isinstance(unit, HardEnhance):
+        px = unit.input_size.width * unit.input_size.height * 1.00
     elif isinstance(unit, Save):
-        return unit.size.width * unit.size.height * 0.30
+        px = unit.size.width * unit.size.height * 0.30
     elif isinstance(unit, Load):
-        return unit.size.width * unit.size.height * 0.05
+        px = unit.size.width * unit.size.height * 0.05
     elif isinstance(unit, StepForward) and unit.save:
-        return unit.size.width * unit.size.height * 0.30
+        px =  unit.size.width * unit.size.height * 0.30
     else:
         px = 0
 
     return px / 1000000
 
+def unit_breakpoints(unit_class: type[Unit]) -> tuple[float, float]:
+
+    begin = 10
+    end   = 30 if unit_class in [SoftEnhance, HardEnhance, Enhance] else 10
+    return begin, end
+
 ####################################################################################################
-# Time Recording
+# Time Operations
 ####################################################################################################
 
-call_time: dict[object, datetime]
+def timestring(timestamp: datetime):
+    return timestamp.strftime('on %Y/%m/%d at %H:%M:%S and %f')
+
+#---------------------------------------------------------------------------------------------------
+
+call_timestamps: dict[object, datetime]
 
 def register(function: object):
-    global call_time
-    call_time[function] = datetime.now()
+    global call_timestamps
+    call_timestamps[function] = datetime.now()
 
-def timestring(function: object) -> str:
-    return call_time[function].strftime('on %Y/%m/%d at %H:%M:%S and %f')
+def recall(function: object) -> str:
+    return timestring(call_timestamps[function])
+
+def now() -> str:
+    return timestring(datetime.now())
 
 ####################################################################################################
-# Safe Opening
+# File Operations
 ####################################################################################################
 
 def safe_open(path: Path) -> TextIO:
@@ -388,8 +417,12 @@ def safe_open(path: Path) -> TextIO:
     atexit.register(close)
     return handle
 
+def fast_print(handle:TextIO, message: str) -> None:
+    handle.write(message + "\n")
+    handle.flush()
+
 ####################################################################################################
-# Early Failure
+# Failing Early
 ####################################################################################################
 
 def early_fail( message   : str                         ,
@@ -404,7 +437,33 @@ def early_fail( message   : str                         ,
         raise SystemExit(text)
 
 ####################################################################################################
-# Options Sorting
+# Information Dispatch
+####################################################################################################
+
+def information_dispatch() -> None:
+    if len(sys.argv) == 1 or len(sys.argv) == 2 and sys.argv[1] in ["-h", "--help"]:
+        print_help()
+        exit()
+    if len(sys.argv) == 2 and sys.argv[1] in ["-v", "--version"]:
+        print(SOFTWARE_VERSION)
+        exit()
+    register(information_dispatch)
+
+####################################################################################################
+# Early Checks
+####################################################################################################
+
+def early_checks() -> None:
+    if len(sys.argv) <= 2: early_fail("low-argument invocation asking neither help nor version")
+    if not RENV_FILE_PATH.is_file(): early_fail("missing Real ESRGAN runner")
+    if not Path(sys.argv[1]).is_file(): early_fail("invalid input file path")
+    if not Path(sys.argv[2]).parent.is_dir(): early_fail("invalid output file path")
+    if not Path(sys.argv[1]).suffix[1:] in EXTENSIONS: early_fail("invalid input file extension")
+    if not Path(sys.argv[2]).suffix[1:] in EXTENSIONS: early_fail("invalid output file extension")
+    register(early_checks)
+
+####################################################################################################
+# Arguments Sorting
 ####################################################################################################
 
 input_file_path      : Path
@@ -414,7 +473,7 @@ override_options     : dict[ConfigArgument, str]
 regular_options      : dict[RegularOption, str]
 flags                : set[Flag]
 
-def sort_options() -> None:
+def sort_arguments() -> None:
 
     global input_file_path
     global output_file_path
@@ -423,28 +482,12 @@ def sort_options() -> None:
     global regular_options
     global flags
 
-    if len(sys.argv) == 1 or len(sys.argv) == 2 and sys.argv[1] in ["-h", "--help"]:
-        print_help()
-        exit()
-
-    if len(sys.argv) == 2 and sys.argv[1] in ["-v", "--version"]:
-        print(SOFTWARE_VERSION)
-        exit()
-
-    if len(sys.argv) <= 2:
-        early_fail("low-argument invocation asking for neither help nor version")
-
     input_file_path      = Path(sys.argv[1])
     output_file_path     = Path(sys.argv[2])
     positional_arguments = []
     override_options     = {}
     regular_options      = {}
     flags                = set()
-
-    if not input_file_path.is_file(): early_fail("invalid input file path")
-    if not output_file_path.is_file(): early_fail("invalid input file path")
-    if not input_file_path.suffix[1:] in EXTENSIONS: early_fail("invalid input file extension")
-    if not output_file_path.suffix[1:] in EXTENSIONS: early_fail("invalid output file extension")
 
     i = 3
     while i < len(sys.argv):
@@ -480,7 +523,7 @@ def sort_options() -> None:
         collector[option] = sys.argv[i + 1]
         i += 2
 
-    register(sort_options)
+    register(sort_arguments)
 
 ####################################################################################################
 # Log Level
@@ -503,7 +546,7 @@ def create_session_folder() -> None:
     register(create_session_folder)
 
 ####################################################################################################
-# Exit File
+# Exiting
 ####################################################################################################
 
 exit_file_handle: TextIO
@@ -514,10 +557,9 @@ def prepare_exit_file() -> None:
         exit_file_handle = safe_open(EXIT_FILE_PATH)
     register(prepare_exit_file)
 
-def record_exit_message(message: str) -> None:
+def record_exit_message(success: bool, message: str) -> None:
     if loglevel >= LogLevel.debug:
-        exit_file_handle.write(message + "\n")
-        exit_file_handle.flush()
+        fast_print(exit_file_handle, f"{'SUCCESS' if success else 'FAILURE'}\n\n{message}")
 
 ####################################################################################################
 # Logging
@@ -531,645 +573,248 @@ def prepare_log_file() -> None:
         log_file_handle = safe_open(LOG_FILE_PATH)
     register(prepare_log_file)
 
-def log(message: str, level: LogLevel = LogLevel.text, now : datetime | None = None):
+def log(message: str, level: LogLevel = LogLevel.text, now_ : str | None = None):
 
     if loglevel >= LogLevel.text and loglevel >= level:
-        now = now or datetime.now()
-        message = ( f"{timestring(now)}, "
-                    f"level {savelevel_descriptor(level).upper()}: "
-                    f"{message}" )
-        log_file_handle.write(message + "\n")
-        log_file_handle.flush()
+        message = f"{now_ or now()}, level {loglevel_descriptor(level).upper()}: {message}"
+        fast_print(log_file_handle, message)
 
-########################################################################################
-# Error Reporting
-########################################################################################
+####################################################################################################
+# Failing
+####################################################################################################
 
 def fail( message   : str                         ,
           suggest   : bool = True                 ,
           exception : BaseException | None = None ) -> NoReturn:
 
-    log(message, SaveLevel.error)
+    log(message, LogLevel.error)
+    record_exit_message(False, message)
     early_fail(message, suggest, exception)
 
-def assume( condition : bool                        ,
-            message   : str                         ,
-            suggest   : bool = True                 ,
-            exception : BaseException | None = None ) -> None:
-
-    if not condition:
-        fail(message, suggest, exception)
-
-########################################################################################
-# Invocation File Creation
-########################################################################################
+####################################################################################################
+# Invocation File
+####################################################################################################
 
 def create_invocation_file() -> None:
-
-    if savelevel() >= SaveLevel.text:
-        stamp = INVOCATION_STAMP
+    if loglevel >= LogLevel.text:
         INVOCATION_FILE_PATH.write_text( f"PID: {INVOCATION_PID}\n"         +
-                                         f"Timestamp: {stamp}\n"            +
+                                         f"Timestamp: {INVOCATION_STAMP}\n" +
                                          f"PWD: {Path.cwd()}\n"             +
                                          f"Command: {' '.join(sys.argv)}\n" )
 
-########################################################################################
-# Temporary Files Support
-########################################################################################
+####################################################################################################
+# Temporary Files
+####################################################################################################
 
 def clean_temp_folder() -> None:
-
     for file in TEMP_FOLDER_PATH.iterdir():
         if file.is_file():
             file.unlink()
 
 def remove_temp_folder() -> None:
-
     TEMP_FOLDER_PATH.rmdir()
 
 def create_temp_folder() -> None:
-
     TEMP_FOLDER_PATH.mkdir(parents = True, exist_ok = True)
-
     atexit.register(remove_temp_folder)
     atexit.register(clean_temp_folder)
 
-########################################################################################
+####################################################################################################
 # Scaling Logging
-########################################################################################
+####################################################################################################
 
 scaling_file_handle: TextIO
 
-def create_scaling_file() -> None:
-
+def prepare_scaling_file() -> None:
     global scaling_file_handle
+    if loglevel >= LogLevel.debug:
+        scaling_file_handle = safe_open(SCALING_FILE_PATH)
 
-    if savelevel() >= SaveLevel.debug:
-        scaling_file_handle = open_and_close_at_exit(SCALING_FILE_PATH)
+def record_scaling_progress(job: str, event: str, progress: Any) -> None:
+    if loglevel >= LogLevel.debug:
+        fast_print(scaling_file_handle, f"{now()}: "                    +
+                                        f"job={job}, "                  +
+                                        f"event={event}, "              +
+                                        f"percent={progress.percent}, " +
+                                        f"run={progress.run}, "         +
+                                        f"eta={progress.eta}, "         +
+                                        f"npels={progress.npels}, "     +
+                                        f"tpels={progress.tpels}"       )
 
-def log_scaling(job: str, event: str, progress: Any) -> None:
+####################################################################################################
+# Enhancing Logging
+####################################################################################################
 
-    if savelevel() >= SaveLevel.debug:
-        scaling_file_handle.write( f"{timestring(datetime.now())}: "
-                                   f"job={job}, "
-                                   f"event={event}, "
-                                   f"percent={progress.percent}, "
-                                   f"run={progress.run}, "
-                                   f"eta={progress.eta}, "
-                                   f"npels={progress.npels}, "
-                                   f"tpels={progress.tpels}\n" )
-        scaling_file_handle.flush()
+enhancing_file_handle: TextIO
 
-########################################################################################
-# AI Scaling Logging
-########################################################################################
+def create_enhancing_file() -> None:
+    global enhancing_file_handle
+    if loglevel >= LogLevel.debug:
+        enhancing_file_handle = safe_open(ENHANCING_FILE_PATH)
 
-scaling_ai_file_handle: TextIO
-
-def create_scaling_ai_file() -> None:
-
-    global scaling_ai_file_handle
-
-    if savelevel() >= SaveLevel.debug:
-        scaling_ai_file_handle = open_and_close_at_exit(SCALING_AI_FILE_PATH)
-
-########################################################################################
-# I/O Existence Checks
-########################################################################################
-
-def io_existence_checks() -> None:
-    assume(input_file_path.is_file(), "input file does not exist")
-    assume( input_file_path.suffix.lower()[1:] in SUPPORTED_FORMATS ,
-            "input extension is not supported"                      )
-    assume(output_file_path.parent.is_dir(), "output folder does not exist")
-    assume( output_file_path.suffix.lower()[1:] in SUPPORTED_FORMATS ,
-            "output extension is not supported"                      )
-
-########################################################################################
-# Internal Existence Checks
-########################################################################################
-
-def internal_existence_checks() -> None:
-    assume(RENV_RUNNER_PATH.is_file(), "missing Real ESRGAN runner")
-
-########################################################################################
+####################################################################################################
 # Progress Bar
-########################################################################################
-
-# TODO 'ProgressBar' refactoring (and turning into zero the first percentage of a unit)
-#                                (and moving out breakpoints estimation)
+####################################################################################################
 
 class ProgressBar:
 
-    def __init__(self, total_cost: float) -> None:
-        current_time = time.perf_counter()
-
-        self.total_cost = total_cost
-        self.completed_cost = 0.0
-
-        self.current_width = input_width()
-        self.current_height = input_height()
-        self.current_unit = PhaseForward
-        self.current_unit_type = PhaseForward.__name__
-        self.current_unit_cost = 0.0
-        self.current_unit_completed_cost = 0.0
-        self.estimated_cost = 0.0
-        self.last_reported_percentage = 0.0
-        self.current_unit_zero_reported = False
-        self.current_unit_zero_breakpoint_reached = False
-        self.current_unit_tail_breakpoint_reached = False
-        self.current_unit_zero_percentage = 0.0
-        self.current_unit_last_percentage = 0.0
-
-        self.estimated_speed = 0.0
-        self.displayed_speed = 0.0
-        self.last_report_time = current_time
-        self.last_refresh_time = current_time
-        self.last_render_time = current_time
-        self.last_rendered_percentage = 0.0
-        self.last_logged_percentage_text: str | None = None
-        self.progress_completed = False
-        self.cursor_hidden = False
-
-        unit_types = [unit_class.__name__ for unit_class in UNIT_CLASSES]
-        self.total_elapsed_time_by_type = {name: 0.0 for name in unit_types}
-        self.total_completed_cost_by_type = {name: 0.0 for name in unit_types}
-        self.pre_zero_elapsed_time_by_type = {name: 0.0 for name in unit_types}
-        self.pre_zero_completed_cost_by_type = {name: 0.0 for name in unit_types}
-        self.post_zero_elapsed_time_by_type = {name: 0.0 for name in unit_types}
-        self.post_zero_completed_cost_by_type = {name: 0.0 for name in unit_types}
-        self.tail_elapsed_time_by_type = {name: 0.0 for name in unit_types}
-        self.tail_completed_cost_by_type = {name: 0.0 for name in unit_types}
-
-        self.lock = Lock()
-        self.stop_event = Event()
-        self.refresh_thread = Thread(
-            target=self._refresh_loop,
-            daemon=True,
-        )
-        self.refresh_thread.start()
-
-        if Flags.quiet not in flags:
-            print("\033[?25l", end="", flush=True)
-            self.cursor_hidden = True
-        self._render()
-
-    def new_unit(self, unit: Unit) -> None:
-        with self.lock:
-            if self.current_unit_cost > 0.0:
-                self._complete_current_unit()
-
-            unit_type = type(unit).__name__
-
-            current_time = time.perf_counter()
-
-            if isinstance(self.current_unit, (Scale, Enhance)):
-                self.current_width = self.current_unit.out_width
-                self.current_height = self.current_unit.out_height
-            self.current_unit = unit
-            self.current_unit_type = unit_type
-            self.current_unit_cost = unit_cost(unit)
-            self.current_unit_completed_cost = 0.0
-            self.estimated_cost = 0.0
-            self.last_reported_percentage = 0.0
-            self.current_unit_zero_reported = False
-            self.current_unit_zero_breakpoint_reached = False
-            self.current_unit_tail_breakpoint_reached = False
-            self.current_unit_zero_percentage = (
-                self._zero_percentage_for_current_unit()
-            )
-            self.current_unit_last_percentage = (
-                self._last_percentage_for_current_unit()
-            )
-            self.estimated_speed = self._current_integral_speed()
-            self.last_report_time = current_time
-            self.last_refresh_time = current_time
-
-    def progress(self, percentage: float) -> None:
-        with self.lock:
-            self._progress(percentage)
-
-    def _progress(self, percentage: float) -> None:
-        remapped_percentage = self._remap_percentage(percentage)
-        percentage_delta = max(
-            0.0,
-            remapped_percentage - self.last_reported_percentage,
-        )
-        reported_cost = self.current_unit_cost * percentage_delta / 100.0
-
-        estimated_overlap = min(self.estimated_cost, reported_cost)
-        newly_completed_cost = reported_cost - estimated_overlap
-
-        current_time = time.perf_counter()
-        elapsed_time = current_time - self.last_report_time
-
-        use_post_zero_average = percentage > 0.0
-
-        self.last_reported_percentage = remapped_percentage
-        self.last_report_time = current_time
-
-        if elapsed_time > 0.0:
-            self.total_elapsed_time_by_type[
-                self.current_unit_type
-            ] += elapsed_time
-            self.total_completed_cost_by_type[
-                self.current_unit_type
-            ] += reported_cost
-
-            if use_post_zero_average:
-                self.post_zero_elapsed_time_by_type[
-                    self.current_unit_type
-                ] += elapsed_time
-                self.post_zero_completed_cost_by_type[
-                    self.current_unit_type
-                ] += reported_cost
-            else:
-                self.pre_zero_elapsed_time_by_type[
-                    self.current_unit_type
-                ] += elapsed_time
-                self.pre_zero_completed_cost_by_type[
-                    self.current_unit_type
-                ] += reported_cost
-
-        if percentage == 0.0:
-            self.current_unit_zero_reported = True
-        elif percentage == 100.0:
-            self.current_unit_tail_breakpoint_reached = True
-
-        self.estimated_cost -= max(0.0, estimated_overlap)
-        self._add_cost(newly_completed_cost)
-        self._update_current_unit_breakpoints()
-        self.estimated_speed = self._current_integral_speed()
-        self._render()
-
-    def _complete_current_unit(self) -> None:
-        current_time = time.perf_counter()
-        elapsed_time = current_time - self.last_report_time
-        percentage_delta = max(0.0, 100.0 - self.last_reported_percentage)
-        tail_cost = self.current_unit_cost * percentage_delta / 100.0
-
-        if elapsed_time > 0.0:
-            self.total_elapsed_time_by_type[
-                self.current_unit_type
-            ] += elapsed_time
-            self.total_completed_cost_by_type[
-                self.current_unit_type
-            ] += tail_cost
-            self.tail_elapsed_time_by_type[
-                self.current_unit_type
-            ] += elapsed_time
-            self.tail_completed_cost_by_type[
-                self.current_unit_type
-            ] += tail_cost
-
-        remaining_cost = max(
-            0.0,
-            self.current_unit_cost - self.current_unit_completed_cost,
-        )
-
-        self.estimated_cost = 0.0
-        self.last_reported_percentage = 100.0
-        self.last_report_time = current_time
-        self.current_unit_tail_breakpoint_reached = True
-        self._add_cost(remaining_cost)
-
-    def _add_cost(self, cost: float) -> None:
-        self.completed_cost = min(
-            self.completed_cost + cost,
-            self.total_cost,
-        )
-        self.current_unit_completed_cost = min(
-            self.current_unit_completed_cost + cost,
-            self.current_unit_cost,
-        )
-
-    def refresh(self) -> None:
-        with self.lock:
-            current_time = time.perf_counter()
-            elapsed_time = current_time - self.last_refresh_time
-            self.last_refresh_time = current_time
-
-            estimated_cost_limit = self.current_unit_cost
-
-            estimated_cost = max(
-                0.0,
-                min(
-                    elapsed_time * self.estimated_speed,
-                    estimated_cost_limit - self.current_unit_completed_cost,
-                ),
-            )
-
-            self.estimated_cost += estimated_cost
-            self._add_cost(estimated_cost)
-            self._update_current_unit_breakpoints()
-            self.estimated_speed = self._current_integral_speed()
-            self._render()
-
-    def _current_integral_speed(self) -> float:
-        if self.current_unit_tail_breakpoint_reached:
-            elapsed_time = self.tail_elapsed_time_by_type[
-                self.current_unit_type
-            ]
-            completed_cost = self.tail_completed_cost_by_type[
-                self.current_unit_type
-            ]
-        elif (
-            self.current_unit_zero_breakpoint_reached
-            or self.current_unit_zero_reported
-        ):
-            elapsed_time = self.post_zero_elapsed_time_by_type[
-                self.current_unit_type
-            ]
-            completed_cost = self.post_zero_completed_cost_by_type[
-                self.current_unit_type
-            ]
-        else:
-            elapsed_time = self.pre_zero_elapsed_time_by_type[
-                self.current_unit_type
-            ]
-            completed_cost = self.pre_zero_completed_cost_by_type[
-                self.current_unit_type
-            ]
-
-        return completed_cost / elapsed_time if elapsed_time > 0.0 else 0.0
-
-    def _update_current_unit_breakpoints(self) -> None:
-        zero_breakpoint_cost = (
-            self.current_unit_cost
-            * self.current_unit_zero_percentage
-            / 100.0
-        )
-        tail_breakpoint_cost = (
-            self.current_unit_cost
-            * self.current_unit_last_percentage
-            / 100.0
-        )
-
-        if self.current_unit_completed_cost >= zero_breakpoint_cost:
-            self.current_unit_zero_breakpoint_reached = True
-
-        if self.current_unit_completed_cost >= tail_breakpoint_cost:
-            self.current_unit_tail_breakpoint_reached = True
-
-    def _zero_percentage_for_current_unit(self) -> float:
-        elapsed_time = self.total_elapsed_time_by_type[
-            self.current_unit_type
-        ]
-
-        if elapsed_time == 0.0: # change
-            return 10.0
-
-        zero_percentage = 100.0 * self.pre_zero_elapsed_time_by_type[
-            self.current_unit_type
-        ] / elapsed_time
-
-        return max(0.0, min(90.0, zero_percentage))
-
-    def _last_percentage_for_current_unit(self) -> float:
-        elapsed_time = self.total_elapsed_time_by_type[
-            self.current_unit_type
-        ]
-
-        if elapsed_time == 0.0: # change
-            if self.current_unit_type == Realesrgan.__name__:
-                return 50.0
-
-            return 90.0
-
-        last_percentage = 100.0 * (
-            elapsed_time
-            - self.tail_elapsed_time_by_type[self.current_unit_type]
-        ) / elapsed_time
-        minimum_percentage = self.current_unit_zero_percentage + 1.0
-
-        return max(
-            minimum_percentage,
-            min(99.0, last_percentage),
-        )
-
-    def _remap_percentage(self, percentage: float) -> float:
-        zero_percentage = self.current_unit_zero_percentage
-        report_span = (
-            self.current_unit_last_percentage
-            - zero_percentage
-        )
-
-        return zero_percentage + percentage * report_span / 100.0
-
-    def complete(self) -> None:
-        self._stop_refresh_thread()
-
-        with self.lock:
-            if self.current_unit_cost > 0.0:
-                self._complete_current_unit()
-
-            self.completed_cost = self.total_cost
-            self.progress_completed = True
-            self.displayed_speed = 0.0
-            self._render()
-
-            if self.cursor_hidden:
-                print("\033[?25h", end="", flush=True)
-                self.cursor_hidden = False
-
-    def _render(self) -> None:
-        current_time = time.perf_counter()
-        elapsed_time = current_time - self.last_render_time
-        self.last_render_time = current_time
-
-        raw_percentage = (
-            100.0
-            if self.total_cost == 0.0
-            else 100.0 * self.completed_cost / self.total_cost
-        )
-
-        percentage = raw_percentage
-        if not self.progress_completed:
-            percentage = min(99.99, percentage)
-
-        displayed_completed_cost = (
-            self.total_cost
-            if self.progress_completed
-            else min(
-                self.completed_cost,
-                self.total_cost * percentage / 100.0,
-            )
-        )
-
-        if self.progress_completed:
-            self.displayed_speed = 0.0
-        elif elapsed_time > 0.0:
-            current_speed = (
-                (percentage - self.last_rendered_percentage)
-                * self.total_cost
-                / (100.0 * elapsed_time)
-            )
-            decay = math.exp(-elapsed_time / 0.9)
-            self.displayed_speed = (
-                current_speed
-                if self.displayed_speed == 0.0
-                else (
-                    decay * self.displayed_speed
-                    + (1.0 - decay) * current_speed
-                )
-            )
-
-        self.last_rendered_percentage = percentage
-
-        percentage_text = f"{percentage:‥>5.{2 if percentage < 100 else 1}f}"
-
-        bar_percentage = percentage
-        if not self.progress_completed:
-            bar_percentage = min(
-                bar_percentage,
-                100.0 * (PROGRESS_BAR_SIZE - 1) / PROGRESS_BAR_SIZE,
-            )
-
-        partial_width = PROGRESS_BAR_SIZE * bar_percentage / 100.0
-        filled_width = int(partial_width)
-        partial_index = int((partial_width - filled_width) * 8)
-        partial = " ▏▎▍▌▋▊▉"[partial_index]
-        empty_width = PROGRESS_BAR_SIZE - filled_width - (partial_index > 0)
-        bar = "█" * filled_width + partial.strip() + " " * empty_width
-
-        cost_digits = 3 + math.ceil(math.log10(math.floor(self.total_cost)))
-
-        line = (
-            f"【{bar}】"
-            f"{percentage_text}% | "
-            f"{displayed_completed_cost:‥>{cost_digits}.2f} / "
-            f"{self.total_cost:{cost_digits}.2f} Mpx | "
-            f"{self.displayed_speed:.2f} Mpx/s"
-        )
-
-        if percentage == 100:
-            msg = "complete"
-        elif isinstance(self.current_unit, Scale):
-            msg = ( f"{self.current_unit.in_width} x {self.current_unit.in_height} px -> "
-                    f"{self.current_unit.out_width} x {self.current_unit.out_height} px " 
-                    f"with {self.current_unit.scaler} ...")
-        elif isinstance(self.current_unit, Realesrgan):
-            msg = (f"{self.current_unit.in_width} x {self.current_unit.in_height} px -> "
-                   f"{self.current_unit.out_width} x {self.current_unit.out_height} px "
-                   f"with {self.current_unit.enhancer} ...")
-        else:
-            msg = f"collateral work at {self.current_width} x {self.current_height} px ..."
-
-        if Flags.quiet not in flags:
-            print("\033[1A\033[2K\r", end="")
-            print("\033[1A\033[2K\r", end="")
-            print("\n", end="")
-            print(line, end="")
-            print("\033[1B\033[2K\r", end="")
-            print(" " * (wcwidth.wcswidth(line) - wcwidth.wcswidth(msg)) + msg, end="", flush=True)
-
-        if (
-            savelevel() >= SaveLevel.debug
-            and percentage_text != self.last_logged_percentage_text
-        ):
-            progress_file_handle.write(timestring(datetime.now()) + ": " + line + "\n")
-            progress_file_handle.flush()
-            self.last_logged_percentage_text = percentage_text
-
-    def _refresh_loop(self) -> None:
-        while not self.stop_event.wait(0.1):
-            self.refresh()
-
-    def _stop_refresh_thread(self) -> None:
-        self.stop_event.set()
-        self.refresh_thread.join()
+    def __init__(self, cost: float, mpxs: float, jumps: dict[int, tuple[float, float]]) -> None:
+        pass
 
     def __enter__(self) -> "ProgressBar":
-        return self
+        pass
 
-    def __exit__(self, exc_type, exc_value, traceback) -> None:
-        self._stop_refresh_thread()
-        if self.cursor_hidden:
-            print("\033[?25h", end="", flush=True)
-            self.cursor_hidden = False
+    def __exit__(self, *args) -> None:
+        pass
 
     def __del__(self) -> None:
-        if getattr(self, "cursor_hidden", False):
-            print("\033[?25h", end="", flush=True)
-            self.cursor_hidden = False
+        pass
 
-########################################################################################
-# Image Loading
-########################################################################################
+    def start(self, kind: int, cost: float) -> None:
+        pass
 
-input_mode    : str
-input_image   : pyvips.Image
-current_image : pyvips.Image
-output_mode   : str
+    def progress(self, percentage: float) -> None:
+        pass
 
-def current_width()  -> int: return current_image.width
-def current_height() -> int: return current_image.height
-def input_width()    -> int: return input_image.width
-def input_height()   -> int: return input_image.height
+    def stop(self) -> None:
+        pass
 
-# TODO 'load' refactoring --------------------------------------------------------------
+    def finish(self) -> None:
+        pass
+
+####################################################################################################
+# Progress Bar Feeding
+####################################################################################################
+
+def start_unit(unit: Unit, bar: ProgressBar) -> None:
+    kind = Unit.__subclasses__().index(unit.__class__())
+    cost = unit_cost(unit)
+    bar.start(kind, cost)
+
+def create_bar(cost: float) -> ProgressBar:
+
+    data  = numpy.random.bytes(2000 * 2000 * 3)
+    image = pyvips.Image.new_from_memory(data, 2000, 2000, 3, "uchar")
+    start = time.perf_counter()
+    image.resize(0.5, kernel = scaler_descriptor(Scaler.bicubic)).copy_memory()
+    delta = time.perf_counter() - start
+    cost_ = unit_cost(Scale(Scaler.bicubic, Size(2000, 2000), Size(1000, 1000)))
+    mpxs  = cost_ / delta
+    jumps = { i: unit_breakpoints(unit_class)
+                 for i, unit_class in enumerate(Unit.__subclasses__()) }
+    return ProgressBar(cost, mpxs, jumps)
+
+####################################################################################################
+# Scaling / Saving / Loading
+####################################################################################################
 
 def load(unit: Load, path: Path, bar: ProgressBar | None = None) -> pyvips.Image:
 
     if bar is not None:
-        bar.new_unit(unit)
+        start_unit(unit, bar)
 
-    image = pyvips.Image.new_from_file(str(path), access="sequential")
-
+    image = pyvips.Image.new_from_file(str(path), access = "sequential")
     image = image.colourspace("srgb")
-
-    if image.bands > 4:
-        image = image[:4]
-
+    if image.bands > 4: image = image[:4]
     image = image.cast("uchar")
 
     interrupted = Event()
+    sigint_handler = signal.getsignal(signal.SIGINT)
+
+    def update_interrupt(image: pyvips.Image, progress: Any) -> None:
+        if interrupted.is_set(): image.set_kill(True)
+
+    def update_progress(image: pyvips.Image, progress: Any) -> None:
+        if bar is not None: bar.progress(float(progress.percent))
+
+    image.set_progress(True)
+
+    image.signal_connect \
+        ("preeval", lambda image, progress: record_scaling_progress("load", "preeval", progress))
+
+    image.signal_connect("eval", update_interrupt)
+
+    image.signal_connect("eval", update_progress)
+
+    image.signal_connect \
+        ("eval", lambda image, progress: record_scaling_progress("load", "eval", progress))
+
+    image.signal_connect \
+        ("posteval", lambda image, progress: record_scaling_progress("load", "posteval", progress))
+
+    signal.signal(signal.SIGINT, lambda signum, frame: interrupted.set())
+
+    try:
+        if bar is not None: bar.progress(0.0)
+        image = image.copy_memory()
+        if bar is not None: bar.progress(100.0)
+        if interrupted.is_set(): raise KeyboardInterrupt
+
+    except pyvips.Error:
+        if interrupted.is_set():
+            raise KeyboardInterrupt from None
+        raise
+
+    finally:
+        signal.signal(signal.SIGINT, sigint_handler)
+
+    return image
+
+def save(unit: Save, image: pyvips.Image, path: Path, bar: ProgressBar) -> None:
+
+    bar.new_unit(unit)
+
+    image           = image.copy()
+    last_percentage = 0.0
+    started         = False
+    interrupted     = Event()
     previous_sigint = signal.getsignal(signal.SIGINT)
 
     def request_interrupt(signum, frame) -> None:
+
         interrupted.set()
 
-    def update_interrupt(image: pyvips.Image, progress: Any) -> None:
+    def start_bar(image: pyvips.Image, progress: Any) -> None:
+
+        nonlocal started
+
+        if not started:
+            started = True
+            bar.progress(0.0)
+
+    def update_bar(image: pyvips.Image, progress: Any) -> None:
+
+        nonlocal last_percentage
+
+        percentage = float(progress.percent)
+        if percentage > last_percentage:
+            last_percentage = percentage
+            bar.progress(percentage)
+
         if interrupted.is_set():
             image.set_kill(True)
 
-    def update_progress(image: pyvips.Image, progress: Any) -> None:
-        if bar is not None:
-            bar.progress(float(progress.percent))
-
     image.set_progress(True)
-    image.signal_connect("eval", update_interrupt)
-
-    image.signal_connect(
-        "preeval",
-        lambda image, progress:
-            log_scaling("load", "preeval", progress),
-    )
-    image.signal_connect(
-        "eval",
-        lambda image, progress:
-            log_scaling("load", "eval", progress),
-    )
-    image.signal_connect(
-        "eval",
-        update_progress,
-    )
-    image.signal_connect(
-        "posteval",
-        lambda image, progress:
-            log_scaling("load", "posteval", progress),
-    )
+    image.signal_connect("preeval", start_bar)
+    image.signal_connect("eval", update_bar)
+    image.signal_connect("preeval",
+        lambda image, progress: log_scaling("save", "preeval", progress))
+    image.signal_connect("eval",
+         lambda image, progress: log_scaling("save", "eval", progress))
+    image.signal_connect("posteval",
+         lambda image, progress: log_scaling("save", "posteval", progress))
 
     signal.signal(signal.SIGINT, request_interrupt)
 
+    kwargs = {}
+
+    if str(path).endswith("webp"):
+        kwargs["lossless"] = True
+        kwargs["effort"] = 4
+
+    image.write_to_file(str(path), )
     try:
-        if bar is not None:
-            bar.progress(0.0)
-
-        loaded_image = image.copy_memory()
-
-        if bar is not None:
-            bar.progress(100.0)
+        image.write_to_file(str(path), **kwargs)
 
         if interrupted.is_set():
             raise KeyboardInterrupt
@@ -1182,41 +827,158 @@ def load(unit: Load, path: Path, bar: ProgressBar | None = None) -> pyvips.Image
     finally:
         signal.signal(signal.SIGINT, previous_sigint)
 
-    return loaded_image
+def scale(unit: Scale, bar: ProgressBar) -> None:
 
-def load_input_image() -> None:
-
-    global input_mode
-    global input_image
     global current_image
+
+    if unit.out_width == unit.in_width and unit.out_height == unit.in_height:
+        return
+
+    bar.new_unit(unit)
+
+    kernel          = scaler_descriptor(unit.scaler)
+    hscale          = unit.out_width / unit.in_width
+    vscale          = unit.out_height / unit.in_height
+    image           = current_image.resize(hscale, vscale = vscale, kernel = kernel)
+    last_percentage = 0.0
+    started         = False
+    interrupted     = Event()
+    previous_sigint = signal.getsignal(signal.SIGINT)
+
+    def request_interrupt(signum, frame) -> None:
+
+        interrupted.set()
+
+    def start_bar(image: pyvips.Image, progress: Any) -> None:
+
+        nonlocal started
+
+        if not started:
+            started = True
+            bar.progress(0.0)
+
+    def update_bar(image: pyvips.Image, progress: Any) -> None:
+
+        nonlocal last_percentage
+
+        percentage = float(progress.percent)
+        if percentage > last_percentage:
+            last_percentage = percentage
+            bar.progress(percentage)
+
+        if interrupted.is_set():
+            image.set_kill(True)
+
+    image.set_progress(True)
+    image.signal_connect("preeval", start_bar)
+    image.signal_connect("eval", update_bar)
+    image.signal_connect("preeval",
+        lambda image, progress: log_scaling("scale", "preeval", progress))
+    image.signal_connect("eval",
+        lambda image, progress: log_scaling("scale", "eval", progress))
+    image.signal_connect("posteval",
+        lambda image, progress: log_scaling("scale", "posteval", progress))
+
+    signal.signal(signal.SIGINT, request_interrupt)
+
+    try:
+        scaled_image = image.copy_memory()
+
+        if interrupted.is_set():
+            raise KeyboardInterrupt
+
+    except pyvips.Error:
+        if interrupted.is_set():
+            raise KeyboardInterrupt from None
+        raise
+
+    finally:
+        signal.signal(signal.SIGINT, previous_sigint)
+
+    current_image = scaled_image
+
+def enhance(unit: Enhance, bar: ProgressBar) -> None:
+
+    global current_image
+
+    save_unit    = Save(unit.in_width, unit.in_height)
+    pure_ai_unit = Realesrgan(** vars(unit))
+    load_unit    = Load(unit.out_width, unit.out_height)
+
+    save(save_unit, current_image, TEMP_INPUT_FILE_PATH, bar)
+
+    bar.new_unit(pure_ai_unit)
+
+    process = subprocess.Popen(
+
+        [ str(RENV_RUNNER_PATH)                ,
+          "-i", str(TEMP_INPUT_FILE_PATH)      ,
+          "-o", str(TEMP_OUTPUT_FILE_PATH)     ,
+          "-m", str(MODEL_FOLDER_PATH)         ,
+          "-n", unit.enhancer                  ,
+          "-t", str(64 * settings.main.tiling) ,
+          "-g", "0"                            ,
+          "-j", "1:1:1"                        ,
+          "-s", str(unit.multiplier)           ],
+
+        stdout  = subprocess.PIPE   ,
+        stderr  = subprocess.STDOUT ,
+        text    = True              ,
+        bufsize = 1
+    )
+
+    if process.stdout is None:
+        fail("failed to capture Real ESRGAN's output")
+
+    for line in process.stdout:
+        if savelevel() >= SaveLevel.debug:
+            scaling_ai_file_handle.write(timestring(datetime.now()) + ": " + line)
+            scaling_ai_file_handle.flush()
+        line = "".join(line.split())
+        if re.search(r"^[0-9]+(\.[0-9]+)?%$", line):
+            bar.progress(float(line[:-1]))
+
+    return_code = process.wait()
+    assume( return_code == 0                              ,
+            f"Real ESRGAN failed with code {return_code}" )
+
+    current_image = load(load_unit, TEMP_OUTPUT_FILE_PATH, bar)
+
+####################################################################################################
+# Input Loading
+####################################################################################################
+
+input_image   : pyvips.Image
+input_mode    : str
+input_size    : Size
+output_image  : pyvips.Image
+output_mode   : str
+
+def load_input() -> None:
+
+    global input_image
+    global input_mode
+    global input_size
+    global output_image
     global output_mode
 
-    initial_image = pyvips.Image.new_from_file( str(input_file_path)  ,
-                                                access = "sequential" )
+    temp = pyvips.Image.new_from_file(str(input_file_path), access = "sequential")
+    iformat = str(input_file_path.suffix.lower()[1:])
+    imode = temp.interpretation
+    ialpha = 'alpha' if temp.hasalpha() else 'opaque'
+    input_mode  = f"{iformat}--{imode}--{ialpha}"
+    input_size = Size(temp.width(), temp.height())
+    input_image  = load(Load(input_size), input_file_path).copy_memory()
 
-    ifmt = f"{input_file_path.suffix.lower()[1:]}"
- #   ibands = f"{initial_image.bands}bands"
-    imode = initial_image.interpretation
-    ialpha = 'alpha' if initial_image.hasalpha() else 'opaque'
+    oformat = str(output_file_path.suffix.lower()[1:])
+    omode   = "srgb"
+    oalpha  = 'alpha' if temp.hasalpha() else 'opaque'
+    output_mode = f"{oformat}--{omode}--{oalpha}"
+    output_image = input_image.copy_memory()
 
-    ofmt = f"{output_file_path.suffix.lower()[1:]}"
- #   obands = ( str( initial_image.bands -
- #                   (initial_image.hasalpha() and ofmt in OPAQUE_FORMATS) ) + "bands" )
-    omode = "srgb"
-    oalpha = ialpha
-
-    input_mode  = f"{ifmt}--{imode}--{ialpha}"
-    output_mode = f"{ofmt}--{omode}--{oalpha}"
-
-    input_image = load( Load(initial_image.width, initial_image.height) ,
-                        input_file_path                                 )
-    current_image = input_image.copy()
-
-########################################################################################
+####################################################################################################
 # Image Descaling
-########################################################################################
-
-# TODO refactoring of this section -----------------------------------------------------
+####################################################################################################
 
 def luminance(image: pyvips.Image) -> pyvips.Image:
     image = image[:3] if image.bands > 3 else image
@@ -1859,194 +1621,6 @@ def init_run_system() -> None:
     forward_i = 0
     forward_j = 0
     forward_k = 0
-
-# TODO 'save' refactoring --------------------------------------------------------------
-
-def save(unit: Save, image: pyvips.Image, path: Path, bar: ProgressBar) -> None:
-
-    bar.new_unit(unit)
-
-    image           = image.copy()
-    last_percentage = 0.0
-    started         = False
-    interrupted     = Event()
-    previous_sigint = signal.getsignal(signal.SIGINT)
-
-    def request_interrupt(signum, frame) -> None:
-
-        interrupted.set()
-
-    def start_bar(image: pyvips.Image, progress: Any) -> None:
-
-        nonlocal started
-
-        if not started:
-            started = True
-            bar.progress(0.0)
-
-    def update_bar(image: pyvips.Image, progress: Any) -> None:
-
-        nonlocal last_percentage
-
-        percentage = float(progress.percent)
-        if percentage > last_percentage:
-            last_percentage = percentage
-            bar.progress(percentage)
-
-        if interrupted.is_set():
-            image.set_kill(True)
-
-    image.set_progress(True)
-    image.signal_connect("preeval", start_bar)
-    image.signal_connect("eval", update_bar)
-    image.signal_connect("preeval",
-        lambda image, progress: log_scaling("save", "preeval", progress))
-    image.signal_connect("eval",
-         lambda image, progress: log_scaling("save", "eval", progress))
-    image.signal_connect("posteval",
-         lambda image, progress: log_scaling("save", "posteval", progress))
-
-    signal.signal(signal.SIGINT, request_interrupt)
-
-    kwargs = {}
-
-    if str(path).endswith("webp"):
-        kwargs["lossless"] = True
-        kwargs["effort"] = 4
-
-    image.write_to_file(str(path), )
-    try:
-        image.write_to_file(str(path), **kwargs)
-
-        if interrupted.is_set():
-            raise KeyboardInterrupt
-
-    except pyvips.Error:
-        if interrupted.is_set():
-            raise KeyboardInterrupt from None
-        raise
-
-    finally:
-        signal.signal(signal.SIGINT, previous_sigint)
-
-# TODO 'scale' refactoring -------------------------------------------------------------
-
-def scale(unit: Scale, bar: ProgressBar) -> None:
-
-    global current_image
-
-    if unit.out_width == unit.in_width and unit.out_height == unit.in_height:
-        return
-
-    bar.new_unit(unit)
-
-    kernel          = scaler_descriptor(unit.scaler)
-    hscale          = unit.out_width / unit.in_width
-    vscale          = unit.out_height / unit.in_height
-    image           = current_image.resize(hscale, vscale = vscale, kernel = kernel)
-    last_percentage = 0.0
-    started         = False
-    interrupted     = Event()
-    previous_sigint = signal.getsignal(signal.SIGINT)
-
-    def request_interrupt(signum, frame) -> None:
-
-        interrupted.set()
-
-    def start_bar(image: pyvips.Image, progress: Any) -> None:
-
-        nonlocal started
-
-        if not started:
-            started = True
-            bar.progress(0.0)
-
-    def update_bar(image: pyvips.Image, progress: Any) -> None:
-
-        nonlocal last_percentage
-
-        percentage = float(progress.percent)
-        if percentage > last_percentage:
-            last_percentage = percentage
-            bar.progress(percentage)
-
-        if interrupted.is_set():
-            image.set_kill(True)
-
-    image.set_progress(True)
-    image.signal_connect("preeval", start_bar)
-    image.signal_connect("eval", update_bar)
-    image.signal_connect("preeval",
-        lambda image, progress: log_scaling("scale", "preeval", progress))
-    image.signal_connect("eval",
-        lambda image, progress: log_scaling("scale", "eval", progress))
-    image.signal_connect("posteval",
-        lambda image, progress: log_scaling("scale", "posteval", progress))
-
-    signal.signal(signal.SIGINT, request_interrupt)
-
-    try:
-        scaled_image = image.copy_memory()
-
-        if interrupted.is_set():
-            raise KeyboardInterrupt
-
-    except pyvips.Error:
-        if interrupted.is_set():
-            raise KeyboardInterrupt from None
-        raise
-
-    finally:
-        signal.signal(signal.SIGINT, previous_sigint)
-
-    current_image = scaled_image
-
-def enhance(unit: Enhance, bar: ProgressBar) -> None:
-
-    global current_image
-
-    save_unit    = Save(unit.in_width, unit.in_height)
-    pure_ai_unit = Realesrgan(** vars(unit))
-    load_unit    = Load(unit.out_width, unit.out_height)
-
-    save(save_unit, current_image, TEMP_INPUT_FILE_PATH, bar)
-
-    bar.new_unit(pure_ai_unit)
-
-    process = subprocess.Popen(
-
-        [ str(RENV_RUNNER_PATH)                ,
-          "-i", str(TEMP_INPUT_FILE_PATH)      ,
-          "-o", str(TEMP_OUTPUT_FILE_PATH)     ,
-          "-m", str(MODEL_FOLDER_PATH)         ,
-          "-n", unit.enhancer                  ,
-          "-t", str(64 * settings.main.tiling) ,
-          "-g", "0"                            ,
-          "-j", "1:1:1"                        ,
-          "-s", str(unit.multiplier)           ],
-
-        stdout  = subprocess.PIPE   ,
-        stderr  = subprocess.STDOUT ,
-        text    = True              ,
-        bufsize = 1
-    )
-
-    if process.stdout is None:
-        fail("failed to capture Real ESRGAN's output")
-
-    for line in process.stdout:
-        if savelevel() >= SaveLevel.debug:
-            scaling_ai_file_handle.write(timestring(datetime.now()) + ": " + line)
-            scaling_ai_file_handle.flush()
-        line = "".join(line.split())
-        if re.search(r"^[0-9]+(\.[0-9]+)?%$", line):
-            bar.progress(float(line[:-1]))
-
-    return_code = process.wait()
-    assume( return_code == 0                              ,
-            f"Real ESRGAN failed with code {return_code}" )
-
-    current_image = load(load_unit, TEMP_OUTPUT_FILE_PATH, bar)
 
 def step_forward(unit: StepForward, bar: ProgressBar):
 
