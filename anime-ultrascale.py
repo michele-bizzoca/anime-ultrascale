@@ -181,11 +181,11 @@ class Scaler(IntEnum):
     bicubic  = 1
     lanczos  = 2
 
-class Enhancer(IntEnum):
+class Model(IntEnum):
 
-    core = 0
-    soft = 1
-    hard = 1
+    repair  = 0
+    enhance = 1
+    stylize = 2
 
 #---------------------------------------------------------------------------------------------------
 
@@ -208,18 +208,18 @@ class BasicArgument(IntEnum):
     output_path  = 2
 
 class ConfigArgument(IntEnum):
-    main_size       = 0
-    main_scaler     = 1
-    main_closure    = 2
-    core_divisor    = 3
-    core_enhancer   = 4
-    core_iterations = 5
-    soft_divisor    = 6
-    soft_enhancer   = 7
-    soft_iterations = 8
-    hard_divisor    = 9
-    hard_enhancer   = 10
-    hard_iterations = 11
+    main_format    = 0
+    main_scaler    = 1
+    main_closure   = 2
+    repair_drop    = 3
+    repair_model   = 4
+    repair_cycles  = 5
+    enhance_drop   = 6
+    enhance_model  = 7
+    enhance_cycles = 8
+    stylize_drop   = 9
+    stylize_model  = 10
+    stylize_cycles = 11
 
 class QuickArgument(IntEnum):
     format_or_preset_a = 0
@@ -262,76 +262,56 @@ flags_map            = ( { short_option(x.name, False) : x for x in list(Flag)  
 ####################################################################################################
 
 @dataclass
-class InputMainSettings:
-    size       : str   | None
-    closure    : str   | None
+class UserMainSettings:
+    format  : str   | None
+    scaler  : str   | None
+    closure : str   | None
 
 @dataclass
-class InputCoreSettings:
-    divisor    : float | None
-    enhancer   : str   | None
+class UserStageSettings:
+    drop    : float | None
+    model   : str   | None
+    cycles  : int   | None
 
 @dataclass
-class InputSoftSettings:
-    divisor    : float | None
-    enhancer   : str   | None
-    iterations : int   | None
+class UserSideSettings:
+    log     : str   | None
+    tile    : int   | None
 
 @dataclass
-class InputHardSettings:
-    divisor    : float | None
-    enhancer   : str   | None
-    iterations : int   | None
-
-@dataclass
-class InputSideSettings:
-    savelevel : str    | None
-    tiling    : int    | None
-
-@dataclass
-class InputSettings:
-    main: InputMainSettings
-    core: InputCoreSettings
-    soft: InputSoftSettings
-    hard: InputHardSettings
-    side: InputSideSettings
+class UserSettings:
+    main    : UserMainSettings
+    repair  : UserStageSettings
+    enhance : UserStageSettings
+    stylize : UserStageSettings
+    side    : UserSideSettings
 
 #---------------------------------------------------------------------------------------------------
 
 @dataclass
 class GroundMainSettings:
-    size       : str
-    closure    : str
+    format  : str
+    scaler  : str
+    closure : str
 
 @dataclass
-class GroundCoreSettings:
-    divisor    : float
-    enhancer   : str
-
-@dataclass
-class GroundSoftSettings:
-    divisor    : float
-    enhancer   : str
-    iterations : int
-
-@dataclass
-class GroundHardSettings:
-    divisor    : float
-    enhancer   : str
-    iterations : int
+class GroundStageSettings:
+    drop    : float
+    model   : str
+    cycles  : int
 
 @dataclass
 class GroundSideSettings:
-    savelevel  : str
-    tiling     : int
+    log     : str
+    tile    : int
 
 @dataclass
 class GroundSettings:
-    main: GroundMainSettings
-    core: GroundCoreSettings
-    soft: GroundSoftSettings
-    hard: GroundHardSettings
-    side: GroundSideSettings
+    main    : GroundMainSettings
+    repair  : GroundStageSettings
+    enhance : GroundStageSettings
+    stylize : GroundStageSettings
+    side    : GroundSideSettings
 
 ####################################################################################################
 # Sessions
@@ -381,16 +361,16 @@ class Scale(Unit):
     output_size : Size
 
 @dataclass
-class Enhance(Unit):
-    enhancer    : Enhancer
-    enhancer_   : str
+class Upscale(Unit):
+    model       : Model
+    model_      : str
     input_size  : Size
     output_size : Size
 
 @dataclass
 class Esrgan(Unit):
-    enhancer    : Enhancer
-    enhancer_   : str
+    model       : Model
+    model_      : str
     input_size  : Size
     output_size : Size
 
@@ -416,7 +396,7 @@ def unit_cost(unit: Unit) -> float:
 
     if   isinstance(unit, Scale) and not unit.input_size == unit.output_size:
         px = unit.output_size.width * unit.output_size.height * 0.10
-    elif isinstance(unit, Enhance):
+    elif isinstance(unit, Upscale):
         px = unit.input_size.width * unit.input_size.height * 1.35
     elif isinstance(unit, Esrgan):
         px = unit.input_size.width * unit.input_size.height * 1.00
@@ -432,8 +412,8 @@ def unit_cost(unit: Unit) -> float:
 def unit_index(unit: Unit) -> int:
     index = Unit.__subclasses__().index(unit.__class__())
     if isinstance(unit, Scale): index += 10 * (unit.scaler + 1)
-    if isinstance(unit, Enhance): index += 100 * (unit.enhancer + 1)
-    if isinstance(unit, Esrgan): index += 1000 * (unit.enhancer + 1)
+    if isinstance(unit, Upscale): index += 100 * (unit.model + 1)
+    if isinstance(unit, Esrgan): index += 1000 * (unit.model + 1)
     return index
 
 def unit_breakpoints() -> dict[int, tuple[float, float]]:
@@ -442,8 +422,8 @@ def unit_breakpoints() -> dict[int, tuple[float, float]]:
     indices += [unit_index(StepForward())]
     indices += [unit_index(PhaseForward())]
     indices += [unit_index(Scale(s, Size(0,0), Size(0,0))) for s in Scaler]
-    indices += [unit_index(Enhance(e, "", Size(0,0), Size(0,0))) for e in Enhancer]
-    indices += [unit_index(Esrgan(e, "", Size(0,0), Size(0,0))) for e in Enhancer]
+    indices += [unit_index(Upscale(e, "", Size(0,0), Size(0,0))) for e in Model]
+    indices += [unit_index(Esrgan(e, "", Size(0,0), Size(0,0))) for e in Model]
     return {i : (10, 10 if i < 1000 else 30) for i in indices}
 
 ####################################################################################################
@@ -949,16 +929,16 @@ def scale(unit: Scale, image: pyvips.Image, bar: ProgressBar | None = None) -> p
     return scaled
 
 ####################################################################################################
-# Enhancing
+# Upscaling
 ####################################################################################################
 
-def enhance(unit: Enhance, image: pyvips.Image, bar: ProgressBar | None = None) -> pyvips.Image:
+def upscale(unit: Upscale, image: pyvips.Image, bar: ProgressBar | None = None) -> pyvips.Image:
 
     save(Save(unit.input_size), image, TEMP_INPUT_FILE_PATH, bar)
 
     if bar is not None: start_unit(unit, bar)
 
-    x = re.search("([2-8])[xX]", unit.enhancer_) or re.search("[xX]([2-8])", unit.enhancer_)
+    x = re.search("([2-8])[xX]", unit.model_) or re.search("[xX]([2-8])", unit.model_)
     if x is None: fail(f"cannot deduce enhancer's multiplier")
     scale = x.group(1)
 
@@ -966,7 +946,7 @@ def enhance(unit: Enhance, image: pyvips.Image, bar: ProgressBar | None = None) 
                                   "-i", str(TEMP_INPUT_FILE_PATH)      ,
                                   "-o", str(TEMP_OUTPUT_FILE_PATH)     ,
                                   "-m", str(MODEL_FOLDER_PATH)         ,
-                                  "-n", unit.enhancer_                 ,
+                                  "-n", unit.model_                    ,
                                   "-t", str(64 * settings.main.tiling) ,
                                   "-g", "0"                            ,
                                   "-j", "1:1:1"                        ,
@@ -1108,7 +1088,7 @@ def unflatten(data: dict[str, object]) -> dict[str, object]:
 # Settings Export
 ####################################################################################################
 
-def export_settings(s: InputSettings) -> str:
+def export_settings(s: UserSettings) -> str:
 
     result: str = ""
 
@@ -1121,7 +1101,7 @@ def export_settings(s: InputSettings) -> str:
 # Settings Import
 ####################################################################################################
 
-def import_settings(s : str) -> InputSettings:
+def import_settings(s : str) -> UserSettings:
 
     s = re.sub(r'^\s*(#.*)?$\n?', '', s, flags = re.MULTILINE)
     s = re.sub(r'^\s*(\w+)\s*=([^#\n]*)(#.*)?$\n?', r'"\1": \2,', s, flags=re.MULTILINE)
