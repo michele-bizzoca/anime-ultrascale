@@ -22,7 +22,7 @@ import traceback
 import numpy
 import signal
 import skimage
-import wcwidth
+# import wcwidth
 
 #---------------------------------------------------------------------------------------------------
 
@@ -30,8 +30,8 @@ from pathlib import Path
 from enum import IntEnum, Enum
 from datetime import datetime
 from dataclasses import dataclass
-from threading import Event, Thread, Lock
-from typing import NoReturn, TypeAlias, Final, TextIO, Any, cast, NamedTuple
+from threading import Event # Thread, Lock
+from typing import NoReturn, Final, TextIO, Any, cast, NamedTuple
 
 ####################################################################################################
 # Constants
@@ -52,7 +52,6 @@ TEMP_FOLDER        : Final = "temp"
 
 RENV_FILE          : Final = "realesrgan-ncnn-vulkan"
 SESSION_FILE       : Final = "session.json"
-PRESET_FILE        : Final = "preset.preset"
 LOG_FILE           : Final = "log.txt"
 INVOCATION_FILE    : Final = "invocation.txt"
 SCALING_FILE       : Final = "scaling.txt"
@@ -61,21 +60,15 @@ PROGRESS_FILE      : Final = "progress.txt"
 EXIT_FILE          : Final = "exit.txt"
 TEMP_INPUT_FILE    : Final = "input.png"
 TEMP_OUTPUT_FILE   : Final = "output.png"
-DEMO_FILE          : Final = "quality.preset"
 
 #---------------------------------------------------------------------------------------------------
 
-DEFAULT_PRESET     : Final = "quality"
-DEFAULT_LOGLEVEL   : Final = "text"
+DEFAULT_FORMAT     : Final = "4k"
 DEFAULT_SCALER     : Final = "lanczos"
 DEFAULT_CLOSURE    : Final = "bicubic"
+DEFAULT_PRESET     : Final = "quality"
+DEFAULT_LOGLEVEL   : Final = "text"
 DEFAULT_TILING     : Final = 4
-
-#---------------------------------------------------------------------------------------------------
-
-OUTPUT_MODE        : Final = "png--srgb--alpha"
-ALPHA_EXTENSIONS   : Final = ["png", "webp", "tif", "tiff"]
-OPAQUE_EXTENSIONS  : Final = ["jpg", "jpeg", "bmp"]
 
 #---------------------------------------------------------------------------------------------------
 
@@ -88,6 +81,10 @@ MAX_ITERATIONS     : Final = 4
 PROMPT_WIDTH       : Final = 80
 DESCALE_SIMILARITY : Final = 0.95
 DESCALE_ITERATIONS : Final = 8
+OPAQUE_EXTENSIONS  : Final = ["jpg", "jpeg", "bmp"]
+ALPHA_EXTENSIONS   : Final = ["png", "webp", "tif", "tiff"]
+PRESET_EXTENSION   : Final = "preset"
+OUTPUT_PRESET      : Final = "preset"
 
 ####################################################################################################
 # Phases
@@ -134,7 +131,7 @@ TEMP_FOLDER_PATH     : Final = ( INVOCATION_PATH / TEMP_FOLDER /
 INVOCATION_FILE_PATH   : Final = SESSION_FOLDER_PATH / INVOCATION_FILE
 LOG_FILE_PATH          : Final = SESSION_FOLDER_PATH / LOG_FILE
 SESSION_FILE_PATH      : Final = SESSION_FOLDER_PATH / SESSION_FILE
-PRESET_FILE_PATH       : Final = SESSION_FOLDER_PATH / PRESET_FILE
+PRESET_FILE_PATH       : Final = SESSION_FOLDER_PATH / f"{OUTPUT_PRESET}.{PRESET_EXTENSION}"
 SCALING_FILE_PATH      : Final = SESSION_FOLDER_PATH / SCALING_FILE
 ENHANCING_FILE_PATH    : Final = SESSION_FOLDER_PATH / ENHANCEMENT_FILE
 PROGRESS_BAR_FILE_PATH : Final = SESSION_FOLDER_PATH / PROGRESS_FILE
@@ -142,7 +139,6 @@ EXIT_FILE_PATH         : Final = SESSION_FOLDER_PATH / EXIT_FILE
 TEMP_INPUT_FILE_PATH   : Final = TEMP_FOLDER_PATH    / TEMP_INPUT_FILE
 TEMP_OUTPUT_FILE_PATH  : Final = TEMP_FOLDER_PATH    / TEMP_OUTPUT_FILE
 RENV_FILE_PATH         : Final = RENV_FOLDER_PATH    / RENV_FILE
-DEMO_FILE_PATH         : Final = PRESET_FOLDER_PATH  / DEMO_FILE
 
 ####################################################################################################
 # Shorthands
@@ -194,15 +190,11 @@ def scaler_descriptor(scaler: Scaler):
     elif scaler == Scaler.bicubic:  return "cubic"
     else:                           return "lanczos3"
 
-def enhancer_descriptor(enhancer: Enhancer):
-    return enhancer.name
-
 ####################################################################################################
 # Arguments
 ####################################################################################################
 
 class BasicArgument(IntEnum):
-
     program_path = 0
     input_path   = 1
     output_path  = 2
@@ -226,8 +218,8 @@ class QuickArgument(IntEnum):
     format_or_preset_b = 0
 
 class RegularOption(Enum):
-    log  = 0
-    tile = 1
+    log    = 0
+    tiling = 1
 
 class Flag(Enum):
     quiet = 0
@@ -274,17 +266,11 @@ class UserStageSettings:
     cycles  : int   | None
 
 @dataclass
-class UserSideSettings:
-    log     : str   | None
-    tile    : int   | None
-
-@dataclass
 class UserSettings:
     main    : UserMainSettings
     repair  : UserStageSettings
     enhance : UserStageSettings
     stylize : UserStageSettings
-    side    : UserSideSettings
 
 #---------------------------------------------------------------------------------------------------
 
@@ -319,24 +305,27 @@ class GroundSettings:
 
 @dataclass
 class CallInfo:
-
-    time      : str
-    version   : str
+    time    : str
+    version : str
+    log     : str
 
 @dataclass
 class ImageInfo:
+    mode    : str
+    width   : int
+    height  : int
 
-    mode   : str
-    width  : int
-    height : int
+@dataclass
+class ExtraInfo:
+    tile    : int
 
 @dataclass
 class Session:
-
     invocation : CallInfo
     input      : ImageInfo
     output     : ImageInfo
     settings   : GroundSettings
+    extra      : ExtraInfo
 
 ####################################################################################################
 # Work Units
@@ -356,7 +345,6 @@ class Unit:
 @dataclass
 class Scale(Unit):
     scaler      : Scaler
-    scaler_     : str
     input_size  : Size
     output_size : Size
 
@@ -553,7 +541,7 @@ def sort_arguments() -> None:
             flags.add(flags_map[arg])
             i += 1; continue
 
-        if i + 1 >= len(sys.argv) or sys.argv[i + 1].startswith["-"]:
+        if i + 1 >= len(sys.argv) or sys.argv[i + 1].startswith("-"):
             early_fail(f"missing value for option '{arg}'")
 
         if arg in regular_options_map.keys():
@@ -739,7 +727,6 @@ def start_unit(unit: Unit, bar: ProgressBar) -> None:
     bar.start(kind, cost)
 
 def create_bar(cost: float) -> ProgressBar:
-
     data  = numpy.random.bytes(2000 * 2000 * 3)
     image = pyvips.Image.new_from_memory(data, 2000, 2000, 3, "uchar")
     start = time.perf_counter()
@@ -837,7 +824,11 @@ def save(unit: Save, image: pyvips.Image, path: Path, bar: ProgressBar | None = 
     copied.set_progress(True)
 
     copied.signal_connect \
-        ("preeval", lambda image, progress: record_scaling_progress("load", "preeval", progress))
+        ("preeval", lambda image, progress: record_scaling_progress("save", "preeval", progress))
+
+    copied.signal_connect("eval", update_interrupt)
+
+    copied.signal_connect("eval", update_progress)
 
     copied.signal_connect \
         ("eval", lambda image, progress: record_scaling_progress("save", "eval", progress))
@@ -880,9 +871,9 @@ def scale(unit: Scale, image: pyvips.Image, bar: ProgressBar | None = None) -> p
 
     if bar is not None: start_unit(unit, bar)
 
-    hscale          = unit.output_size.width / unit.input_size.width
-    vscale          = unit.output_size.height / unit.input_size.height
-    scaled          = image.resize(hscale, vscale = vscale, kernel = unit.scaler_)
+    hscale = unit.output_size.width / unit.input_size.width
+    vscale = unit.output_size.height / unit.input_size.height
+    scaled = image.resize(hscale, vscale = vscale, kernel = scaler_descriptor(unit.scaler))
 
     interrupted    = Event()
     sigint_handler = signal.getsignal(signal.SIGINT)
@@ -900,13 +891,17 @@ def scale(unit: Scale, image: pyvips.Image, bar: ProgressBar | None = None) -> p
     scaled.set_progress(True)
 
     scaled.signal_connect \
-        ("preeval", lambda image, progress: record_scaling_progress("load", "preeval", progress))
+        ("preeval", lambda image, progress: record_scaling_progress("scale", "preeval", progress))
+
+    scaled.signal_connect("eval", update_interrupt)
+
+    scaled.signal_connect("eval", update_progress)
 
     scaled.signal_connect \
-        ("eval", lambda image, progress: record_scaling_progress("save", "eval", progress))
+        ("eval", lambda image, progress: record_scaling_progress("scale", "eval", progress))
 
     scaled.signal_connect \
-        ("posteval", lambda image, progress: record_scaling_progress("save", "posteval", progress))
+        ("posteval", lambda image, progress: record_scaling_progress("scale", "posteval", progress))
 
     signal.signal(signal.SIGINT, lambda signum, frame: interrupted.set())
 
@@ -932,7 +927,8 @@ def scale(unit: Scale, image: pyvips.Image, bar: ProgressBar | None = None) -> p
 # Upscaling
 ####################################################################################################
 
-def upscale(unit: Upscale, image: pyvips.Image, bar: ProgressBar | None = None) -> pyvips.Image:
+def upscale(unit: Upscale, image: pyvips.Image, tiling: int, bar: ProgressBar | None = None) \
+    -> pyvips.Image:
 
     save(Save(unit.input_size), image, TEMP_INPUT_FILE_PATH, bar)
 
@@ -947,7 +943,7 @@ def upscale(unit: Upscale, image: pyvips.Image, bar: ProgressBar | None = None) 
                                   "-o", str(TEMP_OUTPUT_FILE_PATH)     ,
                                   "-m", str(MODEL_FOLDER_PATH)         ,
                                   "-n", unit.model_                    ,
-                                  "-t", str(64 * settings.main.tiling) ,
+                                  "-t", str(64 * tiling)               ,
                                   "-g", "0"                            ,
                                   "-j", "1:1:1"                        ,
                                   "-s", scale                          ],
@@ -1025,41 +1021,42 @@ def similarity(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
     return float(skimage.metrics.structural_similarity(reference, candidate, data_range = 255))
 
 def descale(image: pyvips.Image) -> float:
+
     bw   = image.copy()
     bw   = bw[:3] if bw.bands > 3 else bw
     bw   = bw.colourspace("b-w").cast("uchar")
+
     ref  = ndarray(bw)
+
     hi_div = 2.0
     while ( similarity(ref, ndarray(roundtrip(bw, hi_div))) >= DESCALE_SIMILARITY and
             round(bw.width / hi_div) >= 1 or round(bw.height / hi_div) >= 1         ):
         hi_div *= 2.0
     lo_div = hi_div / 2.0
+
+    div = (lo_div + hi_div) / 2.0
     for _ in range(DESCALE_ITERATIONS):
-        middle = (lo_div + hi_div) / 2.0
-        if similarity(ref, ndarray(roundtrip(bw, middle))) >= DESCALE_SIMILARITY: lo_div = middle
-        else: hi_div = middle
-    return (lo_div + hi_div) / 2.0
+        b = similarity(ref, ndarray(roundtrip(bw, div))) >= DESCALE_SIMILARITY
+        lo_div = div if     b else lo_div
+        hi_div = div if not b else hi_div
+        div = (lo_div + hi_div) / 2.0
+
+    return div
 
 ####################################################################################################
 # Nested Dictionary Underscore-Based Flattening
 ####################################################################################################
 
 def flatten(data: dict[str, object]) -> dict[str, object]:
-
     def flatten_(data_: dict[str, object], prefix: str) -> dict[str, object]:
-
         result = {}
-
         for key, value in data_.items():
             joined_key = f"{prefix}_{key}" if prefix else key
-
             if isinstance(value, dict):
                 result.update(flatten_(value, joined_key))
             else:
                 result[joined_key] = value
-
         return result
-
     return flatten_(data, "")
 
 ####################################################################################################
@@ -1067,21 +1064,15 @@ def flatten(data: dict[str, object]) -> dict[str, object]:
 ####################################################################################################
 
 def unflatten(data: dict[str, object]) -> dict[str, object]:
-
     result = {}
-
     for key, value in data.items():
-
         current = result
         parts   = key.split("_")
-
         for part in parts[:-1]:
             if part not in current:
                 current[part] = {}
             current = current[part]
-
         current[parts[-1]] = value
-
     return result
 
 ####################################################################################################
@@ -1089,12 +1080,9 @@ def unflatten(data: dict[str, object]) -> dict[str, object]:
 ####################################################################################################
 
 def export_settings(s: UserSettings) -> str:
-
     result: str = ""
-
     for key, value in flatten(dataclasses.asdict(s)).items():
         result += f"{key} = {json.dumps(value)}\n"
-
     return result
 
 ####################################################################################################
@@ -1102,12 +1090,10 @@ def export_settings(s: UserSettings) -> str:
 ####################################################################################################
 
 def import_settings(s : str) -> UserSettings:
-
     s = re.sub(r'^\s*(#.*)?$\n?', '', s, flags = re.MULTILINE)
     s = re.sub(r'^\s*(\w+)\s*=([^#\n]*)(#.*)?$\n?', r'"\1": \2,', s, flags=re.MULTILINE)
     s = "{" + s[:-1] + "}"
-
-    return dacite.from_dict( data_class = Settings,
+    return dacite.from_dict( data_class = UserSettings,
                              data = unflatten(json.loads(s)),
                              config = dacite.Config(check_types=True) )
 
@@ -1116,7 +1102,6 @@ def import_settings(s : str) -> UserSettings:
 ####################################################################################################
 
 def export_session(s: Session) -> str:
-
     return json.dumps(dataclasses.asdict(s), indent = 4, sort_keys = False)
 
 ####################################################################################################
@@ -1124,7 +1109,6 @@ def export_session(s: Session) -> str:
 ####################################################################################################
 
 def import_session(s : str) -> Session:
-
     return dacite.from_dict( data_class = Session,
                              data       = json.loads(s),
                              config     = dacite.Config(check_types=True) )
@@ -1168,173 +1152,120 @@ def interpret_format(s: str) -> tuple[int, int] | None:
     return w, h
 
 ####################################################################################################
-# 0 / 1 / 2 Options -> Settings
+# Quick Arguments -> Settings
 ####################################################################################################
 
-def settings_from_format_and_presets(o1: str, o2: str) -> Settings:
+def settings_from_format_and_presets(arg1: str, arg2: str) -> UserSettings:
 
-    b1 = validate_format(o1)
-    b2 = validate_format(o2)
+    b1 = interpret_format(arg1) is not None
+    b2 = interpret_format(arg2) is not None
 
-    assume(not (not b1 and not b2), "unrecognized format")
-    assume(not (b1 and b2), "format specified twice")
+    if not b1 and not b2: fail("unrecognized format")
+    if     b1 and     b2: fail("format specified twice")
 
-    format_ = o1 if b1 else o2
-    preset  = o2 if b1 else o1
+    format_ = arg1 if b1 else arg2
+    preset  = arg2 if b1 else arg1
 
-    if preset.endswith(".preset"):
+    if extension(preset) == "preset":
         preset_path = Path(preset)
-        assume( preset_path.is_file()             ,
-                "the preset file does not exists" )
+        if not preset_path.is_file():
+            fail("the preset file does not exists")
     else:
-        preset_path = PRESET_FOLDER_PATH / (preset + ".preset")
-        assume( preset_path.is_file()                 ,
-                "the specified preset is unavailable" )
+        preset_path = PRESET_FOLDER_PATH / f"{preset}.{PRESET_EXTENSION}"
+        if not preset_path.is_file():
+            fail("the specified preset is unavailable")
 
     settings = import_settings(preset_path.read_text())
     settings.main.format = format_
 
     return settings
 
-def settings_from_zero_options() -> Settings:
+def settings_from_zero_arguments() -> UserSettings:
+    arg1 = DEFAULT_FORMAT
+    arg2 = DEFAULT_PRESET
+    return settings_from_format_and_presets(arg1, arg2)
 
-   o1 = DEFAULT_MAIN_FORMAT
-   o2 = AUTO_PRESET_FILE.split('.')[0]
+def settings_from_one_argument() -> UserSettings:
+    arg1 = positional_arguments[QuickArgument.format_or_preset_a]
+    arg2 = DEFAULT_FORMAT if interpret_format(arg1) is None else DEFAULT_PRESET
+    return settings_from_format_and_presets(arg1, arg2)
 
-   return settings_from_format_and_presets(o1, o2)
+def settings_from_two_arguments() -> UserSettings:
+   arg1 = positional_arguments[QuickArgument.format_or_preset_a]
+   arg2 = positional_arguments[QuickArgument.format_or_preset_b]
+   return settings_from_format_and_presets(arg1, arg2)
 
-def settings_from_one_option() -> Settings:
+####################################################################################################
+# Config Arguments -> Settings
+####################################################################################################
 
-    o1 = positional_options[OneOption.format_or_preset]
-    o2 = ( DEFAULT_MAIN_FORMAT
-              if interpret_format(o1) is None
-              else AUTO_PRESET_FILE.split('.')[0] )
-
-    return settings_from_format_and_presets(o1, o2)
-
-def settings_from_two_options() -> Settings:
-
-   o1 = positional_options[TwoOptions.format_or_preset_1]
-   o2 = positional_options[TwoOptions.format_or_preset_2]
-
-   return settings_from_format_and_presets(o1, o2)
-
-########################################################################################
-# Basic / Full Options -> Settings
-########################################################################################
-
-def parse_int(name: str, s: str) -> int:
+def parse_int(name: str, s: str) -> int | None:
+    if s == 'auto': return None
     try: return int(s)
     except BaseException as e:
         fail(f"the argument '{name}' is not an integer", True, e)
 
-def parse_float(name: str, s: str) -> float:
+def parse_float(name: str, s: str) -> float | None:
+    if s == 'auto': return None
     try: return float(s)
     except BaseException as e:
         fail(f"the argument '{name}' is not a real", True, e)
 
-def parse_str(name: str, s: str) -> str:
+def parse_str(_, s: str) -> str | None:
+    if s == 'auto': return None
     return s
 
-def with_auto(parser):
-    def f(name: str, s: str):
-        return None if s == "auto" else parser(name, s)
-    return f
+def settings_from_config_arguments() -> UserSettings:
 
-def settings_from_basic_options() -> Settings:
+   def feed(arg: ConfigArgument, parser):
+       return parser(arg.name.replace("_", " "), positional_arguments[arg])
 
-    return Settings (
+   return UserSettings \
+        ( UserMainSettings  ( feed(ConfigArgument.main_format    , parse_str    ) ,
+                              feed(ConfigArgument.main_scaler    , parse_str    ) ,
+                              feed(ConfigArgument.main_closure   , parse_str    ) ) ,
+          UserStageSettings ( feed(ConfigArgument.repair_drop    , parse_float  ) ,
+                              feed(ConfigArgument.repair_model   , parse_str    ) ,
+                              feed(ConfigArgument.repair_cycles  , parse_int    ) ) ,
+          UserStageSettings ( feed(ConfigArgument.enhance_drop   , parse_float  ) ,
+                              feed(ConfigArgument.enhance_model  , parse_str    ) ,
+                              feed(ConfigArgument.enhance_cycles , parse_int    ) ) ,
+          UserStageSettings ( feed(ConfigArgument.stylize_drop   , parse_float  ) ,
+                              feed(ConfigArgument.stylize_model  , parse_str    ) ,
+                              feed(ConfigArgument.stylize_cycles , parse_int    ) ) )
 
-        MainSettings(
-            parse_str(FullOptions.main_format),
-            None,
-            None,
-            None
-        ),
+####################################################################################################
+# Arguments -> Settings
+####################################################################################################
 
-        ModelSettings(
-            parse_str(FullOptions.soft_enhancer),
-            parse_int(FullOptions.soft_iterations),
-            None,
-            None,
-            None
-        ),
-
-        ModelSettings(
-            parse_str(FullOptions.hard_enhancer),
-            parse_int(FullOptions.hard_iterations),
-            None,
-            None,
-            None
-        )
-    )
-
-def settings_from_full_options() -> Settings:
-
-   def feed(index: FullOptions, parser):
-       return parser(index.name.replace("_", " "), positional_options[index])
-
-   return Settings (
-
-        MainSettings(
-            feed(FullOptions.main_format, parse_str),
-            feed(FullOptions.main_reduction, with_auto(parse_int)),
-            feed(FullOptions.main_closure, with_auto(parse_str)),
-            feed(FullOptions.main_tiling, with_auto(parse_int))
-        ),
-
-        ModelSettings(
-            feed(FullOptions.soft_enhancer, parse_str),
-            feed(FullOptions.soft_iterations, parse_int),
-            feed(FullOptions.soft_multiplier, with_auto(parse_int)),
-            feed(FullOptions.soft_divisor, with_auto(parse_float)),
-            feed(FullOptions.soft_scaler, with_auto(parse_str))
-        ),
-
-        ModelSettings(
-            feed(FullOptions.hard_enhancer, parse_str),
-            feed(FullOptions.hard_iterations, parse_int),
-            feed(FullOptions.hard_multiplier, with_auto(parse_int)),
-            feed(FullOptions.hard_divisor, with_auto(parse_float)),
-            feed(FullOptions.hard_scaler, with_auto(parse_str))
-        )
-    )
-
-########################################################################################
-# Options -> Settings
-########################################################################################
-
-settings: Settings
+settings: UserSettings
 
 def load_settings() -> None:
 
     global settings
 
-    if len(positional_options) == len(ZeroOptions):
-        settings = settings_from_zero_options()
-    elif len(positional_options) == len(OneOption):
-        settings = settings_from_one_option()
-    elif len(positional_options) == len(TwoOptions):
-        settings = settings_from_two_options()
-    elif len(positional_options) == len(BasicOptions):
-        settings = settings_from_basic_options()
-    elif len(positional_options) == len(OneOption):
-        settings = settings_from_full_options()
+    if len(positional_arguments) == 0:
+        settings = settings_from_zero_arguments()
+    elif len(positional_arguments) == 1:
+        settings = settings_from_one_argument()
+    elif len(positional_arguments) == 2:
+        settings = settings_from_two_arguments()
+    elif len(positional_arguments) == len(ConfigArgument):
+        settings = settings_from_config_arguments()
     else:
         fail( "incorrect parameter count")
 
-########################################################################################
-# Settings Recording
-########################################################################################
+####################################################################################################
+# Preset File
+####################################################################################################
 
-def create_presets_file() -> None:
-
-    if savelevel() >= SaveLevel.text:
+def create_preset_file() -> None:
+    if loglevel >= LogLevel.text:
         PRESET_FILE_PATH.write_text(export_settings(settings))
 
-########################################################################################
+####################################################################################################
 # Defaults Resolution
-########################################################################################
+####################################################################################################
 
 def resolve_defaults() -> None:
 
