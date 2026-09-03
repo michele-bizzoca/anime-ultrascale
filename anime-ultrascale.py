@@ -67,10 +67,9 @@ DEMO_FILE          : Final = "quality.preset"
 
 DEFAULT_PRESET     : Final = "quality"
 DEFAULT_LOGLEVEL   : Final = "text"
+DEFAULT_SCALER     : Final = "lanczos"
 DEFAULT_CLOSURE    : Final = "bicubic"
 DEFAULT_TILING     : Final = 4
-DEFAULT_ENHANCER   : Final = "bicubic"
-DEFAULT_ENHANCER_  : Final = "lanczos"
 
 #---------------------------------------------------------------------------------------------------
 
@@ -82,7 +81,7 @@ OPAQUE_EXTENSIONS  : Final = ["jpg", "jpeg", "bmp"]
 
 MAX_MPX            : Final = 300
 MAX_TILING         : Final = 16
-MAX_ITERATIONS     : Final = 16
+MAX_ITERATIONS     : Final = 4
 
 #---------------------------------------------------------------------------------------------------
 
@@ -184,8 +183,9 @@ class Scaler(IntEnum):
 
 class Enhancer(IntEnum):
 
-    conservative = 0
-    strong = 1
+    core = 0
+    soft = 1
+    hard = 1
 
 #---------------------------------------------------------------------------------------------------
 
@@ -195,8 +195,7 @@ def scaler_descriptor(scaler: Scaler):
     else:                           return "lanczos3"
 
 def enhancer_descriptor(enhancer: Enhancer):
-    if enhancer == Enhancer.conservative : return "soft"
-    else:                                : return "hard"
+    return enhancer.name
 
 ####################################################################################################
 # Arguments
@@ -209,59 +208,140 @@ class BasicArgument(IntEnum):
     output_path  = 2
 
 class ConfigArgument(IntEnum):
-    main_format     = 0
-    main_reduction  = 1
+    main_size       = 0
+    main_scaler     = 1
     main_closure    = 2
-    main_tiling     = 3
-    soft_enhancer   = 4
-    soft_iterations = 5
-    soft_multiplier = 6
-    soft_divisor    = 7
-    soft_scaler     = 8
-    hard_enhancer   = 9
-    hard_iterations = 10
-    hard_multiplier = 11
-    hard_divisor    = 12
-    hard_scaler     = 13
+    core_divisor    = 3
+    core_enhancer   = 4
+    core_iterations = 5
+    soft_divisor    = 6
+    soft_enhancer   = 7
+    soft_iterations = 8
+    hard_divisor    = 9
+    hard_enhancer   = 10
+    hard_iterations = 11
 
 class QuickArgument(IntEnum):
     format_or_preset_a = 0
     format_or_preset_b = 0
 
 class RegularOption(Enum):
-    log = 0
+    log  = 0
+    tile = 1
 
 class Flag(Enum):
     quiet = 0
 
 #---------------------------------------------------------------------------------------------------
 
-def option_string(option: str, override: bool = True) -> str:
+def long_option(option: str, override: bool) -> str:
     if override:
         [x, y] = option.split("_")
-        return "--" + (y[0].upper() if x == "hard" else y[0]) + y[1:]
+        return "--" + (y if x == "main" else option)
     else:
         return "--" + option
 
-override_options_map = ( { option_string(x.name)             : x for x in list(ConfigArgument) } |
-                         { option_string(x.name)[1:3]        : x for x in list(ConfigArgument) } )
+def short_option(option: str, override: bool = True) -> str:
+    if override:
+        [x, y] = option.split("_")
+        return "-" + (y[0] if x == "main" else x[0] + y[0])
+    else:
+        return "-" + option[0]
 
-regular_options_map  = ( { option_string(x.name, False)      : x for x in list(RegularOption) } |
-                         { option_string(x.name, False)[1:3] : x for x in list(RegularOption) } )
+override_options_map = ( { short_option(x.name, True)  : x for x in list(ConfigArgument) } |
+                         { long_option(x.name, True)   : x for x in list(ConfigArgument) } )
 
-flags_map            = ( { option_string(x.name, False)      : x for x in list(Flag)          } |
-                         { option_string(x.name, False)[1:3] : x for x in list(Flag)          } )
+regular_options_map  = ( { short_option(x.name, False) : x for x in list(RegularOption)  } |
+                         { long_option(x.name, False)  : x for x in list(RegularOption)  } )
+
+flags_map            = ( { short_option(x.name, False) : x for x in list(Flag)           } |
+                         { long_option(x.name, False)  : x for x in list(Flag)           } )
+
+####################################################################################################
+# Settings
+####################################################################################################
+
+@dataclass
+class InputMainSettings:
+    size       : str   | None
+    closure    : str   | None
+
+@dataclass
+class InputCoreSettings:
+    divisor    : float | None
+    enhancer   : str   | None
+
+@dataclass
+class InputSoftSettings:
+    divisor    : float | None
+    enhancer   : str   | None
+    iterations : int   | None
+
+@dataclass
+class InputHardSettings:
+    divisor    : float | None
+    enhancer   : str   | None
+    iterations : int   | None
+
+@dataclass
+class InputSideSettings:
+    savelevel : str    | None
+    tiling    : int    | None
+
+@dataclass
+class InputSettings:
+    main: InputMainSettings
+    core: InputCoreSettings
+    soft: InputSoftSettings
+    hard: InputHardSettings
+    side: InputSideSettings
+
+#---------------------------------------------------------------------------------------------------
+
+@dataclass
+class GroundMainSettings:
+    size       : str
+    closure    : str
+
+@dataclass
+class GroundCoreSettings:
+    divisor    : float
+    enhancer   : str
+
+@dataclass
+class GroundSoftSettings:
+    divisor    : float
+    enhancer   : str
+    iterations : int
+
+@dataclass
+class GroundHardSettings:
+    divisor    : float
+    enhancer   : str
+    iterations : int
+
+@dataclass
+class GroundSideSettings:
+    savelevel  : str
+    tiling     : int
+
+@dataclass
+class GroundSettings:
+    main: GroundMainSettings
+    core: GroundCoreSettings
+    soft: GroundSoftSettings
+    hard: GroundHardSettings
+    side: GroundSideSettings
 
 ####################################################################################################
 # Sessions
 ####################################################################################################
 
 @dataclass
-class Invocation:
+class CallInfo:
 
     time      : str
     version   : str
-    savelevel : str
 
 @dataclass
 class ImageInfo:
@@ -271,36 +351,12 @@ class ImageInfo:
     height : int
 
 @dataclass
-class MainSettings:
-
-    format    : str
-    reduction : float | None
-    closure   : str   | None
-    tiling    : int   | None
-
-@dataclass
-class ModelSettings:
-
-    enhancer   : str
-    iterations : int
-    multiplier : int   | None
-    divisor    : float | None
-    scaler     : str   | None
-
-@dataclass
-class Settings:
-
-    main    : MainSettings
-    soft    : ModelSettings
-    hard    : ModelSettings
-
-@dataclass
 class Session:
 
-    invocation : Invocation
+    invocation : CallInfo
     input      : ImageInfo
     output     : ImageInfo
-    settings   : Settings
+    settings   : GroundSettings
 
 ####################################################################################################
 # Work Units
@@ -320,23 +376,21 @@ class Unit:
 @dataclass
 class Scale(Unit):
     scaler      : Scaler
+    scaler_     : str
     input_size  : Size
     output_size : Size
 
 @dataclass
 class Enhance(Unit):
     enhancer    : Enhancer
+    enhancer_   : str
     input_size  : Size
     output_size : Size
 
 @dataclass
-class SoftEnhance(Unit):
-    input_size  : Size
-    output_size : Size
-
-@dataclass
-class HardEnhance(Unit):
-    multiplier  : int
+class Esrgan(Unit):
+    enhancer    : Enhancer
+    enhancer_   : str
     input_size  : Size
     output_size : Size
 
@@ -350,8 +404,7 @@ class Load(Unit):
 
 @dataclass
 class StepForward(Unit):
-    save : bool
-    size : Size
+    pass
 
 @dataclass
 class PhaseForward(Unit):
@@ -365,26 +418,40 @@ def unit_cost(unit: Unit) -> float:
         px = unit.output_size.width * unit.output_size.height * 0.10
     elif isinstance(unit, Enhance):
         px = unit.input_size.width * unit.input_size.height * 1.35
-    elif isinstance(unit, SoftEnhance):
-        px = unit.input_size.width * unit.input_size.height * 1.00
-    elif isinstance(unit, HardEnhance):
+    elif isinstance(unit, Esrgan):
         px = unit.input_size.width * unit.input_size.height * 1.00
     elif isinstance(unit, Save):
         px = unit.size.width * unit.size.height * 0.30
     elif isinstance(unit, Load):
         px = unit.size.width * unit.size.height * 0.05
-    elif isinstance(unit, StepForward) and unit.save:
-        px =  unit.size.width * unit.size.height * 0.30
     else:
         px = 0
 
     return px / 1000000
 
-def unit_breakpoints(unit_class: type[Unit]) -> tuple[float, float]:
+def unit_index(unit: Unit) -> int:
+    index = Unit.__subclasses__().index(unit.__class__())
+    if isinstance(unit, Scale): index += 10 * (unit.scaler + 1)
+    if isinstance(unit, Enhance): index += 100 * (unit.enhancer + 1)
+    if isinstance(unit, Esrgan): index += 1000 * (unit.enhancer + 1)
+    return index
 
-    begin = 10
-    end   = 30 if unit_class in [SoftEnhance, HardEnhance, Enhance] else 10
-    return begin, end
+def unit_breakpoints() -> dict[int, tuple[float, float]]:
+    indices =  [unit_index(Save(Size(0,0)))]
+    indices += [unit_index(Load(Size(0,0)))]
+    indices += [unit_index(StepForward())]
+    indices += [unit_index(PhaseForward())]
+    indices += [unit_index(Scale(s, Size(0,0), Size(0,0))) for s in Scaler]
+    indices += [unit_index(Enhance(e, "", Size(0,0), Size(0,0))) for e in Enhancer]
+    indices += [unit_index(Esrgan(e, "", Size(0,0), Size(0,0))) for e in Enhancer]
+    return {i : (10, 10 if i < 1000 else 30) for i in indices}
+
+####################################################################################################
+# Path Operations
+####################################################################################################
+
+def extension(path: str | Path) -> str:
+    return Path(path).suffix.lower()[1:]
 
 ####################################################################################################
 # Time Operations
@@ -458,8 +525,8 @@ def early_checks() -> None:
     if not RENV_FILE_PATH.is_file(): early_fail("missing Real ESRGAN runner")
     if not Path(sys.argv[1]).is_file(): early_fail("invalid input file path")
     if not Path(sys.argv[2]).parent.is_dir(): early_fail("invalid output file path")
-    if not Path(sys.argv[1]).suffix[1:] in EXTENSIONS: early_fail("invalid input file extension")
-    if not Path(sys.argv[2]).suffix[1:] in EXTENSIONS: early_fail("invalid output file extension")
+    if not extension(Path(sys.argv[1])) in EXTENSIONS: early_fail("invalid input file extension")
+    if not extension(Path(sys.argv[2])) in EXTENSIONS: early_fail("invalid output file extension")
     register(early_checks)
 
 ####################################################################################################
@@ -700,54 +767,57 @@ def create_bar(cost: float) -> ProgressBar:
     delta = time.perf_counter() - start
     cost_ = unit_cost(Scale(Scaler.bicubic, Size(2000, 2000), Size(1000, 1000)))
     mpxs  = cost_ / delta
-    jumps = { i: unit_breakpoints(unit_class)
-                 for i, unit_class in enumerate(Unit.__subclasses__()) }
+    jumps = unit_breakpoints()
     return ProgressBar(cost, mpxs, jumps)
 
 ####################################################################################################
-# Scaling / Saving / Loading
+# Loading
 ####################################################################################################
 
 def load(unit: Load, path: Path, bar: ProgressBar | None = None) -> pyvips.Image:
 
-    if bar is not None:
-        start_unit(unit, bar)
+    if bar is not None: start_unit(unit, bar)
 
-    image = pyvips.Image.new_from_file(str(path), access = "sequential")
-    image = image.colourspace("srgb")
-    if image.bands > 4: image = image[:4]
-    image = image.cast("uchar")
+    loaded = pyvips.Image.new_from_file(str(path), access = "sequential")
+    loaded = loaded.colourspace("srgb")
+    if loaded.bands > 4: loaded = loaded[:4]
+    loaded = loaded.cast("uchar")
 
     interrupted = Event()
     sigint_handler = signal.getsignal(signal.SIGINT)
+    percentage = -1
 
-    def update_interrupt(image: pyvips.Image, progress: Any) -> None:
+    def update_interrupt(image: pyvips.Image, _) -> None:
         if interrupted.is_set(): image.set_kill(True)
 
-    def update_progress(image: pyvips.Image, progress: Any) -> None:
-        if bar is not None: bar.progress(float(progress.percent))
+    def update_progress(_, progress: Any) -> None:
+        nonlocal percentage
+        if bar is not None and percentage != progress.percent:
+            bar.progress(float(progress.percent))
+            percentage = progress.percent
 
-    image.set_progress(True)
+    loaded.set_progress(True)
 
-    image.signal_connect \
+    loaded.signal_connect \
         ("preeval", lambda image, progress: record_scaling_progress("load", "preeval", progress))
 
-    image.signal_connect("eval", update_interrupt)
+    loaded.signal_connect("eval", update_interrupt)
 
-    image.signal_connect("eval", update_progress)
+    loaded.signal_connect("eval", update_progress)
 
-    image.signal_connect \
+    loaded.signal_connect \
         ("eval", lambda image, progress: record_scaling_progress("load", "eval", progress))
 
-    image.signal_connect \
+    loaded.signal_connect \
         ("posteval", lambda image, progress: record_scaling_progress("load", "posteval", progress))
 
     signal.signal(signal.SIGINT, lambda signum, frame: interrupted.set())
 
     try:
         if bar is not None: bar.progress(0.0)
-        image = image.copy_memory()
+        loaded = loaded.copy_memory()
         if bar is not None: bar.progress(100.0)
+
         if interrupted.is_set(): raise KeyboardInterrupt
 
     except pyvips.Error:
@@ -758,66 +828,56 @@ def load(unit: Load, path: Path, bar: ProgressBar | None = None) -> pyvips.Image
     finally:
         signal.signal(signal.SIGINT, sigint_handler)
 
-    return image
+    if bar is not None: bar.stop()
+    return loaded
 
-def save(unit: Save, image: pyvips.Image, path: Path, bar: ProgressBar) -> None:
+####################################################################################################
+# Saving
+####################################################################################################
 
-    bar.new_unit(unit)
+def save(unit: Save, image: pyvips.Image, path: Path, bar: ProgressBar | None = None) -> None:
 
-    image           = image.copy()
-    last_percentage = 0.0
-    started         = False
-    interrupted     = Event()
-    previous_sigint = signal.getsignal(signal.SIGINT)
+    if bar is not None: start_unit(unit, bar)
 
-    def request_interrupt(signum, frame) -> None:
+    copied = image.copy()
 
-        interrupted.set()
+    interrupted    = Event()
+    sigint_handler = signal.getsignal(signal.SIGINT)
+    percentage     = -1
 
-    def start_bar(image: pyvips.Image, progress: Any) -> None:
+    def update_interrupt(image: pyvips.Image, _) -> None:
+        if interrupted.is_set(): image.set_kill(True)
 
-        nonlocal started
+    def update_progress(_, progress: Any) -> None:
+        nonlocal percentage
+        if bar is not None and percentage != progress.percent:
+            bar.progress(float(progress.percent))
+            percentage = progress.percent
 
-        if not started:
-            started = True
-            bar.progress(0.0)
+    copied.set_progress(True)
 
-    def update_bar(image: pyvips.Image, progress: Any) -> None:
+    copied.signal_connect \
+        ("preeval", lambda image, progress: record_scaling_progress("load", "preeval", progress))
 
-        nonlocal last_percentage
+    copied.signal_connect \
+        ("eval", lambda image, progress: record_scaling_progress("save", "eval", progress))
 
-        percentage = float(progress.percent)
-        if percentage > last_percentage:
-            last_percentage = percentage
-            bar.progress(percentage)
+    copied.signal_connect \
+        ("posteval", lambda image, progress: record_scaling_progress("save", "posteval", progress))
 
-        if interrupted.is_set():
-            image.set_kill(True)
+    signal.signal(signal.SIGINT, lambda signum, frame: interrupted.set())
 
-    image.set_progress(True)
-    image.signal_connect("preeval", start_bar)
-    image.signal_connect("eval", update_bar)
-    image.signal_connect("preeval",
-        lambda image, progress: log_scaling("save", "preeval", progress))
-    image.signal_connect("eval",
-         lambda image, progress: log_scaling("save", "eval", progress))
-    image.signal_connect("posteval",
-         lambda image, progress: log_scaling("save", "posteval", progress))
-
-    signal.signal(signal.SIGINT, request_interrupt)
-
-    kwargs = {}
-
-    if str(path).endswith("webp"):
-        kwargs["lossless"] = True
-        kwargs["effort"] = 4
-
-    image.write_to_file(str(path), )
     try:
-        image.write_to_file(str(path), **kwargs)
+        kwargs = {}
+        if extension(path) == "webp":
+            kwargs["lossless"] = True
+            kwargs["effort"] = 4
 
-        if interrupted.is_set():
-            raise KeyboardInterrupt
+        if bar is not None: bar.progress(0.0)
+        copied.write_to_file(str(path), **kwargs)
+        if bar is not None: bar.progress(100.0)
+
+        if interrupted.is_set(): raise KeyboardInterrupt
 
     except pyvips.Error:
         if interrupted.is_set():
@@ -825,67 +885,57 @@ def save(unit: Save, image: pyvips.Image, path: Path, bar: ProgressBar) -> None:
         raise
 
     finally:
-        signal.signal(signal.SIGINT, previous_sigint)
+        signal.signal(signal.SIGINT, sigint_handler)
 
-def scale(unit: Scale, bar: ProgressBar) -> None:
+    if bar is not None: bar.stop()
 
-    global current_image
+####################################################################################################
+# Scaling
+####################################################################################################
 
-    if unit.out_width == unit.in_width and unit.out_height == unit.in_height:
-        return
+def scale(unit: Scale, image: pyvips.Image, bar: ProgressBar | None = None) -> pyvips.Image:
 
-    bar.new_unit(unit)
+    if unit.output_size == unit.input_size:
+        return image.copy()
 
-    kernel          = scaler_descriptor(unit.scaler)
-    hscale          = unit.out_width / unit.in_width
-    vscale          = unit.out_height / unit.in_height
-    image           = current_image.resize(hscale, vscale = vscale, kernel = kernel)
-    last_percentage = 0.0
-    started         = False
-    interrupted     = Event()
-    previous_sigint = signal.getsignal(signal.SIGINT)
+    if bar is not None: start_unit(unit, bar)
 
-    def request_interrupt(signum, frame) -> None:
+    hscale          = unit.output_size.width / unit.input_size.width
+    vscale          = unit.output_size.height / unit.input_size.height
+    scaled          = image.resize(hscale, vscale = vscale, kernel = unit.scaler_)
 
-        interrupted.set()
+    interrupted    = Event()
+    sigint_handler = signal.getsignal(signal.SIGINT)
+    percentage     = -1
 
-    def start_bar(image: pyvips.Image, progress: Any) -> None:
+    def update_interrupt(image: pyvips.Image, _) -> None:
+        if interrupted.is_set(): image.set_kill(True)
 
-        nonlocal started
+    def update_progress(_, progress: Any) -> None:
+        nonlocal percentage
+        if bar is not None and percentage != progress.percent:
+            bar.progress(float(progress.percent))
+            percentage = progress.percent
 
-        if not started:
-            started = True
-            bar.progress(0.0)
+    scaled.set_progress(True)
 
-    def update_bar(image: pyvips.Image, progress: Any) -> None:
+    scaled.signal_connect \
+        ("preeval", lambda image, progress: record_scaling_progress("load", "preeval", progress))
 
-        nonlocal last_percentage
+    scaled.signal_connect \
+        ("eval", lambda image, progress: record_scaling_progress("save", "eval", progress))
 
-        percentage = float(progress.percent)
-        if percentage > last_percentage:
-            last_percentage = percentage
-            bar.progress(percentage)
+    scaled.signal_connect \
+        ("posteval", lambda image, progress: record_scaling_progress("save", "posteval", progress))
 
-        if interrupted.is_set():
-            image.set_kill(True)
-
-    image.set_progress(True)
-    image.signal_connect("preeval", start_bar)
-    image.signal_connect("eval", update_bar)
-    image.signal_connect("preeval",
-        lambda image, progress: log_scaling("scale", "preeval", progress))
-    image.signal_connect("eval",
-        lambda image, progress: log_scaling("scale", "eval", progress))
-    image.signal_connect("posteval",
-        lambda image, progress: log_scaling("scale", "posteval", progress))
-
-    signal.signal(signal.SIGINT, request_interrupt)
+    signal.signal(signal.SIGINT, lambda signum, frame: interrupted.set())
 
     try:
-        scaled_image = image.copy_memory()
+        if bar is not None: bar.progress(0.0)
+        scaled = scaled.copy_memory()
+        if bar is not None: bar.progress(100.0)
 
-        if interrupted.is_set():
-            raise KeyboardInterrupt
+        if interrupted.is_set(): raise KeyboardInterrupt
 
     except pyvips.Error:
         if interrupted.is_set():
@@ -893,56 +943,56 @@ def scale(unit: Scale, bar: ProgressBar) -> None:
         raise
 
     finally:
-        signal.signal(signal.SIGINT, previous_sigint)
+        signal.signal(signal.SIGINT, sigint_handler)
 
-    current_image = scaled_image
+    if bar is not None: bar.stop()
+    return scaled
 
-def enhance(unit: Enhance, bar: ProgressBar) -> None:
+####################################################################################################
+# Enhancing
+####################################################################################################
 
-    global current_image
+def enhance(unit: Enhance, image: pyvips.Image, bar: ProgressBar | None = None) -> pyvips.Image:
 
-    save_unit    = Save(unit.in_width, unit.in_height)
-    pure_ai_unit = Realesrgan(** vars(unit))
-    load_unit    = Load(unit.out_width, unit.out_height)
+    save(Save(unit.input_size), image, TEMP_INPUT_FILE_PATH, bar)
 
-    save(save_unit, current_image, TEMP_INPUT_FILE_PATH, bar)
+    if bar is not None: start_unit(unit, bar)
 
-    bar.new_unit(pure_ai_unit)
+    x = re.search("([2-8])[xX]", unit.enhancer_) or re.search("[xX]([2-8])", unit.enhancer_)
+    if x is None: fail(f"cannot deduce enhancer's multiplier")
+    scale = x.group(1)
 
-    process = subprocess.Popen(
-
-        [ str(RENV_RUNNER_PATH)                ,
-          "-i", str(TEMP_INPUT_FILE_PATH)      ,
-          "-o", str(TEMP_OUTPUT_FILE_PATH)     ,
-          "-m", str(MODEL_FOLDER_PATH)         ,
-          "-n", unit.enhancer                  ,
-          "-t", str(64 * settings.main.tiling) ,
-          "-g", "0"                            ,
-          "-j", "1:1:1"                        ,
-          "-s", str(unit.multiplier)           ],
-
-        stdout  = subprocess.PIPE   ,
-        stderr  = subprocess.STDOUT ,
-        text    = True              ,
-        bufsize = 1
-    )
+    process = subprocess.Popen( [ str(RENV_FILE_PATH)                  ,
+                                  "-i", str(TEMP_INPUT_FILE_PATH)      ,
+                                  "-o", str(TEMP_OUTPUT_FILE_PATH)     ,
+                                  "-m", str(MODEL_FOLDER_PATH)         ,
+                                  "-n", unit.enhancer_                 ,
+                                  "-t", str(64 * settings.main.tiling) ,
+                                  "-g", "0"                            ,
+                                  "-j", "1:1:1"                        ,
+                                  "-s", scale                          ],
+                                  stdout  = subprocess.PIPE             ,
+                                  stderr  = subprocess.STDOUT           ,
+                                  text    = True                        ,
+                                  bufsize = 1                           )
 
     if process.stdout is None:
-        fail("failed to capture Real ESRGAN's output")
+        fail("failed to capture Real ESRGAN runner's output")
 
     for line in process.stdout:
-        if savelevel() >= SaveLevel.debug:
-            scaling_ai_file_handle.write(timestring(datetime.now()) + ": " + line)
-            scaling_ai_file_handle.flush()
-        line = "".join(line.split())
-        if re.search(r"^[0-9]+(\.[0-9]+)?%$", line):
-            bar.progress(float(line[:-1]))
+        if loglevel >= LogLevel.debug:
+            enhancing_file_handle.write(f"{timestring(datetime.now())}: {line}")
+            enhancing_file_handle.flush()
+        if bar is not None:
+            x = re.search(r"^([0-9]+(\.[0-9]+)?)%$", line)
+            if x is not None: bar.progress(float(x.group(1)))
 
-    return_code = process.wait()
-    assume( return_code == 0                              ,
-            f"Real ESRGAN failed with code {return_code}" )
+    exit_code = process.wait()
+    if exit_code != 0: fail(f"Real ESRGAN runner failed with code {exit_code}" )
 
-    current_image = load(load_unit, TEMP_OUTPUT_FILE_PATH, bar)
+    if bar is not None: bar.stop()
+
+    return load(Load(unit.output_size), TEMP_OUTPUT_FILE_PATH, bar)
 
 ####################################################################################################
 # Input Loading
@@ -980,84 +1030,39 @@ def load_input() -> None:
 # Image Descaling
 ####################################################################################################
 
-def luminance(image: pyvips.Image) -> pyvips.Image:
-    image = image[:3] if image.bands > 3 else image
+def ndarray(image: pyvips.Image) -> numpy.ndarray:
+    return numpy.ndarray( buffer = image.write_to_memory()  ,
+                          dtype  = numpy.uint8              ,
+                          shape=(image.height, image.width) )
 
-    if image.bands == 1:
-        return image.cast("uchar")
+def roundtrip(image: pyvips.Image, div: float) -> pyvips.Image:
+    width  = max(1, round(image.width  / div))
+    height = max(1, round(image.height / div))
+    x = image.resize(width / image.width, vscale = height / image.height, kernel="lanczos3")
+    return x.resize(image.width / x.width, vscale = image.height / x.height, kernel="lanczos3")
 
-    return image.colourspace("b-w").cast("uchar")
-
-
-def to_numpy(image: pyvips.Image) -> numpy.ndarray:
-    return numpy.ndarray(
-        buffer=image.write_to_memory(),
-        dtype=numpy.uint8,
-        shape=(image.height, image.width),
-    )
-
-def roundtrip(image: pyvips.Image, factor: float) -> pyvips.Image:
-    width = max(1, round(image.width / factor))
-    height = max(1, round(image.height / factor))
-
-    reduced = image.resize(
-        width / image.width,
-        vscale=height / image.height,
-        kernel="lanczos3",
-    )
-
-    return reduced.resize(
-        image.width / reduced.width,
-        vscale=image.height / reduced.height,
-        kernel="lanczos3",
-    )
-
-def similarity(
-    reference: numpy.ndarray,
-    image: pyvips.Image,
-    factor: float,
-) -> float:
-    reconstructed = to_numpy(roundtrip(image, factor))
-
-    return float(
-        skimage.metrics.structural_similarity(
-            reference,
-            reconstructed,
-            data_range=255,
-        )
-    )
+def similarity(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
+    return float(skimage.metrics.structural_similarity(reference, candidate, data_range = 255))
 
 def descale(image: pyvips.Image) -> float:
-    img = image.copy()
-    img = luminance(img)
-    reference = to_numpy(img)
-
-    low = 1.0
-    high = 2.0
-
-    while similarity(reference, img, high) >= DESCALE_TARGET:
-        low = high
-        high *= 2.0
-
-        if (
-            round(img.width / high) <= 1
-            or round(img.height / high) <= 1
-        ):
-            break
-
+    bw   = image.copy()
+    bw   = bw[:3] if bw.bands > 3 else bw
+    bw   = bw.colourspace("b-w").cast("uchar")
+    ref  = ndarray(bw)
+    hi_div = 2.0
+    while ( similarity(ref, ndarray(roundtrip(bw, hi_div))) >= DESCALE_SIMILARITY and
+            round(bw.width / hi_div) >= 1 or round(bw.height / hi_div) >= 1         ):
+        hi_div *= 2.0
+    lo_div = hi_div / 2.0
     for _ in range(DESCALE_ITERATIONS):
-        middle = (low + high) / 2.0
+        middle = (lo_div + hi_div) / 2.0
+        if similarity(ref, ndarray(roundtrip(bw, middle))) >= DESCALE_SIMILARITY: lo_div = middle
+        else: hi_div = middle
+    return (lo_div + hi_div) / 2.0
 
-        if similarity(reference, img, middle) >= DESCALE_TARGET:
-            low = middle
-        else:
-            high = middle
-
-    return (low + high) / 2.0
-
-########################################################################################
+####################################################################################################
 # Nested Dictionary Underscore-Based Flattening
-########################################################################################
+####################################################################################################
 
 def flatten(data: dict[str, object]) -> dict[str, object]:
 
@@ -1077,9 +1082,9 @@ def flatten(data: dict[str, object]) -> dict[str, object]:
 
     return flatten_(data, "")
 
-########################################################################################
+####################################################################################################
 # Nested Dictionary Underscore-Based Unflattening
-########################################################################################
+####################################################################################################
 
 def unflatten(data: dict[str, object]) -> dict[str, object]:
 
@@ -1099,11 +1104,11 @@ def unflatten(data: dict[str, object]) -> dict[str, object]:
 
     return result
 
-########################################################################################
+####################################################################################################
 # Settings Export
-########################################################################################
+####################################################################################################
 
-def export_settings(s: Settings) -> str:
+def export_settings(s: InputSettings) -> str:
 
     result: str = ""
 
@@ -1112,11 +1117,11 @@ def export_settings(s: Settings) -> str:
 
     return result
 
-########################################################################################
+####################################################################################################
 # Settings Import
-########################################################################################
+####################################################################################################
 
-def import_settings(s : str) -> Settings:
+def import_settings(s : str) -> InputSettings:
 
     s = re.sub(r'^\s*(#.*)?$\n?', '', s, flags = re.MULTILINE)
     s = re.sub(r'^\s*(\w+)\s*=([^#\n]*)(#.*)?$\n?', r'"\1": \2,', s, flags=re.MULTILINE)
@@ -1126,17 +1131,17 @@ def import_settings(s : str) -> Settings:
                              data = unflatten(json.loads(s)),
                              config = dacite.Config(check_types=True) )
 
-########################################################################################
+####################################################################################################
 # Session Export
-########################################################################################
+####################################################################################################
 
 def export_session(s: Session) -> str:
 
     return json.dumps(dataclasses.asdict(s), indent = 4, sort_keys = False)
 
-########################################################################################
+####################################################################################################
 # Session Import
-########################################################################################
+####################################################################################################
 
 def import_session(s : str) -> Session:
 
@@ -1144,52 +1149,47 @@ def import_session(s : str) -> Session:
                              data       = json.loads(s),
                              config     = dacite.Config(check_types=True) )
 
-########################################################################################
-# Format Validation and Interpretation
-########################################################################################
-
-def validate_format(s:str) -> bool:
-    regex = ( "[wh][0-9+]|[0-9]+%|[0-9]+"
-             "(\\.[0-9]+)?|[0-9]+(k|kh|kv|K|KH|KV)" )
-    return re.fullmatch(regex, s) is not None
+####################################################################################################
+# Format Interpretation
+####################################################################################################
 
 def interpret_format(s: str) -> tuple[int, int] | None:
 
-    def parse_k(s: str, horizontal: bool) -> tuple[int, int]:
-        f = int(s[:-1])
-        k1 = (960.0 if horizontal else 540.0) * f / input_width()
-        k2 = (540.0 if horizontal else 960.0) * f / input_height()
-        k = min(k1, k2) if s[-1:] == "k" else max(k1, k2)
-        w = round(input_width() * k)
-        h = round(input_height() * k)
+    def interpret_k(s: str, horizontal: bool) -> tuple[int, int]:
+        mul = int(s[:-1])
+        k1  = (960.0 if horizontal else 540.0) * mul / input_size.width
+        k2  = (540.0 if horizontal else 960.0) * mul / input_size.height
+        k   = min(k1, k2) if s[-1:] == "k" else max(k1, k2)
+        w   = round(input_size.width * k)
+        h   = round(input_size.height * k)
         return w, h
 
     if re.fullmatch("w[0-9]+", s):
         w = int(s[1:])
-        h = round((float(w) / input_width()) * input_height())
+        h = round(float(w) * input_size.height / input_size.width)
     elif re.fullmatch("h[0-9]+", s):
         h = int(s[1:])
-        w = round((float(h) / input_height()) * input_width())
+        w = round(float(h) * input_size.width / input_size.height)
     elif re.fullmatch("[0-9]+%", s):
-        k = float(s[:-1]) / 100
-        w = round(input_width() * k)
-        h = round(input_height() * k)
+        k = float(s[:-1]) / 100.0
+        w = round(input_size.width  * k)
+        h = round(input_size.height * k)
     elif re.fullmatch("[0-9]+(\\.[0-9]+)?", s):
         k = float(s)
-        w = round(input_width() * k)
-        h = round(input_height() * k)
+        w = round(input_size.width  * k)
+        h = round(input_size.height * k)
     elif re.fullmatch("[0-9]+[kK]", s):
-        w, h = parse_k(s, input_width() > input_height())
+        w, h = interpret_k(s, input_size.width > input_size.height)
     elif re.fullmatch("[0-9]+(kh|kv|KH|KV)?", s):
-        w, h = parse_k(s[:-1], s[-1:] in "hH")
+        w, h = interpret_k(s[:-1], s[-1:] in "hH")
     else:
         return None
 
     return w, h
 
-########################################################################################
+####################################################################################################
 # 0 / 1 / 2 Options -> Settings
-########################################################################################
+####################################################################################################
 
 def settings_from_format_and_presets(o1: str, o2: str) -> Settings:
 
@@ -1351,19 +1351,6 @@ def create_presets_file() -> None:
 
     if savelevel() >= SaveLevel.text:
         PRESET_FILE_PATH.write_text(export_settings(settings))
-
-########################################################################################
-# Multiplier Deduction
-########################################################################################
-
-def deduce_multiplier(enhancer: str,  hardness: str) -> int:
-
-    m = re.search("([2-8])[xX]", enhancer) or re.search("[xX]([2-8])", enhancer)
-
-    if m is not None:
-        return int(m.group(1))
-    else:
-        fail(f"cannot deduce {hardness} multiplier")
 
 ########################################################################################
 # Defaults Resolution
