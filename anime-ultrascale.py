@@ -31,7 +31,7 @@ from enum import IntEnum, Enum
 from datetime import datetime
 from dataclasses import dataclass
 from threading import Event # Thread, Lock
-from typing import NoReturn, Final, TextIO, Any, cast, NamedTuple
+from typing import NoReturn, Final, TextIO, Any, cast, NamedTuple, Callable
 
 ####################################################################################################
 # Constants
@@ -63,18 +63,25 @@ TEMP_OUTPUT_FILE   : Final = "output.png"
 
 #---------------------------------------------------------------------------------------------------
 
-DEFAULT_FORMAT     : Final = "4k"
-DEFAULT_SCALER     : Final = "lanczos"
-DEFAULT_CLOSURE    : Final = "bicubic"
-DEFAULT_PRESET     : Final = "quality"
-DEFAULT_LOGLEVEL   : Final = "text"
-DEFAULT_TILING     : Final = 4
+DEFAULT_FORMAT        : Final = "4k"
+DEFAULT_SCALER        : Final = "lanczos"
+DEFAULT_CLOSURE       : Final = "bicubic"
+DEFAULT_PRESET        : Final = "quality"
+DEFAULT_LOGLEVEL      : Final = "text"
+DEFAULT_TILE_SIZE     : Final = "4"
+DEFAULT_MPX_LIMIT     : Final = "300"
+DEFAULT_REPAIR_MODEL  : Final = "ANI-2x"
+DEFAULT_ENHANCE_MODEL : Final = "US-4x"
+DEFAULT_STYLIZE_MODEL : Final = "RPA-4x"
 
 #---------------------------------------------------------------------------------------------------
 
-MAX_MPX            : Final = 300
-MAX_TILING         : Final = 16
+MIN_TILE_SIZE      : Final = 1
+MAX_TILE_SIZE      : Final = 16
+MIN_MPX_LIMIT      : Final = 1
+MAX_MPX_LIMIT      : Final = 1000
 MAX_ITERATIONS     : Final = 4
+MAX_CYCLES         : Final = 4
 
 #---------------------------------------------------------------------------------------------------
 
@@ -215,11 +222,12 @@ class ConfigArgument(IntEnum):
 
 class QuickArgument(IntEnum):
     format_or_preset_a = 0
-    format_or_preset_b = 0
+    format_or_preset_b = 1
 
 class RegularOption(Enum):
     log    = 0
     tiling = 1
+    limit  = 2
 
 class Flag(Enum):
     quiet = 0
@@ -254,23 +262,41 @@ flags_map            = ( { short_option(x.name, False) : x for x in list(Flag)  
 ####################################################################################################
 
 @dataclass
+class Auto:
+    pass
+
+@dataclass
+class Full:
+    pass
+
+@dataclass
+class Root:
+    pass
+
+@dataclass
+class Unit:
+    pass
+
+#---------------------------------------------------------------------------------------------------
+
+@dataclass
 class UserMainSettings:
-    format  : str   | None
-    scaler  : str   | None
-    closure : str   | None
+    format  : str   | None = None
+    scaler  : str   | None = None
+    closure : str   | None = None
 
 @dataclass
 class UserStageSettings:
-    drop    : float | None
-    model   : str   | None
-    cycles  : int   | None
+    drop    : float | Auto | Full | Root | Unit | None = None
+    model   : str   | None = None
+    cycles  : int   | Auto | None = None
 
 @dataclass
 class UserSettings:
-    main    : UserMainSettings
-    repair  : UserStageSettings
-    enhance : UserStageSettings
-    stylize : UserStageSettings
+    main    : UserMainSettings  = UserMainSettings()
+    repair  : UserStageSettings = UserStageSettings()
+    enhance : UserStageSettings = UserStageSettings()
+    stylize : UserStageSettings = UserStageSettings()
 
 #---------------------------------------------------------------------------------------------------
 
@@ -282,14 +308,9 @@ class GroundMainSettings:
 
 @dataclass
 class GroundStageSettings:
-    drop    : float
+    drop    : float | Auto | Full | Root | Unit
     model   : str
-    cycles  : int
-
-@dataclass
-class GroundSideSettings:
-    log     : str
-    tile    : int
+    cycles  : int | Auto
 
 @dataclass
 class GroundSettings:
@@ -297,7 +318,23 @@ class GroundSettings:
     repair  : GroundStageSettings
     enhance : GroundStageSettings
     stylize : GroundStageSettings
-    side    : GroundSideSettings
+
+# --------------------------------------------------------------------------------------------------
+
+def enrich_settings(base: UserSettings, extra: UserSettings) -> UserSettings:
+    result = UserSettings()
+    for arg in ConfigArgument:
+        n, m = arg.name.split('_')
+        setattr( getattr(result, n), m, getattr(getattr(base , n), m) or
+                                        getattr(getattr(extra, n), m)  )
+    return result
+
+def freeze_settings(user: UserSettings) -> GroundSettings:
+    ground = GroundSettings()
+    for arg in ConfigArgument:
+        n, m = arg.name.split('_')
+        setattr(getattr(ground, n), m, getattr(getattr(user, n), m))
+    return ground
 
 ####################################################################################################
 # Sessions
@@ -351,24 +388,19 @@ class Scale(Unit):
 @dataclass
 class Upscale(Unit):
     model       : Model
-    model_      : str
-    input_size  : Size
-    output_size : Size
-
-@dataclass
-class Esrgan(Unit):
-    model       : Model
-    model_      : str
+    model_name  : str
     input_size  : Size
     output_size : Size
 
 @dataclass
 class Save(Unit):
-    size : Size
+    external : bool
+    size     : Size
 
 @dataclass
 class Load(Unit):
-    size : Size
+    external : bool
+    size     : Size
 
 @dataclass
 class StepForward(Unit):
@@ -380,13 +412,14 @@ class PhaseForward(Unit):
 
 #---------------------------------------------------------------------------------------------------
 
-def unit_cost(unit: Unit) -> float:
+type IntMap[T] = Callable[[int], T]
 
+#---------------------------------------------------------------------------------------------------
+
+def unit_cost(unit: Unit) -> float:
     if   isinstance(unit, Scale) and not unit.input_size == unit.output_size:
         px = unit.output_size.width * unit.output_size.height * 0.10
     elif isinstance(unit, Upscale):
-        px = unit.input_size.width * unit.input_size.height * 1.35
-    elif isinstance(unit, Esrgan):
         px = unit.input_size.width * unit.input_size.height * 1.00
     elif isinstance(unit, Save):
         px = unit.size.width * unit.size.height * 0.30
@@ -394,25 +427,19 @@ def unit_cost(unit: Unit) -> float:
         px = unit.size.width * unit.size.height * 0.05
     else:
         px = 0
-
     return px / 1000000
 
-def unit_index(unit: Unit) -> int:
+def unit_category(unit: Unit) -> int:
     index = Unit.__subclasses__().index(unit.__class__())
-    if isinstance(unit, Scale): index += 10 * (unit.scaler + 1)
-    if isinstance(unit, Upscale): index += 100 * (unit.model + 1)
-    if isinstance(unit, Esrgan): index += 1000 * (unit.model + 1)
+    if isinstance(unit, Scale):   index += 10  * (unit.scaler + 1)
+    if isinstance(unit, Upscale):  index += 100 * (unit.model  + 1)
     return index
 
-def unit_breakpoints() -> dict[int, tuple[float, float]]:
-    indices =  [unit_index(Save(Size(0,0)))]
-    indices += [unit_index(Load(Size(0,0)))]
-    indices += [unit_index(StepForward())]
-    indices += [unit_index(PhaseForward())]
-    indices += [unit_index(Scale(s, Size(0,0), Size(0,0))) for s in Scaler]
-    indices += [unit_index(Upscale(e, "", Size(0,0), Size(0,0))) for e in Model]
-    indices += [unit_index(Esrgan(e, "", Size(0,0), Size(0,0))) for e in Model]
-    return {i : (10, 10 if i < 1000 else 30) for i in indices}
+def unit_entry_idle_time(_: int) -> float:
+    return 0.1
+
+def unit_final_idle_time(i: int) -> float:
+    return 0.1 if i < 100 else 0.3
 
 ####################################################################################################
 # Path Operations
@@ -428,6 +455,9 @@ def extension(path: str | Path) -> str:
 def timestring(timestamp: datetime):
     return timestamp.strftime('on %Y/%m/%d at %H:%M:%S and %f')
 
+def now() -> str:
+    return timestring(datetime.now())
+
 #---------------------------------------------------------------------------------------------------
 
 call_timestamps: dict[object, datetime]
@@ -438,9 +468,6 @@ def register(function: object):
 
 def recall(function: object) -> str:
     return timestring(call_timestamps[function])
-
-def now() -> str:
-    return timestring(datetime.now())
 
 ####################################################################################################
 # File Operations
@@ -460,9 +487,9 @@ def fast_print(handle:TextIO, message: str) -> None:
 # Failing Early
 ####################################################################################################
 
-def early_fail( message   : str                         ,
-                suggest   : bool = True                 ,
-                exception : BaseException | None = None ) -> NoReturn:
+def early_fail( message   : str                     ,
+                suggest   : bool = True             ,
+                exception : Exception | None = None ) -> NoReturn:
 
     suggestion = " Run with --help for usage information."
     text = f"{message[:1].upper()}{message[1:]}.{suggestion if suggest else ''}"
@@ -561,15 +588,37 @@ def sort_arguments() -> None:
     register(sort_arguments)
 
 ####################################################################################################
-# Log Level
+# Regular Option Processing
 ####################################################################################################
 
-loglevel: LogLevel
+loglevel  : LogLevel
+tile_size : int
+mpx_limit : int
 
-def compute_loglevel() -> None:
-    global loglevel
-    loglevel = LogLevel(regular_options.get(RegularOption.log, DEFAULT_LOGLEVEL))
-    register(compute_loglevel)
+def process_regular_options() -> None:
+
+    if RegularOption.log in regular_options.keys():
+        values = [level.name for level in LogLevel]
+        if regular_options[RegularOption.log] not in values:
+            fail("invalid log level")
+
+    if RegularOption.tiling in regular_options.keys():
+        try: n = int(regular_options[RegularOption.tiling])
+        except Exception as e: fail("tile size is not an integer", True, e)
+        if n < int(MIN_TILE_SIZE) or n > int(MAX_TILE_SIZE):
+            fail(f"tile size is out of range [{MIN_TILE_SIZE}, {MAX_TILE_SIZE}]")
+
+    if RegularOption.limit in regular_options.keys():
+        try: n = int(regular_options[RegularOption.limit])
+        except Exception as e: fail("Mpx limit is not an integer", True, e)
+        if n < int(MIN_MPX_LIMIT) or n > int(MAX_MPX_LIMIT):
+            fail(f"mpx limit is out of range [{MIN_MPX_LIMIT}, {MAX_MPX_LIMIT}]")
+
+    loglevel  = LogLevel(regular_options.get(RegularOption.log, DEFAULT_LOGLEVEL))
+    tile_size = int(regular_options.get(RegularOption.tiling, DEFAULT_TILE_SIZE))
+    mpx_limit = int(regular_options.get(RegularOption.limit, DEFAULT_MPX_LIMIT))
+
+    register(process_regular_options)
 
 ####################################################################################################
 # Session Folder
@@ -618,9 +667,9 @@ def log(message: str, level: LogLevel = LogLevel.text, now_ : str | None = None)
 # Failing
 ####################################################################################################
 
-def fail( message   : str                         ,
-          suggest   : bool = True                 ,
-          exception : BaseException | None = None ) -> NoReturn:
+def fail( message   : str                     ,
+          suggest   : bool = True             ,
+          exception : Exception | None = None ) -> NoReturn:
 
     log(message, LogLevel.error)
     record_exit_message(False, message)
@@ -693,7 +742,7 @@ def create_enhancing_file() -> None:
 
 class ProgressBar:
 
-    def __init__(self, cost: float, mpxs: float, jumps: dict[int, tuple[float, float]]) -> None:
+    def __init__(self, cost: float, mpxs: float, entry: IntMap, final: IntMap) -> None:
         pass
 
     def __enter__(self) -> "ProgressBar":
@@ -705,7 +754,7 @@ class ProgressBar:
     def __del__(self) -> None:
         pass
 
-    def start(self, kind: int, cost: float) -> None:
+    def start(self, category: int, cost: float) -> None:
         pass
 
     def progress(self, percentage: float) -> None:
@@ -722,9 +771,7 @@ class ProgressBar:
 ####################################################################################################
 
 def start_unit(unit: Unit, bar: ProgressBar) -> None:
-    kind = Unit.__subclasses__().index(unit.__class__())
-    cost = unit_cost(unit)
-    bar.start(kind, cost)
+    bar.start(unit_category(unit), unit_cost(unit))
 
 def create_bar(cost: float) -> ProgressBar:
     data  = numpy.random.bytes(2000 * 2000 * 3)
@@ -734,8 +781,7 @@ def create_bar(cost: float) -> ProgressBar:
     delta = time.perf_counter() - start
     cost_ = unit_cost(Scale(Scaler.bicubic, Size(2000, 2000), Size(1000, 1000)))
     mpxs  = cost_ / delta
-    jumps = unit_breakpoints()
-    return ProgressBar(cost, mpxs, jumps)
+    return ProgressBar(cost, mpxs, unit_entry_idle_time, unit_final_idle_time)
 
 ####################################################################################################
 # Loading
@@ -927,14 +973,11 @@ def scale(unit: Scale, image: pyvips.Image, bar: ProgressBar | None = None) -> p
 # Upscaling
 ####################################################################################################
 
-def upscale(unit: Upscale, image: pyvips.Image, tiling: int, bar: ProgressBar | None = None) \
-    -> pyvips.Image:
-
-    save(Save(unit.input_size), image, TEMP_INPUT_FILE_PATH, bar)
+def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
 
     if bar is not None: start_unit(unit, bar)
 
-    x = re.search("([2-8])[xX]", unit.model_) or re.search("[xX]([2-8])", unit.model_)
+    x = re.search("([2-8])[xX]", unit.model_name) or re.search("[xX]([2-8])", unit.model_name)
     if x is None: fail(f"cannot deduce enhancer's multiplier")
     scale = x.group(1)
 
@@ -942,8 +985,8 @@ def upscale(unit: Upscale, image: pyvips.Image, tiling: int, bar: ProgressBar | 
                                   "-i", str(TEMP_INPUT_FILE_PATH)      ,
                                   "-o", str(TEMP_OUTPUT_FILE_PATH)     ,
                                   "-m", str(MODEL_FOLDER_PATH)         ,
-                                  "-n", unit.model_                    ,
-                                  "-t", str(64 * tiling)               ,
+                                  "-n", unit.model_name                ,
+                                  "-t", str(64 * tile_size)            ,
                                   "-g", "0"                            ,
                                   "-j", "1:1:1"                        ,
                                   "-s", scale                          ],
@@ -957,7 +1000,7 @@ def upscale(unit: Upscale, image: pyvips.Image, tiling: int, bar: ProgressBar | 
 
     for line in process.stdout:
         if loglevel >= LogLevel.debug:
-            enhancing_file_handle.write(f"{timestring(datetime.now())}: {line}")
+            enhancing_file_handle.write(f"{now()}: {line}")
             enhancing_file_handle.flush()
         if bar is not None:
             x = re.search(r"^([0-9]+(\.[0-9]+)?)%$", line)
@@ -967,8 +1010,6 @@ def upscale(unit: Upscale, image: pyvips.Image, tiling: int, bar: ProgressBar | 
     if exit_code != 0: fail(f"Real ESRGAN runner failed with code {exit_code}" )
 
     if bar is not None: bar.stop()
-
-    return load(Load(unit.output_size), TEMP_OUTPUT_FILE_PATH, bar)
 
 ####################################################################################################
 # Input Loading
@@ -1020,6 +1061,8 @@ def roundtrip(image: pyvips.Image, div: float) -> pyvips.Image:
 def similarity(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
     return float(skimage.metrics.structural_similarity(reference, candidate, data_range = 255))
 
+#---------------------------------------------------------------------------------------------------
+
 def descale(image: pyvips.Image) -> float:
 
     bw   = image.copy()
@@ -1044,7 +1087,7 @@ def descale(image: pyvips.Image) -> float:
     return div
 
 ####################################################################################################
-# Nested Dictionary Underscore-Based Flattening
+# Nested Dictionary Underscore-Based Un/Flattening
 ####################################################################################################
 
 def flatten(data: dict[str, object]) -> dict[str, object]:
@@ -1059,10 +1102,6 @@ def flatten(data: dict[str, object]) -> dict[str, object]:
         return result
     return flatten_(data, "")
 
-####################################################################################################
-# Nested Dictionary Underscore-Based Unflattening
-####################################################################################################
-
 def unflatten(data: dict[str, object]) -> dict[str, object]:
     result = {}
     for key, value in data.items():
@@ -1076,17 +1115,7 @@ def unflatten(data: dict[str, object]) -> dict[str, object]:
     return result
 
 ####################################################################################################
-# Settings Export
-####################################################################################################
-
-def export_settings(s: UserSettings) -> str:
-    result: str = ""
-    for key, value in flatten(dataclasses.asdict(s)).items():
-        result += f"{key} = {json.dumps(value)}\n"
-    return result
-
-####################################################################################################
-# Settings Import
+# Settings Import/Export
 ####################################################################################################
 
 def import_settings(s : str) -> UserSettings:
@@ -1097,15 +1126,14 @@ def import_settings(s : str) -> UserSettings:
                              data = unflatten(json.loads(s)),
                              config = dacite.Config(check_types=True) )
 
-####################################################################################################
-# Session Export
-####################################################################################################
+def export_settings(s: UserSettings) -> str:
+    result: str = ""
+    for key, value in flatten(dataclasses.asdict(s)).items():
+        result += f"{key} = {json.dumps(value)}\n"
+    return result
 
-def export_session(s: Session) -> str:
-    return json.dumps(dataclasses.asdict(s), indent = 4, sort_keys = False)
-
 ####################################################################################################
-# Session Import
+# Session Import/Export
 ####################################################################################################
 
 def import_session(s : str) -> Session:
@@ -1113,11 +1141,15 @@ def import_session(s : str) -> Session:
                              data       = json.loads(s),
                              config     = dacite.Config(check_types=True) )
 
+
+def export_session(s: Session) -> str:
+    return json.dumps(dataclasses.asdict(s), indent = 4, sort_keys = False)
+
 ####################################################################################################
 # Format Interpretation
 ####################################################################################################
 
-def interpret_format(s: str) -> tuple[int, int] | None:
+def interpret_format(s: str) -> Size | None:
 
     def interpret_k(s: str, horizontal: bool) -> tuple[int, int]:
         mul = int(s[:-1])
@@ -1149,13 +1181,13 @@ def interpret_format(s: str) -> tuple[int, int] | None:
     else:
         return None
 
-    return w, h
+    return Size(w, h)
 
 ####################################################################################################
 # Quick Arguments -> Settings
 ####################################################################################################
 
-def settings_from_format_and_presets(arg1: str, arg2: str) -> UserSettings:
+def settings_from_format_and_preset(arg1: str, arg2: str) -> UserSettings:
 
     b1 = interpret_format(arg1) is not None
     b2 = interpret_format(arg2) is not None
@@ -1180,80 +1212,96 @@ def settings_from_format_and_presets(arg1: str, arg2: str) -> UserSettings:
 
     return settings
 
-def settings_from_zero_arguments() -> UserSettings:
-    arg1 = DEFAULT_FORMAT
-    arg2 = DEFAULT_PRESET
-    return settings_from_format_and_presets(arg1, arg2)
+#---------------------------------------------------------------------------------------------------
 
-def settings_from_one_argument() -> UserSettings:
-    arg1 = positional_arguments[QuickArgument.format_or_preset_a]
+def settings_from_two_arguments(quick_args: list[str]) -> UserSettings:
+    arg1 = quick_args[QuickArgument.format_or_preset_a]
+    arg2 = quick_args[QuickArgument.format_or_preset_b]
+    return settings_from_format_and_preset(arg1, arg2)
+
+def settings_from_one_argument(quick_args: list[str]) -> UserSettings:
+    arg1 = quick_args[QuickArgument.format_or_preset_a]
     arg2 = DEFAULT_FORMAT if interpret_format(arg1) is None else DEFAULT_PRESET
-    return settings_from_format_and_presets(arg1, arg2)
+    return settings_from_format_and_preset(arg1, arg2)
 
-def settings_from_two_arguments() -> UserSettings:
-   arg1 = positional_arguments[QuickArgument.format_or_preset_a]
-   arg2 = positional_arguments[QuickArgument.format_or_preset_b]
-   return settings_from_format_and_presets(arg1, arg2)
+def settings_from_zero_arguments() -> UserSettings:
+    return settings_from_format_and_preset(DEFAULT_FORMAT, DEFAULT_PRESET)
 
 ####################################################################################################
 # Config Arguments -> Settings
 ####################################################################################################
 
-def parse_int(name: str, s: str) -> int | None:
-    if s == 'auto': return None
+def parse_cycles(name: str, s: str) -> int | Auto | None:
+    if s == 'default' : return None
+    if s == 'auto'    : return Auto()
     try: return int(s)
     except BaseException as e:
         fail(f"the argument '{name}' is not an integer", True, e)
 
-def parse_float(name: str, s: str) -> float | None:
-    if s == 'auto': return None
+def parse_drop(name: str, s: str) -> float | Auto | Full | Root | None:
+    if s == 'default' : return None
+    if s == 'auto'    : return Auto()
+    if s == 'full'    : return Full()
+    if s == 'root'    : return Root()
     try: return float(s)
     except BaseException as e:
         fail(f"the argument '{name}' is not a real", True, e)
 
 def parse_str(_, s: str) -> str | None:
-    if s == 'auto': return None
+    if s == 'default': return None
     return s
 
-def settings_from_config_arguments() -> UserSettings:
+#---------------------------------------------------------------------------------------------------
+
+def settings_from_config_arguments(config_args: list[str]) -> UserSettings:
 
    def feed(arg: ConfigArgument, parser):
-       return parser(arg.name.replace("_", " "), positional_arguments[arg])
+       return parser(arg.name.replace("_", " "), config_args[arg])
 
    return UserSettings \
         ( UserMainSettings  ( feed(ConfigArgument.main_format    , parse_str    ) ,
                               feed(ConfigArgument.main_scaler    , parse_str    ) ,
                               feed(ConfigArgument.main_closure   , parse_str    ) ) ,
-          UserStageSettings ( feed(ConfigArgument.repair_drop    , parse_float  ) ,
+          UserStageSettings ( feed(ConfigArgument.repair_drop    , parse_drop   ) ,
                               feed(ConfigArgument.repair_model   , parse_str    ) ,
-                              feed(ConfigArgument.repair_cycles  , parse_int    ) ) ,
-          UserStageSettings ( feed(ConfigArgument.enhance_drop   , parse_float  ) ,
+                              feed(ConfigArgument.repair_cycles  , parse_cycles ) ) ,
+          UserStageSettings ( feed(ConfigArgument.enhance_drop   , parse_drop   ) ,
                               feed(ConfigArgument.enhance_model  , parse_str    ) ,
-                              feed(ConfigArgument.enhance_cycles , parse_int    ) ) ,
-          UserStageSettings ( feed(ConfigArgument.stylize_drop   , parse_float  ) ,
+                              feed(ConfigArgument.enhance_cycles , parse_cycles ) ) ,
+          UserStageSettings ( feed(ConfigArgument.stylize_drop   , parse_drop   ) ,
                               feed(ConfigArgument.stylize_model  , parse_str    ) ,
-                              feed(ConfigArgument.stylize_cycles , parse_int    ) ) )
+                              feed(ConfigArgument.stylize_cycles , parse_cycles ) ) )
 
 ####################################################################################################
-# Arguments -> Settings
+# User Settings
 ####################################################################################################
 
-settings: UserSettings
+user_settings: UserSettings
 
-def load_settings() -> None:
+def load_user_settings() -> None:
 
-    global settings
+    global user_settings
 
     if len(positional_arguments) == 0:
-        settings = settings_from_zero_arguments()
+        positional_settings = settings_from_zero_arguments()
     elif len(positional_arguments) == 1:
-        settings = settings_from_one_argument()
+        positional_settings = settings_from_one_argument(positional_arguments)
     elif len(positional_arguments) == 2:
-        settings = settings_from_two_arguments()
+        positional_settings = settings_from_two_arguments(positional_arguments)
     elif len(positional_arguments) == len(ConfigArgument):
-        settings = settings_from_config_arguments()
+        positional_settings = settings_from_config_arguments(positional_arguments)
     else:
         fail( "incorrect parameter count")
+
+####################################################################################################
+# Overrides Resolution
+####################################################################################################
+
+def resolve_overrides() -> None:
+    global user_settings
+    override_args     = [override_options.get(arg, "auto") for arg in ConfigArgument]
+    override_settings = settings_from_config_arguments(override_args)
+    user_settings     = enrich_settings(override_settings, user_settings)
 
 ####################################################################################################
 # Preset File
@@ -1261,143 +1309,75 @@ def load_settings() -> None:
 
 def create_preset_file() -> None:
     if loglevel >= LogLevel.text:
-        PRESET_FILE_PATH.write_text(export_settings(settings))
+        PRESET_FILE_PATH.write_text(export_settings(user_settings))
 
 ####################################################################################################
 # Defaults Resolution
 ####################################################################################################
 
+ground_settings: GroundSettings
+
 def resolve_defaults() -> None:
 
-    if settings.main.reduction is None:
-        settings.main.reduction = descale(input_image)
-    if settings.main.closure is None:
-        settings.main.closure = DEFAULT_MAIN_CLOSURE
-    if settings.main.tiling is None:
-        settings.main.tiling = DEFAULT_MAIN_TILING
-    if settings.soft.multiplier is None:
-        settings.soft.multiplier = deduce_multiplier(settings.soft.enhancer, "soft")
-    if settings.soft.divisor is None:
-        settings.soft.divisor = math.sqrt(cast(int, settings.soft.multiplier))
-    if settings.soft.scaler is None:
-        settings.soft.scaler = "bicubic"
-    if settings.hard.multiplier is None:
-        settings.hard.multiplier = deduce_multiplier(settings.hard.enhancer, "hard")
-    if settings.hard.divisor is None:
-        settings.hard.divisor = math.sqrt(cast(int, settings.hard.multiplier))
-    if settings.hard.scaler is None:
-        settings.hard.scaler = "lanczos"
+    default_args = [ DEFAULT_FORMAT        ,
+                     DEFAULT_SCALER        ,
+                     DEFAULT_CLOSURE       ,
+                     "auto"                ,
+                     DEFAULT_REPAIR_MODEL  ,
+                     "auto"                ,
+                     "auto"                ,
+                     DEFAULT_ENHANCE_MODEL ,
+                     1                     ,
+                     "auto"                ,
+                     DEFAULT_STYLIZE_MODEL ,
+                     1                     ]
 
-########################################################################################
-# Overrides Resolution
-########################################################################################
+    default_settings = settings_from_config_arguments(default_args)
+    final_settings   = enrich_settings(user_settings, default_settings)
+    ground_settings  = freeze_settings(final_settings)
 
-def resolve_overrides() -> None:
-
-    def feed(index: FullOptions, parser):
-        x = full_options.get(index, None)
-        if x is None: return None
-        return parser(index.name.replace("_", " "), x)
-
-    settings.main.format = ( feed(FullOptions.main_format, parse_str) or
-                             settings.main.format                      )
-
-    settings.main.reduction = ( feed(FullOptions.main_reduction,with_auto(parse_int)) or
-                                settings.main.reduction                                )
-
-    settings.main.closure = ( feed(FullOptions.main_closure, with_auto(parse_str)) or
-                              settings.main.closure                                 )
-
-    settings.main.tiling = ( feed(FullOptions.main_tiling, with_auto(parse_int)) or
-                             settings.main.tiling                                 )
-
-    settings.soft.enhancer = ( feed(FullOptions.soft_enhancer, parse_str) or
-                               settings.soft.enhancer                      )
-
-    settings.soft.iterations = ( feed(FullOptions.soft_iterations, parse_int) or
-                                 settings.soft.iterations                      )
-
-    settings.soft.multiplier = (feed(FullOptions.soft_multiplier,with_auto(parse_int))or
-                                 settings.soft.multiplier                              )
-
-    settings.soft.divisor = ( feed(FullOptions.soft_divisor, with_auto(parse_float)) or
-                              settings.soft.divisor                                   )
-
-    settings.soft.scaler = ( feed(FullOptions.soft_scaler, with_auto(parse_str)) or
-                             settings.soft.scaler                                 )
-
-    settings.hard.enhancer = ( feed(FullOptions.hard_enhancer, parse_str) or
-                               settings.hard.enhancer                      )
-
-    settings.hard.iterations = ( feed(FullOptions.hard_iterations, parse_int) or
-                                 settings.hard.iterations                      )
-
-    settings.hard.multiplier = (feed(FullOptions.hard_multiplier,with_auto(parse_int))or
-                                 settings.hard.multiplier                              )
-
-    settings.hard.divisor = ( feed(FullOptions.hard_divisor, with_auto(parse_float)) or
-                              settings.hard.divisor                                   )
-
-    settings.hard.scaler = ( feed(FullOptions.hard_scaler, with_auto(parse_str)) or
-                             settings.hard.scaler                                 )
-
-########################################################################################
+####################################################################################################
 # Dimensions Computation
-########################################################################################
+####################################################################################################
 
-output_width    : int
-output_height   : int
-main_multiplier : float
+output_size     : Size
+overall_scaling : float
 
-def compute_dimensions() -> None:
+def compute_format() -> None:
 
-    global output_width
-    global output_height
-    global main_multiplier
+    global output_size
+    global overall_scaling
 
-    f = interpret_format(settings.main.format)
+    size = interpret_format(ground_settings.main.format)
+    if size is None: fail("unrecognized format")
 
-    if f is None:
-        fail("unrecognized format")
+    output_size     = size
+    overall_scaling = size.width / input_size.width
 
-    output_width = f[0]
-    output_height = f[1]
-    main_multiplier = output_width / input_width()
-
-########################################################################################
-# Session Construction
-########################################################################################
+####################################################################################################
+# Session Folder
+####################################################################################################
 
 session: Session
 
 def create_session() -> None:
-
     global session
+    session = Session ( CallInfo(INVOCATION_STAMP, SOFTWARE_VERSION, loglevel.name)   ,
+                        ImageInfo(input_mode, input_size.width, input_size.height)    ,
+                        ImageInfo(output_mode, output_size.width, output_size.height) ,
+                        ground_settings                                               )
 
-    stamp = f"{INVOCATION_DATE}--{INVOCATION_TIME}--{INVOCATION_USEC}"
-
-    session = Session (
-
-        Invocation(stamp, SOFTWARE_VERSION, savelevel().name)   ,
-        ImageInfo(input_mode, input_width(), input_height())  ,
-        ImageInfo(output_file_path.suffix.lower()[1:] , output_width, output_height) ,
-        settings
-    )
-
-########################################################################################
-# Session Recording
-########################################################################################
+####################################################################################################
+# Session File
+####################################################################################################
 
 def create_session_file() -> None:
+    if loglevel >= LogLevel.text:
+        SESSION_FILE_PATH.write_text(export_session(session))
 
-    if savelevel() >= SaveLevel.text:
-
-        with open(SESSION_FILE_PATH, "w") as session_handle:
-            session_handle.write(export_session(session))
-
-########################################################################################
+####################################################################################################
 # Disjoint Settings Validation
-########################################################################################
+####################################################################################################
 
 def disjoint_settings_validation() -> None:
 
