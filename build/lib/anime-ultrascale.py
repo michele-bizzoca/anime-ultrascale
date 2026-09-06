@@ -9,20 +9,21 @@ import atexit
 import re
 import math
 import json
-import textwrap
-import dataclasses
-import subprocess
-import traceback
-import signal
 
 #---------------------------------------------------------------------------------------------------
 
 import dacite
 import pyvips
+import textwrap
 import psutil
+import dataclasses
+import subprocess
+import traceback
 import numpy
+import signal
 import skimage
-import scipy
+import ssim
+import PIL.Image
 
 #---------------------------------------------------------------------------------------------------
 
@@ -194,9 +195,9 @@ class Scaler(Enum):
     lanczos  = "lanczos"
 
 class Comparer(Enum):
-    ssim   = "ssim"
-    pcsim  = "pcsim"
-    gmsim  = "gmsim"
+    ssim = "ssim"
+    msss = "msss"
+    cwss = "cwss"
 
 class Drop(Enum):
     auto = "auto"
@@ -980,10 +981,10 @@ def prepare_io() -> None:
 
     temp = pyvips.Image.new_from_file(str(input_file_path), access = "sequential")
     iformat = str(input_file_path.suffix.lower()[1:])
-    imode = cast(str, temp.interpretation)
+    imode = temp.interpretation
     ialpha = 'alpha' if temp.hasalpha() else 'opaque'
     input_mode  = f"{iformat}--{imode}--{ialpha}"
-    input_size = Size(temp.width, temp.height)
+    input_size = Size(temp.width(), temp.height())
     input_image  = load(Load(input_size), input_file_path).copy_memory()
 
     if ialpha == 'alpha' and extension(output_file_path) in OPAQUE_EXTENSIONS:
@@ -1268,7 +1269,6 @@ def process_settings() -> None:
     if size is None: fail("invalid format")
     output_size = size
     overall_scaling = output_size.width / input_size.width
-
     model_names = { Model.repair : ground_settings.repair.model  ,
                     Model.enhance: ground_settings.enhance.model ,
                     Model.stylize: ground_settings.stylize.model }
@@ -1282,7 +1282,6 @@ def process_settings() -> None:
             fail(f"missing {model.name} model's weights (.bin)")
         if not (MODEL_FOLDER_PATH / (model_names[model] + '.param')).is_file():
             fail(f"missing {model.name} model's parameters (.param)")
-
     if ground_settings.repair.drop  is 1: ground_settings.repair.drop  = Drop.unit
     if ground_settings.enhance.drop is 1: ground_settings.enhance.drop = Drop.unit
     if ground_settings.stylize.drop is 1: ground_settings.stylize.drop = Drop.unit
@@ -1383,79 +1382,58 @@ def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
 # Descaling
 ####################################################################################################
 
-def gmsim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
-    sigma = 1.0
-    k     = 1e-6
-    gamma = 0.5
-    def gradient_magnitude(image: numpy.ndarray) -> numpy.ndarray:
-        image = image.astype(numpy.float64, copy=False)
-        gx = scipy.ndimage.gaussian_filter(image, sigma, order=(0, 1))
-        gy = scipy.ndimage.gaussian_filter(image, sigma, order=(1, 0))
-        return numpy.hypot(gx, gy)
-    g_ref = gradient_magnitude(reference) ** gamma
-    g_can = gradient_magnitude(candidate) ** gamma
-    similarity_map = (2.0 * g_ref * g_can + k) / (g_ref ** 2 + g_can ** 2 + k)
-    return numpy.mean(similarity_map)
-
-def pcsim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
-    coefficient_sigma = 1.0
-    window_sigma      = 3.0
-    stabilizer        = 1e-6
-    gf: Final = scipy.ndimage.gaussian_filter
-    x, y = reference.astype(numpy.float64), candidate.astype(numpy.float64)
-    def coefficients(image):
-        return ( gf(image, coefficient_sigma, order=(0, 1))      +
-                 1j * gf(image, coefficient_sigma, order=(1, 0)) )
-    cx, cy = coefficients(x), coefficients(y)
-    cross = cx * numpy.conj(cy)
-    local_cross = ( gf(cross.real, window_sigma)      +
-                    1j * gf(cross.imag, window_sigma) )
-    energy = gf(numpy.abs(cross), window_sigma)
-    coherence = (numpy.abs(local_cross) + stabilizer) / (energy + stabilizer)
-    return numpy.sum(coherence * energy) / numpy.sum(energy)
-
-def ssim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
-    return skimage.metrics.structural_similarity(reference, candidate, data_range = 255)
-
-def sim(reference: numpy.ndarray, candidate: numpy.ndarray, comparer: Comparer) -> float:
-    if comparer == Comparer.ssim:
-        return ssim(reference, candidate)
-    elif comparer == Comparer.pcsim:
-        return pcsim(reference, candidate)
-    elif comparer == Comparer.gmsim:
-        return gmsim(reference, candidate)
-    else:
-        raise ValueError
-
 def ndarray(image: pyvips.Image) -> numpy.ndarray:
     return numpy.ndarray( buffer = image.write_to_memory()  ,
                           dtype  = numpy.uint8              ,
                           shape=(image.height, image.width) )
 
 def roundtrip(image: pyvips.Image, div: float) -> pyvips.Image:
-    forth = image.resize(1.0 / div, kernel = scaler_descriptor(Scaler.lanczos))
-    back  = forth.resize(div, kernel = scaler_descriptor(Scaler.lanczos))
-    return back
+    width  = max(1, round(image.width  / div))
+    height = max(1, round(image.height / div))
+    x = image.resize( width / image.width                      ,
+                      height / image.height                    ,
+                      kernel=scaler_descriptor(Scaler.lanczos) )
+    return x.resize (image.width / x.width                    ,
+                     image.height / x.height                  ,
+                     kernel=scaler_descriptor(Scaler.lanczos) )
+
+def similarity(reference: numpy.ndarray, candidate: numpy.ndarray, comparer: Comparer) -> float:
+    if   comparer == Comparer.ssim:
+        return float(skimage.metrics.structural_similarity \
+                         (reference, candidate, data_range = 255))
+    elif comparer == Comparer.msss:
+        return float(skimage.metrics.structural_similarity \
+                         (reference[..., None], candidate[..., None], data_range = 255))
+    elif comparer == Comparer.cwss:
+        return float(ssim.SSIM(PIL.Image.fromarray(reference_)) \
+                         .cw_ssim_value(PIL.Image.fromarray(candidate_)))
+    else:
+        raise ValueError
 
 #---------------------------------------------------------------------------------------------------
 
 def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) -> pyvips.Image:
-    bw = image.copy()
-    bw = bw[:3] if bw.bands > 3 else bw
-    bw = bw.colourspace("b-w").cast("uchar")
+
+    bw   = image.copy()
+    bw   = bw[:3] if bw.bands > 3 else bw
+    bw   = bw.colourspace("b-w").cast("uchar")
+
     ref  = ndarray(bw)
+
     hi_div = 2.0
-    while ( sim(ref, ndarray(roundtrip(bw, hi_div)), unit.comparer) >= DESCALE_SIMILARITY
-            and (round(bw.width / hi_div) >= 1 or round(bw.height / hi_div) >= 1)       ):
+    while ( similarity(ref, ndarray(roundtrip(bw, hi_div))) >= DESCALE_SIMILARITY and
+            (round(bw.width / hi_div) >= 1 or round(bw.height / hi_div) >= 1)       ):
         hi_div *= 2.0
     lo_div = hi_div / 2.0
+
     div = (lo_div + hi_div) / 2.0
     for _ in range(DESCALE_ITERATIONS):
-        b = sim(ref, ndarray(roundtrip(bw, div)), unit.comparer) >= DESCALE_SIMILARITY
+        b = similarity(ref, ndarray(roundtrip(bw, div))) >= DESCALE_SIMILARITY
         lo_div = div if     b else lo_div
         hi_div = div if not b else hi_div
         div = (lo_div + hi_div) / 2.0
-    return image.resize(1 / div, kernel = scaler_descriptor(unit.scaler)).copy_memory()
+
+    return image.resize(1 / div, scaler_descriptor(unit.scaler)).copy_memory()
 
 ####################################################################################################
 # Shorthands
