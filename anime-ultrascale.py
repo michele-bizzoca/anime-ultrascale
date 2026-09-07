@@ -66,29 +66,28 @@ TEMP_OUTPUT_FILE   : Final = "output.png"
 #---------------------------------------------------------------------------------------------------
 
 DEFAULT_FORMAT        : Final = "4k"
-DEFAULT_SCALER        : Final = "lanczos"
-DEFAULT_DESCALER      : Final = "ssim"
-DEFAULT_TARGET        : Final = "95"
 DEFAULT_CLOSURE       : Final = "bicubic"
-DEFAULT_PRESET        : Final = "quality"
-DEFAULT_LOGLEVEL      : Final = "text"
-DEFAULT_TILE_SIZE     : Final = "4"
+DEFAULT_DROP          : Final = "ssim95"
 DEFAULT_REPAIR_MODEL  : Final = "ani2x"
 DEFAULT_ENHANCE_MODEL : Final = "us4x"
 DEFAULT_STYLIZE_MODEL : Final = "rpa4x"
+DEFAULT_CYCLES        : Final = "1"
+DEFAULT_PRESET        : Final = "quality"
+DEFAULT_LOGLEVEL      : Final = "text"
+DEFAULT_TILE_SIZE     : Final = "4"
 
 #---------------------------------------------------------------------------------------------------
 
-MIN_TILE_SIZE : Final = 1
-MAX_TILE_SIZE : Final = 16
-MIN_MPX_LIMIT : Final = 1
-MAX_MPX_LIMIT : Final = 1000
-MIN_DROP      : Final = 1
-MAX_DROP      : Final = 16
-MIN_CYCLES    : Final = 0
-MAX_CYCLES    : Final = 4
-MIN_TARGET    : Final = 80
-MAX_TARGET    : Final = 95
+MIN_SCALE_SCALE    : Final = 1
+MAX_SCALE_SCALE    : Final = 99
+MIN_DESCALE_TARGET : Final = 80
+MAX_DESCALE_TARGET : Final = 95
+MIN_UPSCALE_SCALE  : Final = 1
+MAX_UPSCALE_SCALE  : Final = 16
+MIN_CYCLES         : Final = 0
+MAX_CYCLES         : Final = 4
+MIN_TILE_SIZE      : Final = 1
+MAX_TILE_SIZE      : Final = 16
 
 #---------------------------------------------------------------------------------------------------
 
@@ -98,6 +97,7 @@ OPAQUE_EXTENSIONS  : Final = ["jpg", "jpeg", "bmp"]
 ALPHA_EXTENSIONS   : Final = ["png", "webp", "tif", "tiff"]
 PRESET_EXTENSION   : Final = "preset"
 OUTPUT_PRESET      : Final = "preset"
+DEFAULT_KEYWORD    : Final = "base"
 
 ####################################################################################################
 # Phases
@@ -295,24 +295,25 @@ flags_map: Final            = ( { short_opt(x.name, False) : x for x in list(Fla
 
 @dataclass
 class UpscaleInfo:
-    model : str
-    scale : int
+    algorithm : str
+    scale     : int
 
 @dataclass
 class ScaleInfo:
-    scaler : Scaler
-    scale  : int
+    algorithm : Scaler
+    scale     : int
 
+@dataclass
 class DescaleInfo:
-    comparer : Comparer
-    target   : int
+    algorithm : Comparer
+    scale     : int
 
 #---------------------------------------------------------------------------------------------------
 
 @dataclass
 class UserMainSettings:
-    format  : None | str         = None
-    closure : None | DescaleInfo = None
+    format  : None | str       = None
+    closure : None | ScaleInfo = None
 
 @dataclass
 class UserStageSettings:
@@ -449,11 +450,8 @@ class PhaseForward(Unit):
 
 #---------------------------------------------------------------------------------------------------
 
-def scale_factor(scale: Scale) -> float:
-    return scale.info.scale / 100.00
-
-def target_factor(descale: Descale) -> float:
-    return descale.info.target / 100.00
+def factor(unit: Scale | Descale | Upscale) -> int | float:
+    return unit.info.scale if isinstance(unit, Upscale) else unit.info.scale / 100.00
 
 #---------------------------------------------------------------------------------------------------
 
@@ -468,7 +466,7 @@ def unit_cost(unit: Unit) -> float:
     if isinstance(unit, (Scale, Upscale, Descale, Save, Load)):
         result *= unit.known_size.width * unit.known_size.height
     if isinstance(unit, Scale):
-        result *= scale_factor(unit) ** 2
+        result *= factor(unit) ** 2
     result /= 1000000
     return result
 
@@ -782,7 +780,7 @@ def create_bar(cost: float) -> ProgressBar:
     data  = numpy.random.bytes(2000 * 2000 * 3)
     image = pyvips.Image.new_from_memory(data, 2000, 2000, 3, "uchar")
     start = time.perf_counter()
-    scaler = Scaler(DEFAULT_SCALER)
+    scaler = Scaler(DEFAULT_CLOSURE)
     image.resize(0.5, kernel = scaler_map[scaler]).copy_memory()
     delta = time.perf_counter() - start
     cost_ = unit_cost(Scale(Size(2000, 2000), ScaleInfo(scaler, 50)))
@@ -942,7 +940,7 @@ def scale(unit: Scale, image: pyvips.Image, bar: ProgressBar | None = None) -> p
 
     if bar is not None: start_unit(unit, bar)
 
-    scaled = image.resize(scale_factor(unit), kernel = scaler_map[unit.info.scaler])
+    scaled = image.resize(factor(unit), kernel = scaler_map[unit.info.algorithm])
 
     interrupted    = Event()
     sigint_handler = signal.getsignal(signal.SIGINT)
@@ -1024,6 +1022,46 @@ def unflatten(data: dict[str, object]) -> dict[str, object]:
 # Settings Import/Export
 ####################################################################################################
 
+def closure_to_str(closure: ScaleInfo | None) -> str:
+    if closure is None:
+        return DEFAULT_KEYWORD
+    elif isinstance(closure, ScaleInfo):
+        return closure.algorithm.name + str(closure.scale)
+    else:
+        raise ValueError
+
+def drop_to_str(drop: Drop | ScaleInfo | DescaleInfo | None) -> str:
+    if drop is None:
+        return DEFAULT_KEYWORD
+    elif isinstance(drop, Drop):
+        return drop.name
+    elif isinstance(drop, ScaleInfo):
+        return drop.algorithm.name + str(drop.scale)
+    elif isinstance(drop, DescaleInfo):
+        return drop.algorithm.name + str(drop.scale)
+    else:
+        raise ValueError
+
+def model_to_str(model: UpscaleInfo | None) -> str:
+    if model is None:
+        return DEFAULT_KEYWORD
+    elif isinstance(model, UpscaleInfo):
+        return model.algorithm + str(model.scale)
+    else:
+        raise ValueError
+
+def cycles_to_str(cycles: Cycles | int | None) -> str:
+    if cycles is None:
+        return DEFAULT_KEYWORD
+    elif isinstance(cycles, Cycles):
+        return cycles.name
+    elif isinstance(cycles, int):
+        return str(cycles)
+    else:
+        raise ValueError
+
+#---------------------------------------------------------------------------------------------------
+
 def import_settings(s : str) -> UserSettings:
     s = re.sub(r'^\s*(#.*)?$\n?', '', s, flags = re.MULTILINE)
     s = re.sub(r'^\s*(\w+)\s*=([^#\n]*)(#.*)?$\n?', r'"\1": \2,', s, flags=re.MULTILINE)
@@ -1037,6 +1075,19 @@ def export_settings(s: UserSettings) -> str:
     for key, value in flatten(dataclasses.asdict(s)).items():
         result += f"{key} = {json.dumps(value)}\n"
     return result
+
+def rewind_settings(s: UserSettings) -> list[str]:
+    return [ s.main.format or DEFAULT_KEYWORD ,
+             closure_to_str(s.main.closure)   ,
+             drop_to_str(s.repair.drop)       ,
+             model_to_str(s.repair.model)     ,
+             cycles_to_str(s.repair.cycles)   ,
+             drop_to_str(s.enhance.drop)      ,
+             model_to_str(s.enhance.model)    ,
+             cycles_to_str(s.enhance.cycles)  ,
+             drop_to_str(s.stylize.drop)      ,
+             model_to_str(s.stylize.model)    ,
+             cycles_to_str(s.stylize.cycles)  ]
 
 ####################################################################################################
 # Session Import/Export
@@ -1090,6 +1141,93 @@ def interpret_format(s: str) -> Size | None:
     return Size(w, h)
 
 ####################################################################################################
+# Config Arguments -> Settings
+####################################################################################################
+
+def parse_format(_: str, s: str) -> str | None:
+    if s == DEFAULT_KEYWORD: return None
+    if interpret_format(s) is None:
+        fail("the format is invalid")
+    return s
+
+def parse_closure(name: str, s: str) -> ScaleInfo | None:
+    if s == DEFAULT_KEYWORD: return None
+    match = re.match(r"^([a-zA-Z]+)([0-9]+)$", s)
+    if match is None:
+        fail(f"the argument '{name}' is invalid")
+    name = match.group(1)
+    arg  = int(match.group(2))
+    if arg < MIN_SCALE_SCALE or arg > MAX_SCALE_SCALE:
+        fail(f"the argument '{name}' is invalid")
+    elif name in Scaler.__members__():
+        return ScaleInfo(Scaler[name], arg)
+    fail(f"the argument '{name}' is invalid")
+
+def parse_drop(name: str, s: str) -> Drop | ScaleInfo | DescaleInfo | None:
+    if s == DEFAULT_KEYWORD: return None
+    if s in Drop.__members__() : return Drop[s]
+    match = re.match(r"^([a-zA-Z]+)([0-9]+)$", s)
+    if match is None:
+        fail(f"the argument '{name}' is invalid")
+    name = match.group(1)
+    arg  = int(match.group(2))
+    if name in Scaler.__members__():
+        if arg < MIN_SCALE_SCALE or arg > MAX_SCALE_SCALE:
+            fail(f"the argument '{name}' is invalid")
+        return ScaleInfo(Scaler[name], arg)
+    elif name in Comparer.__members__():
+        if arg < MIN_DESCALE_TARGET or arg > MAX_DESCALE_TARGET:
+            fail(f"the argument '{name}' is invalid")
+        return DescaleInfo(Comparer[name], arg)
+    fail(f"the argument '{name}' is invalid")
+
+def parse_model(name: str, s: str) -> UpscaleInfo | None:
+    if s == DEFAULT_KEYWORD: return None
+    match = re.match(r"^([a-zA-Z]+)([0-9]+)$", s)
+    if match is None:
+        fail(f"the argument '{name}' is invalid")
+    name = match.group(1)
+    arg = int(match.group(2))
+    if arg < MIN_UPSCALE_SCALE or arg > MAX_UPSCALE_SCALE:
+        fail(f"the argument '{name}' is invalid")
+    if not (MODEL_FOLDER_PATH / f"{s}.bin").is_file():
+        fail(f"the model {name}{arg}'s weights (.bin) are missing")
+    if not (MODEL_FOLDER_PATH / f"{s}.param").is_file():
+        fail(f"the model {name}{arg}'s parameters (.param) are missing")
+    return UpscaleInfo(name, arg)
+
+def parse_cycles(name: str, s: str) -> int | Cycles | None:
+    if s == DEFAULT_KEYWORD: return None
+    if s in Cycles.__members__() : return Cycles[s]
+    try: arg = int(s)
+    except ValueError:
+        fail(f"the argument '{name}' is invalid")
+    if arg < MIN_CYCLES or arg > MAX_CYCLES:
+        fail(f"the argument '{name}' is invalid")
+    return arg
+
+#---------------------------------------------------------------------------------------------------
+
+def settings_from_config_arguments(config_args: list[str]) -> UserSettings:
+
+   def feed(arg: ConfigArgument, parser):
+       return parser(arg.name.replace("_", " "), config_args[arg])
+
+   return UserSettings \
+        ( UserMainSettings  ( feed(ConfigArgument.main_format    , parse_format   ) ,
+                              feed(ConfigArgument.main_closure   , parse_closure  ) ) ,
+          UserStageSettings ( feed(ConfigArgument.repair_drop    , parse_drop     ) ,
+                              feed(ConfigArgument.repair_model   , parse_model    ) ,
+                              feed(ConfigArgument.repair_cycles  , parse_cycles   ) ) ,
+          UserStageSettings ( feed(ConfigArgument.enhance_drop   , parse_drop     ) ,
+                              feed(ConfigArgument.enhance_model  , parse_model    ) ,
+                              feed(ConfigArgument.enhance_cycles , parse_cycles   ) ) ,
+          UserStageSettings ( feed(ConfigArgument.stylize_drop   , parse_drop     ) ,
+                              feed(ConfigArgument.stylize_model  , parse_model    ) ,
+                              feed(ConfigArgument.stylize_cycles , parse_cycles   ) ) )
+
+
+####################################################################################################
 # Quick Arguments -> Settings
 ####################################################################################################
 
@@ -1113,7 +1251,12 @@ def settings_from_format_and_preset(arg1: str, arg2: str) -> UserSettings:
         if not preset_path.is_file():
             fail("the specified preset is unavailable")
 
-    settings = import_settings(preset_path.read_text())
+    imported = import_settings(preset_path.read_text())
+    rewind   = rewind_settings(imported)
+    settings = settings_from_config_arguments(rewind)
+
+    if interpret_format(format_) is None:
+        fail("the format is invalid")
     settings.main.format = format_
 
     return settings
@@ -1132,60 +1275,6 @@ def settings_from_one_argument(quick_args: list[str]) -> UserSettings:
 
 def settings_from_zero_arguments() -> UserSettings:
     return settings_from_format_and_preset(DEFAULT_FORMAT, DEFAULT_PRESET)
-
-####################################################################################################
-# Config Arguments -> Settings
-####################################################################################################
-
-def parse_cycles(name: str, s: str) -> int | Cycles | None:
-    if s == 'base' : return None
-    if s in Cycles : return Cycles(s)
-    try: return int(s)
-    except Exception as e: fail(f"the argument '{name}' is invalid", True, e)
-
-def parse_drop(name: str, s: str) -> float | Drop | None:
-    if s == 'base' : return None
-    if s  in Drop  : return Drop(s)
-    try: return float(s)
-    except Exception as e: fail(f"the argument '{name}' is invalid", True, e)
-
-def parse_scaler(name: str, s: str) -> Scaler | None:
-    if s == 'base': return None
-    try: return Scaler(s)
-    except Exception as e: fail(f"the argument '{name}' is invalid", True, e)
-
-def parse_comparer(name: str, s: str) -> Comparer | None:
-    if s == 'base': return None
-    try: return Comparer(s)
-    except Exception as e: fail(f"the argument '{name}' is invalid", True, e)
-
-def parse_model(_: str, s: str) -> str | None:
-    if s == 'base': return None
-    return s
-
-def parse_format(_: str, s: str) -> str | None:
-    if s == 'base': return None
-    return s
-
-#---------------------------------------------------------------------------------------------------
-
-def settings_from_config_arguments(config_args: list[str]) -> UserSettings:
-
-   def feed(arg: ConfigArgument, parser):
-       return parser(arg.name.replace("_", " "), config_args[arg])
-
-   return UserSettings \
-        ( UserMainSettings  ( feed(ConfigArgument.main_format    , parse_format   ) ,
-                              feed(ConfigArgument.main_closure   , parse_closure  ) ) ,
-          UserStageSettings ( feed(ConfigArgument.repair_drop    , parse_drop     ) ,
-                              feed(ConfigArgument.repair_model   , parse_model    ) ,
-                              feed(ConfigArgument.repair_cycles  , parse_cycles   ) ) ,
-          UserStageSettings ( feed(ConfigArgument.enhance_drop   , parse_drop     ) ,
-                              feed(ConfigArgument.enhance_model  , parse_model    ) ,
-                              feed(ConfigArgument.enhance_cycles , parse_cycles   ) ) ,
-          UserStageSettings ( feed(ConfigArgument.stylize_drop   , parse_drop     ) ,
-                              feed(ConfigArgument.stylize_model  , parse_model    ) ,
-                              feed(ConfigArgument.stylize_cycles , parse_cycles   ) ) )
 
 ####################################################################################################
 # User Settings
@@ -1214,7 +1303,7 @@ def load_user_settings() -> None:
 
 def resolve_overrides() -> None:
     global user_settings
-    override_args     = [override_options.get(arg, "auto") for arg in ConfigArgument]
+    override_args     = [override_options.get(arg, DEFAULT_KEYWORD) for arg in ConfigArgument]
     override_settings = settings_from_config_arguments(override_args)
     user_settings     = enrich_settings(override_settings, user_settings)
 
@@ -1227,18 +1316,16 @@ ground_settings: GroundSettings
 def resolve_defaults() -> None:
     global ground_settings
     default_args = [ DEFAULT_FORMAT        ,
-                     DEFAULT_SCALER        ,
-                     DEFAULT_COMPARER      ,
-                     DEFAULT_ENDING        ,
-                     "auto"                ,
+                     DEFAULT_CLOSURE       ,
+                     DEFAULT_DROP          ,
                      DEFAULT_REPAIR_MODEL  ,
-                     "auto"                ,
-                     "auto"                ,
+                     DEFAULT_CYCLES        ,
+                     DEFAULT_DROP          ,
                      DEFAULT_ENHANCE_MODEL ,
-                     1                     ,
-                     "auto"                ,
+                     DEFAULT_CYCLES        ,
+                     DEFAULT_DROP          ,
                      DEFAULT_STYLIZE_MODEL ,
-                     1                     ]
+                     DEFAULT_CYCLES        ]
     default_settings = settings_from_config_arguments(default_args)
     final_settings   = enrich_settings(user_settings, default_settings)
     ground_settings  = freeze_settings(final_settings)
@@ -1253,7 +1340,6 @@ input_image     : pyvips.Image
 output_mode     : str
 output_size     : Size
 output_image    : pyvips.Image
-overall_scaling : float
 
 def process_io() -> None:
     global input_mode
@@ -1285,14 +1371,12 @@ def process_io() -> None:
     output_size  = size
     output_image = input_image.copy_memory()
 
-    overall_scaling = output_size.width / input_size.width
-
 ####################################################################################################
 # Preset File
 ####################################################################################################
 
 def create_preset_file() -> None:
-    if loglevel >= LogLevel.text:
+    if log_level >= LogLevel.text:
         PRESET_FILE_PATH.write_text(export_settings(user_settings))
 
 ####################################################################################################
@@ -1303,49 +1387,19 @@ session: Session
 
 def create_session() -> None:
     global session
-    session = Session ( CallInfo(INVOCATION_STAMP, SOFTWARE_VERSION, loglevel.name)   ,
-                        ImageInfo(input_mode, input_size.width, input_size.height)    ,
-                        ImageInfo(output_mode, output_size.width, output_size.height) ,
-                        ground_settings                                               ,
-                        ExtraInfo(tile_size)                                          )
+    session = Session ( InvocationInfo(INVOCATION_STAMP, SOFTWARE_VERSION, log_level.name) ,
+                        ImageInfo(input_mode, input_size.width, input_size.height)         ,
+                        ImageInfo(output_mode, output_size.width, output_size.height)      ,
+                        ground_settings                                                    ,
+                        ExtraInfo(tile_size)                                               )
 
 ####################################################################################################
 # Session File
 ####################################################################################################
 
 def create_session_file() -> None:
-    if loglevel >= LogLevel.text:
+    if log_level >= LogLevel.text:
         SESSION_FILE_PATH.write_text(export_session(session))
-
-####################################################################################################
-# Final Settings Validation
-####################################################################################################
-
-def final_settings_validation() -> None:
-    if isinstance(ground_settings.repair.drop, float):
-        if ground_settings.repair.drop < MIN_DROP: fail(f"repair drop  < {MIN_DROP}")
-        if ground_settings.repair.drop > MAX_DROP: fail(f"repair drop  > {MAX_DROP}")
-    if isinstance(ground_settings.repair.drop, float):
-        if ground_settings.repair.drop < MIN_DROP: fail(f"enhance drop < {MIN_DROP}")
-        if ground_settings.repair.drop > MAX_DROP: fail(f"enhance drop > {MAX_DROP}")
-    if isinstance(ground_settings.repair.drop, float):
-        if ground_settings.repair.drop < MIN_DROP: fail(f"stylize drop < {MIN_DROP}")
-        if ground_settings.repair.drop > MAX_DROP: fail(f"stylize drop > {MAX_DROP}")
-    if isinstance(ground_settings.repair.cycles, int):
-        if ground_settings.repair.cycles < MIN_CYCLES: fail(f"repair cycles  < {MIN_CYCLES}")
-        if ground_settings.repair.cycles > MAX_CYCLES: fail(f"repair cycles  > {MAX_CYCLES}")
-    if isinstance(ground_settings.repair.cycles, int):
-        if ground_settings.repair.cycles < MIN_CYCLES: fail(f"enhance cycles < {MIN_CYCLES}")
-        if ground_settings.repair.cycles > MAX_CYCLES: fail(f"enhance cycles > {MAX_CYCLES}")
-    if isinstance(ground_settings.repair.cycles, int):
-        if ground_settings.repair.cycles < MIN_CYCLES: fail(f"stylize cycles < {MIN_CYCLES}")
-        if ground_settings.repair.cycles > MAX_CYCLES: fail(f"stylize cycles > {MAX_CYCLES}")
-
-
-        if not (MODEL_FOLDER_PATH / (model_names[phase] + '.bin')).is_file():
-            fail(f"missing {phase.name} model's weights (.bin)")
-        if not (MODEL_FOLDER_PATH / (model_names[phase] + '.param')).is_file():
-            fail(f"missing {phase.name} model's parameters (.param)")
 
 ####################################################################################################
 # Upscaling Logging
@@ -1355,12 +1409,13 @@ upscaling_file_handle: TextIO
 
 def create_upscaling_file() -> None:
     global upscaling_file_handle
-    if loglevel >= LogLevel.debug:
+    if log_level >= LogLevel.debug:
         upscaling_file_handle = safe_open(UPSCALING_FILE_PATH)
 
 def record_upscaling_progress(line: str) -> None:
-    if loglevel >= LogLevel.debug:
-        fast_print(upscaling_file_handle, f"{now()}: {line}")
+    if log_level >= LogLevel.debug:
+        message = f"{timestring(datetime.now())}: {line}"
+        fast_print(upscaling_file_handle, message)
 
 ####################################################################################################
 # Descaling Logging
@@ -1370,12 +1425,13 @@ descaling_file_handle: TextIO
 
 def create_descaling_file() -> None:
     global descaling_file_handle
-    if loglevel >= LogLevel.debug:
+    if log_level >= LogLevel.debug:
         descaling_file_handle = safe_open(DESCALING_FILE_PATH)
 
 def record_descaling_progress(line: str) -> None:
-    if loglevel >= LogLevel.debug:
-        fast_print(upscaling_file_handle, f"{now()}: {line}")
+    if log_level >= LogLevel.debug:
+        message = f"{timestring(datetime.now())}: {line}"
+        fast_print(upscaling_file_handle, message)
 
 ####################################################################################################
 # Upscaling
@@ -1389,11 +1445,11 @@ def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
                                   "-i", str(TEMP_INPUT_FILE_PATH)          ,
                                   "-o", str(TEMP_OUTPUT_FILE_PATH)         ,
                                   "-m", str(MODEL_FOLDER_PATH)             ,
-                                  "-n", unit.model                         ,
+                                  "-n", unit.info.algorithm                ,
                                   "-t", str(64 * tile_size)                ,
                                   "-g", "0"                                ,
                                   "-j", "1:1:1"                            ,
-                                  "-s", str(model_scale(unit.model))       ],
+                                  "-s", str(factor(unit))                  ],
                                   stdout  = subprocess.PIPE                 ,
                                   stderr  = subprocess.STDOUT               ,
                                   text    = True                            ,
@@ -1451,6 +1507,8 @@ def pcsim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
 def ssim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
     return skimage.metrics.structural_similarity(reference, candidate, data_range = 255)
 
+#---------------------------------------------------------------------------------------------------
+
 def sim(reference: numpy.ndarray, candidate: numpy.ndarray, comparer: Comparer) -> float:
     if comparer == Comparer.ssim:
         return ssim(reference, candidate)
@@ -1467,33 +1525,48 @@ def ndarray(image: pyvips.Image) -> numpy.ndarray:
                           shape=(image.height, image.width) )
 
 def roundtrip(image: pyvips.Image, div: float) -> pyvips.Image:
-    forth = image.resize(1.0 / div, kernel = scaler_descriptor(Scaler(DEFAULT_SCALER)))
-    back  = forth.resize(div, kernel = scaler_descriptor(Scaler(DEFAULT_SCALER)))
+    forth = image.resize(1.0 / div, kernel = scaler_map[Scaler["lanczos"]])
+    back  = forth.resize(div, kernel = scaler_map[Scaler["lanczos"]])
     return back
 
 #---------------------------------------------------------------------------------------------------
 
 def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) -> pyvips.Image:
+    if bar is not None: start_unit(unit, bar)
     bw = image.copy()
     bw = bw[:3] if bw.bands > 3 else bw
     bw = bw.colourspace("b-w").cast("uchar")
     ref  = ndarray(bw)
     hi_div = 2.0
-    while ( sim(ref, ndarray(roundtrip(bw, hi_div)), unit.comparer) >= DESCALE_SIMILARITY
+    bar_n = 0
+    bar_p = 0
+    while ( sim(ref, ndarray(roundtrip(bw, hi_div)), unit.info.algorithm) >= factor(unit)
             and (round(bw.width / hi_div) >= 1 or round(bw.height / hi_div) >= 1)       ):
         hi_div *= 2.0
+        bar_p += 25.0 / 2 ** bar_n
+        if bar is not None: bar.progress(bar_p)
+        bar_n += 1
+    bar_p += 25.0 / 2 ** bar_n
+    if bar is not None: bar.progress(bar_p)
     lo_div = hi_div / 2.0
     div = (lo_div + hi_div) / 2.0
     for _ in range(DESCALE_ITERATIONS):
-        b = sim(ref, ndarray(roundtrip(bw, div)), unit.comparer) >= DESCALE_SIMILARITY
+        b = sim(ref, ndarray(roundtrip(bw, div)), unit.info.algorithm) >= factor(unit)
         lo_div = div if     b else lo_div
         hi_div = div if not b else hi_div
         div = (lo_div + hi_div) / 2.0
-    return image.resize(1 / div, kernel = scaler_descriptor(unit.scaler)).copy_memory()
+        if bar is not None: bar.progress(bar_p + (90 - bar_p) / DESCALE_ITERATIONS)
+    result = image.resize(1 / div, kernel = scaler_map[Scaler["lanczos"]]).copy_memory()
+    if bar is not None: bar.progress(100); bar.stop()
+    return result
 
 ####################################################################################################
 # Shorthands
 ####################################################################################################
+
+
+# overall_scaling: float
+# overall_scaling = output_size.width / input_size.width
 
 # def input_min_length() : return int(min(input_width(), input_height()))
 # def input_max_length() : return int(max(input_width(), input_height()))
