@@ -91,13 +91,14 @@ MAX_TILE_SIZE      : Final = 16
 
 #---------------------------------------------------------------------------------------------------
 
-PROMPT_WIDTH       : Final = 80
-DESCALE_ITERATIONS : Final = 8
-OPAQUE_EXTENSIONS  : Final = ["jpg", "jpeg", "bmp"]
-ALPHA_EXTENSIONS   : Final = ["png", "webp", "tif", "tiff"]
-PRESET_EXTENSION   : Final = "preset"
-OUTPUT_PRESET      : Final = "preset"
-DEFAULT_KEYWORD    : Final = "base"
+PROMPT_WIDTH         : Final = 80
+DESCALE_ITERATIONS   : Final = 8
+OPAQUE_EXTENSIONS    : Final = ["jpg", "jpeg", "bmp"]
+ALPHA_EXTENSIONS     : Final = ["png", "webp", "tif", "tiff"]
+PRESET_EXTENSION     : Final = "preset"
+OUTPUT_PRESET        : Final = "preset"
+DEFAULT_KEYWORD      : Final = "base"
+DESCALE_APPROX_RATIO : Final = 0.5
 
 ####################################################################################################
 # Invocation Data
@@ -189,9 +190,11 @@ log_level_map: Final = { LogLevel.dry       : ""       ,
 ####################################################################################################
 
 class Phase(Enum):
+    input   = "input"
     repair  = "repair"
     enhance = "enhance"
     stylize = "stylize"
+    output  = "output"
 
 class Scaler(Enum):
     bilinear = "bilinear"
@@ -199,9 +202,9 @@ class Scaler(Enum):
     lanczos  = "lanczos"
 
 class Comparer(Enum):
-    ssim   = "ssim"
-    pcsim  = "pcsim"
-    gmsim  = "gmsim"
+    ssim  = "ssim"
+    psim  = "psim"
+    gsim  = "gsim"
 
 class Drop(Enum):
     auto = "auto"
@@ -328,12 +331,6 @@ def enrich_settings(base: UserSettings, extra: UserSettings) -> UserSettings:
         setattr( getattr(result, n), m, x or y)
     return result
 
-def lookup_user_stage(phase: Phase, settings: UserSettings) -> UserStageSettings:
-    if   phase == Phase.repair : return settings.repair
-    elif phase == Phase.enhance: return settings.enhance
-    elif phase == Phase.stylize: return settings.stylize
-    raise ValueError
-
 #---------------------------------------------------------------------------------------------------
 
 @dataclass
@@ -361,12 +358,6 @@ def freeze_settings(user: UserSettings) -> GroundSettings:
                            GroundStageSettings(** vars(user.repair))  ,
                            GroundStageSettings(** vars(user.enhance)) ,
                            GroundStageSettings(** vars(user.stylize)) )
-
-def lookup_ground_stage(phase: Phase, settings: GroundSettings) -> GroundStageSettings:
-    if   phase == Phase.repair : return settings.repair
-    elif phase == Phase.enhance: return settings.enhance
-    elif phase == Phase.stylize: return settings.stylize
-    raise ValueError
 
 ####################################################################################################
 # Sessions
@@ -396,6 +387,22 @@ class Session:
     settings   : GroundSettings
     extra      : ExtraInfo
 
+#---------------------------------------------------------------------------------------------------
+
+def info_ratio(info: ScaleInfo | DescaleInfo | UpscaleInfo) -> int | float:
+    if isinstance(info, UpscaleInfo):
+       return info.scale
+    elif isinstance(info, ScaleInfo):
+       return info.scale / 100.00
+    elif isinstance(info, DescaleInfo):
+       return DESCALE_APPROX_RATIO
+    raise ValueError
+
+def info_target(info: DescaleInfo) -> int | float:
+    if isinstance(info, UpscaleInfo):
+       return info.scale / 100.0
+    raise ValueError
+
 ####################################################################################################
 # Work Units
 ####################################################################################################
@@ -409,17 +416,21 @@ class Unit:
 @dataclass
 class Scale(Unit):
     known_size : Size
-    info       : ScaleInfo
+    algorithm  : Scaler
+    ratio      : float
 
 @dataclass
 class Upscale(Unit):
     known_size : Size
-    info       : UpscaleInfo
+    algorithm  : str
+    ratio      : int
 
 @dataclass
 class Descale(Unit):
     known_size : Size
-    info       : DescaleInfo
+    algorithm  : Comparer
+    ratio      : float
+    target     : float
 
 @dataclass
 class Save(Unit):
@@ -430,17 +441,16 @@ class Load(Unit):
     known_size : Size
 
 @dataclass
-class StepForward(Unit):
+class Reload(Unit):
     pass
 
 @dataclass
-class PhaseForward(Unit):
-    pass
-
-#---------------------------------------------------------------------------------------------------
-
-def factor(unit: Scale | Descale | Upscale) -> int | float:
-    return unit.info.scale if isinstance(unit, Upscale) else unit.info.scale / 100.00
+class Checkpoint(Unit):
+    known_size   : Size
+    last_unit    : Unit
+    phase        : Phase
+    phase_index  : int
+    global_index : int
 
 #---------------------------------------------------------------------------------------------------
 
@@ -455,7 +465,7 @@ def unit_cost(unit: Unit) -> float:
     if isinstance(unit, (Scale, Upscale, Descale, Save, Load)):
         result *= unit.known_size.width * unit.known_size.height
     if isinstance(unit, Scale):
-        result *= factor(unit) ** 2
+        result *= unit.ratio ** 2
     result /= 1000000
     return result
 
@@ -766,7 +776,7 @@ def create_bar(cost: float) -> ProgressBar:
     scaler = Scaler(DEFAULT_CLOSURE)
     image.resize(0.5, kernel = scaler_map[scaler]).copy_memory()
     delta  = time.perf_counter() - start
-    cost_  = unit_cost(Scale(Size(2000, 2000), ScaleInfo(scaler, 50)))
+    cost_  = unit_cost(Scale(Size(2000, 2000), scaler, 0.5))
     mpxs   = cost_ / delta
     return ProgressBar(cost, mpxs, log_bar_progress)
 
@@ -906,7 +916,7 @@ def scale(unit: Scale, image: pyvips.Image, bar: ProgressBar | None = None) -> p
     interrupted    = Event()
     sigint_handler = signal.getsignal(signal.SIGINT)
     percentage     = -1
-    scaled         = image.resize(factor(unit), kernel = scaler_map[unit.info.algorithm])
+    scaled         = image.resize(unit.ratio, kernel = scaler_map[unit.algorithm])
 
     def update_interrupt(image: pyvips.Image, _) -> None:
         if interrupted.is_set(): image.set_kill(True)
@@ -981,8 +991,7 @@ def closure_to_str(closure: ScaleInfo | None) -> str:
         return DEFAULT_KEYWORD
     elif isinstance(closure, ScaleInfo):
         return closure.algorithm.name + str(closure.scale)
-    else:
-        raise ValueError
+    raise ValueError
 
 def drop_to_str(drop: Drop | ScaleInfo | DescaleInfo | None) -> str:
     if drop is None:
@@ -993,16 +1002,14 @@ def drop_to_str(drop: Drop | ScaleInfo | DescaleInfo | None) -> str:
         return drop.algorithm.name + str(drop.scale)
     elif isinstance(drop, DescaleInfo):
         return drop.algorithm.name + str(drop.scale)
-    else:
-        raise ValueError
+    raise ValueError
 
 def model_to_str(model: UpscaleInfo | None) -> str:
     if model is None:
         return DEFAULT_KEYWORD
     elif isinstance(model, UpscaleInfo):
         return model.algorithm + str(model.scale)
-    else:
-        raise ValueError
+    raise ValueError
 
 def cycles_to_str(cycles: Cycles | int | None) -> str:
     if cycles is None:
@@ -1011,8 +1018,7 @@ def cycles_to_str(cycles: Cycles | int | None) -> str:
         return cycles.name
     elif isinstance(cycles, int):
         return str(cycles)
-    else:
-        raise ValueError
+    raise ValueError
 
 #---------------------------------------------------------------------------------------------------
 
@@ -1392,19 +1398,19 @@ def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
 
     if bar is not None: start_unit(unit, bar)
 
-    process = subprocess.Popen( [ str(RENV_FILE_PATH)                      ,
-                                  "-i", str(TEMP_INPUT_FILE_PATH)          ,
-                                  "-o", str(TEMP_OUTPUT_FILE_PATH)         ,
-                                  "-m", str(MODEL_FOLDER_PATH)             ,
-                                  "-n", unit.info.algorithm                ,
-                                  "-t", str(64 * tile_size)                ,
-                                  "-g", "0"                                ,
-                                  "-j", "1:1:1"                            ,
-                                  "-s", str(factor(unit))                  ],
-                                  stdout  = subprocess.PIPE                 ,
-                                  stderr  = subprocess.STDOUT               ,
-                                  text    = True                            ,
-                                  bufsize = 1                               )
+    process = subprocess.Popen( [ str(RENV_FILE_PATH)              ,
+                                  "-i", str(TEMP_INPUT_FILE_PATH)  ,
+                                  "-o", str(TEMP_OUTPUT_FILE_PATH) ,
+                                  "-m", str(MODEL_FOLDER_PATH)     ,
+                                  "-n", unit.algorithm             ,
+                                  "-t", str(64 * tile_size)        ,
+                                  "-g", "0"                        ,
+                                  "-j", "1:1:1"                    ,
+                                  "-s", str(unit.ratio)            ],
+                                  stdout  = subprocess.PIPE         ,
+                                  stderr  = subprocess.STDOUT       ,
+                                  text    = True                    ,
+                                  bufsize = 1                       )
 
     if process.stdout is None:
         fail("failed to capture the runner's output")
@@ -1424,7 +1430,7 @@ def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
 # Descaling
 ####################################################################################################
 
-def gmsim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
+def gsim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
     sigma = 1.0
     k     = 1e-6
     gamma = 0.5
@@ -1438,7 +1444,7 @@ def gmsim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
     similarity_map = (2.0 * g_ref * g_can + k) / (g_ref ** 2 + g_can ** 2 + k)
     return numpy.mean(similarity_map)
 
-def pcsim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
+def psim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
     coefficient_sigma = 1.0
     window_sigma      = 3.0
     stabilizer        = 1e-6
@@ -1461,14 +1467,13 @@ def ssim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
 #---------------------------------------------------------------------------------------------------
 
 def sim(reference: numpy.ndarray, candidate: numpy.ndarray, comparer: Comparer) -> float:
-    if comparer == Comparer.ssim:
+    if   comparer == Comparer.ssim:
         return ssim(reference, candidate)
-    elif comparer == Comparer.pcsim:
-        return pcsim(reference, candidate)
-    elif comparer == Comparer.gmsim:
-        return gmsim(reference, candidate)
-    else:
-        raise ValueError
+    elif comparer == Comparer.psim:
+        return psim(reference, candidate)
+    elif comparer == Comparer.gsim:
+        return gsim(reference, candidate)
+    raise ValueError
 
 def ndarray(image: pyvips.Image) -> numpy.ndarray:
     return numpy.ndarray( buffer = image.write_to_memory()  ,
@@ -1491,8 +1496,8 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
     hi_div = 2.0
     bar_n = 0
     bar_p = 0
-    while ( sim(ref, ndarray(roundtrip(bw, hi_div)), unit.info.algorithm) >= factor(unit)
-            and (round(bw.width / hi_div) >= 1 or round(bw.height / hi_div) >= 1)       ):
+    while ( sim(ref, ndarray(roundtrip(bw, hi_div)), unit.algorithm) >= unit.target
+            and (round(bw.width / hi_div) >= 1 or round(bw.height / hi_div) >= 1)        ):
         hi_div *= 2.0
         bar_p += 25.0 / 2 ** bar_n
         if bar is not None: bar.progress(bar_p)
@@ -1502,17 +1507,17 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
     lo_div = hi_div / 2.0
     div = (lo_div + hi_div) / 2.0
     for _ in range(DESCALE_ITERATIONS):
-        b = sim(ref, ndarray(roundtrip(bw, div)), unit.info.algorithm) >= factor(unit)
+        b = sim(ref, ndarray(roundtrip(bw, div)), unit.algorithm) >= unit.target
         lo_div = div if     b else lo_div
         hi_div = div if not b else hi_div
         div = (lo_div + hi_div) / 2.0
-        if bar is not None: bar.progress(bar_p + (90 - bar_p) / DESCALE_ITERATIONS)
-    result = image.resize(1 / div, kernel = scaler_map[Scaler["lanczos"]]).copy_memory()
-    if bar is not None: bar.progress(100); bar.stop()
+        if bar is not None: bar.progress(bar_p + (90.0 - bar_p) / DESCALE_ITERATIONS)
+    result = image.resize(1.0 / div, kernel = scaler_map[Scaler["lanczos"]]).copy_memory()
+    if bar is not None: bar.progress(100.0); bar.stop()
     return result
 
 ####################################################################################################
-# Shorthands
+#
 ####################################################################################################
 
 
@@ -1544,116 +1549,123 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
 # def base_hard_width()  : return int(output_width   / settings.hard.divisor)
 # def base_hard_height() : return int(output_height  / settings.hard.divisor)
 
+# def step_forward(unit: StepForward, bar: ProgressBar):
+#
+#     global forward_j
+#     global forward_k
+#
+#     phase, steps = PHASES[run_i]
+#     step         = steps[forward_j]
+#
+#     if unit.save:
+#
+#         save_unit = Save(unit.width, unit.height)
+#
+#         if step == "export":
+#             save(save_unit, current_image, output_file_path, bar)
+#         else:
+#             file_name = "_".join((f"{(forward_k + 1):02}",
+#                                   f"{phase}-phase",
+#                                   f"{step}-step",
+#                                   f"{unit.width}x{unit.height}.png"))
+#             file_path = SESSION_FOLDER_PATH / file_name
+#             save(save_unit, current_image, file_path, bar)
+#
+#         forward_k += 1
+#
+#     log(f"a{'n' if step[0] in 'aeiou' else ''} {step} "
+#         f"step in the {phase} phase has been completed "
+#         f"with output size {unit.width}x{unit.height}")
+#
+#     if step == "export":
+#         log(f"the output image has been saved, {current_width()}x"
+#             f"{current_height()}px {output_mode}")
+#
+#     forward_j = (forward_j + 1) % len(steps)
+#
+# def phase_forward(unit : PhaseForward, bar: ProgressBar) -> None:
+#
+#     global run_i
+#     global forward_j
+#
+#     log(f"the {PHASES[run_i][0]} phase has been completed")
+#
+#     run_i += 1
+#     forward_j = 0
+
+# def plan_phase_forward() -> None:
+#     execution_plan.append(PhaseForward())
+#
+# def plan_step_forward(save_level_: SaveLevel) -> None:
+#     width, height = current_size()
+#     execution_plan.append(StepForward(savelevel() >= save_level_, width, height))
+
 ####################################################################################################
-# Run System
+# Checkpoints
 ####################################################################################################
 
-run_i: int
-run_j: int
-run_k: int
+def checkpoint(unit: Checkpoint) -> None:
+    pass
 
-def init_run_system() -> None:
+####################################################################################################
+# Planning
+####################################################################################################
 
-    global run_i
-    global forward_j
-    global forward_k
+plan: list[Unit]
 
-    run_i = 0
-    forward_j = 0
-    forward_k = 0
+#---------------------------------------------------------------------------------------------------
 
-def step_forward(unit: StepForward, bar: ProgressBar):
+def current_size() -> Size:
+    for i in range(len(plan) - 1, -1, -1):
+        unit = plan[i]
+        if isinstance(unit, (Scale, Upscale, Descale)):
+            return Size(round(unit.known_size.width  * unit.ratio),
+                        round(unit.known_size.height * unit.ratio))
+        elif isinstance(unit, Reload):
+            return output_size
+    return input_size
 
-    global forward_j
-    global forward_k
+def last_scaling() -> Unit:
+    for i in range(len(plan) - 1, -1, -1):
+        unit = plan[i]
+        if isinstance(unit, (Scale, Upscale, Descale)):
+            return unit
+    raise RuntimeError
 
-    phase, steps = PHASES[run_i]
-    step         = steps[forward_j]
+#---------------------------------------------------------------------------------------------------
 
-    if unit.save:
+def init_planning() -> None:
+    global plan
+    plan = []
 
-        save_unit = Save(unit.width, unit.height)
+def plan_scale(scaler: Scaler, arg: float | Size) -> None:
+    size = current_size()
+    if isinstance(arg, Size):
+        k = float(arg.width) / size.width
+    elif isinstance(arg, float):
+        k = arg
+    else:
+        raise ValueError
+    unit = Scale(size, scaler, k)
+    plan.append(unit)
 
-        if step == "export":
-            save(save_unit, current_image, output_file_path, bar)
-        else:
-            file_name = "_".join((f"{(forward_k + 1):02}",
-                                  f"{phase}-phase",
-                                  f"{step}-step",
-                                  f"{unit.width}x{unit.height}.png"))
-            file_path = SESSION_FOLDER_PATH / file_name
-            save(save_unit, current_image, file_path, bar)
+def plan_upscale(model: str, ratio: int) -> None:
+    size = current_size()
+    unit = Upscale(size, model, ratio)
+    plan.append(unit)
 
-        forward_k += 1
+def plan_descale(comparer: Comparer, target: float) -> None:
+    size = current_size()
+    unit = Descale(size, comparer, DESCALE_APPROX_RATIO, target)
+    plan.append(unit)
 
-    log(f"a{'n' if step[0] in 'aeiou' else ''} {step} "
-        f"step in the {phase} phase has been completed "
-        f"with output size {unit.width}x{unit.height}")
+def plan_reload() -> None:
+    plan.append(Reload())
 
-    if step == "export":
-        log(f"the output image has been saved, {current_width()}x"
-            f"{current_height()}px {output_mode}")
-
-    forward_j = (forward_j + 1) % len(steps)
-
-def phase_forward(unit : PhaseForward, bar: ProgressBar) -> None:
-
-    global run_i
-    global forward_j
-
-    log(f"the {PHASES[run_i][0]} phase has been completed")
-
-    run_i += 1
-    forward_j = 0
-
-########################################################################################
-# Planners
-########################################################################################
-
-execution_plan: list[Unit]
-
-def init_plan_system() -> None:
-
-    global execution_plan
-
-    execution_plan = []
-
-def current_size() -> tuple[int, int]:
-
-    for i in range(len(execution_plan) - 1, -1, -1):
-
-        unit = execution_plan[i]
-
-        if isinstance(unit, (Scale, Enhance)):
-            return unit.out_width, unit.out_height
-        else:
-            continue
-
-    return input_width(), input_height()
-
-
-def plan_scale(scaler: Scaler, arg: float | tuple[int, int]) -> None:
-    in_width, in_height = current_size()
-    out_width, out_height = ( arg if isinstance(arg, tuple)
-                                  else [ int(in_width * arg),
-                                         int(in_height * arg) ] )
-    multiplier =  float(out_width) / in_width
-    unit = Scale(scaler, multiplier, in_width, in_height, out_width, out_height)
-    execution_plan.append(unit)
-
-def plan_enhance(model: str, multiplier: int) -> None:
-
-    in_width  , in_height  = current_size()
-    out_width , out_height = (int(in_width * multiplier), int(in_height * multiplier))
-    unit = Enhance(model, multiplier, in_width, in_height, out_width, out_height)
-    execution_plan.append(unit)
-
-def plan_phase_forward() -> None:
-    execution_plan.append(PhaseForward())
-
-def plan_step_forward(save_level_: SaveLevel) -> None:
-    width, height = current_size()
-    execution_plan.append(StepForward(savelevel() >= save_level_, width, height))
+def plan_checkpoint(phase: Phase, phase_index: int, global_index: int) -> None:
+    size = current_size()
+    unit = Checkpoint(size, last_scaling(), phase, phase_index, global_index)
+    plan.append(unit)
 
 ########################################################################################
 # Planning - Input Phase
