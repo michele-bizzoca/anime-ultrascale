@@ -100,17 +100,6 @@ OUTPUT_PRESET      : Final = "preset"
 DEFAULT_KEYWORD    : Final = "base"
 
 ####################################################################################################
-# Phases
-####################################################################################################
-
-PHASES : Final = [
-    ( "input"  , [ "import"      , "downscaling" ,          ] ) ,
-    ( "main"   , [ "upscaling"   , "downscaling" ,          ] ) ,
-    ( "soft"   , [ "downscaling" , "upscaling"   ,          ] ) ,
-    ( "hard"   , [ "downscaling" , "upscaling"   ,          ] ) ,
-    ( "output" , [ "downscaling" , "export"      , "saving" ] ) ]
-
-####################################################################################################
 # Invocation Data
 ####################################################################################################
 
@@ -504,7 +493,6 @@ def fast_print(handle:TextIO, message: str) -> None:
 def early_fail( message   : str                     ,
                 suggest   : bool = True             ,
                 exception : Exception | None = None ) -> NoReturn:
-
     suggestion = " Run with --help for usage information."
     text = f"{message[:1].upper()}{message[1:]}.{suggestion if suggest else ''}"
     if exception is not None and DEVELOPMENT_MODE:
@@ -613,15 +601,12 @@ log_level : LogLevel
 tile_size : int
 
 def process_regular_options() -> None:
-
     global log_level
     global tile_size
-
     if RegularOption.log in regular_options.keys():
         values = [level.name for level in LogLevel]
         if regular_options[RegularOption.log] not in values:
             fail("invalid log level")
-
     if RegularOption.tiling in regular_options.keys():
         try:
             n = int(regular_options[RegularOption.tiling])
@@ -631,10 +616,8 @@ def process_regular_options() -> None:
             fail(f"tile size < {MIN_TILE_SIZE}")
         if n > MAX_TILE_SIZE:
             fail(f"tile size > {MAX_TILE_SIZE}")
-
     log_level = LogLevel(regular_options.get(RegularOption.log, DEFAULT_LOGLEVEL))
     tile_size = int(regular_options.get(RegularOption.tiling, DEFAULT_TILE_SIZE))
-
     register(process_regular_options)
 
 ####################################################################################################
@@ -777,14 +760,14 @@ def start_unit(unit: Unit, bar: ProgressBar) -> None:
     bar.start(unit_categories[unit.__class__], unit_cost(unit))
 
 def create_bar(cost: float) -> ProgressBar:
-    data  = numpy.random.bytes(2000 * 2000 * 3)
-    image = pyvips.Image.new_from_memory(data, 2000, 2000, 3, "uchar")
-    start = time.perf_counter()
+    data   = numpy.random.bytes(2000 * 2000 * 3)
+    image  = pyvips.Image.new_from_memory(data, 2000, 2000, 3, "uchar")
+    start  = time.perf_counter()
     scaler = Scaler(DEFAULT_CLOSURE)
     image.resize(0.5, kernel = scaler_map[scaler]).copy_memory()
-    delta = time.perf_counter() - start
-    cost_ = unit_cost(Scale(Size(2000, 2000), ScaleInfo(scaler, 50)))
-    mpxs  = cost_ / delta
+    delta  = time.perf_counter() - start
+    cost_  = unit_cost(Scale(Size(2000, 2000), ScaleInfo(scaler, 50)))
+    mpxs   = cost_ / delta
     return ProgressBar(cost, mpxs, log_bar_progress)
 
 ####################################################################################################
@@ -817,14 +800,13 @@ def load(unit: Load, path: Path, bar: ProgressBar | None = None) -> pyvips.Image
 
     if bar is not None: start_unit(unit, bar)
 
-    loaded = pyvips.Image.new_from_file(str(path), access = "sequential")
-    loaded = loaded.colourspace("srgb")
-    if loaded.bands > 4: loaded = loaded[:4]
-    loaded = loaded.cast("uchar")
-
-    interrupted = Event()
+    interrupted    = Event()
     sigint_handler = signal.getsignal(signal.SIGINT)
-    percentage = -1
+    percentage     = -1
+    loaded         = pyvips.Image.new_from_file(str(path), access = "sequential")
+    loaded         = loaded.colourspace("srgb")
+    loaded         = loaded.cast("uchar")
+    if loaded.bands > 4: loaded = loaded[:4]
 
     def update_interrupt(image: pyvips.Image, _) -> None:
         if interrupted.is_set(): image.set_kill(True)
@@ -836,34 +818,26 @@ def load(unit: Load, path: Path, bar: ProgressBar | None = None) -> pyvips.Image
             percentage = progress.percent
 
     loaded.set_progress(True)
-
     loaded.signal_connect \
         ("preeval", lambda image, progress: record_scaling_progress("load", "preeval", progress))
-
     loaded.signal_connect("eval", update_interrupt)
-
     loaded.signal_connect("eval", update_progress)
-
     loaded.signal_connect \
         ("eval", lambda image, progress: record_scaling_progress("load", "eval", progress))
-
     loaded.signal_connect \
         ("posteval", lambda image, progress: record_scaling_progress("load", "posteval", progress))
-
     signal.signal(signal.SIGINT, lambda signum, frame: interrupted.set())
 
     try:
         if bar is not None: bar.progress(0.0)
         loaded = loaded.copy_memory()
         if bar is not None: bar.progress(100.0)
-
-        if interrupted.is_set(): raise KeyboardInterrupt
-
+        if interrupted.is_set():
+            raise KeyboardInterrupt
     except pyvips.Error:
         if interrupted.is_set():
             raise KeyboardInterrupt from None
         raise
-
     finally:
         signal.signal(signal.SIGINT, sigint_handler)
 
@@ -878,11 +852,10 @@ def save(unit: Save, image: pyvips.Image, path: Path, bar: ProgressBar | None = 
 
     if bar is not None: start_unit(unit, bar)
 
-    copied = image.copy()
-
     interrupted    = Event()
     sigint_handler = signal.getsignal(signal.SIGINT)
     percentage     = -1
+    copied         = image.copy()
 
     def update_interrupt(image: pyvips.Image, _) -> None:
         if interrupted.is_set(): image.set_kill(True)
@@ -894,39 +867,29 @@ def save(unit: Save, image: pyvips.Image, path: Path, bar: ProgressBar | None = 
             percentage = progress.percent
 
     copied.set_progress(True)
-
     copied.signal_connect \
         ("preeval", lambda image, progress: record_scaling_progress("save", "preeval", progress))
-
     copied.signal_connect("eval", update_interrupt)
-
     copied.signal_connect("eval", update_progress)
-
     copied.signal_connect \
         ("eval", lambda image, progress: record_scaling_progress("save", "eval", progress))
-
     copied.signal_connect \
         ("posteval", lambda image, progress: record_scaling_progress("save", "posteval", progress))
-
     signal.signal(signal.SIGINT, lambda signum, frame: interrupted.set())
 
     try:
         kwargs = {}
         if extension(path) == "webp":
             kwargs["lossless"] = True
-            kwargs["effort"] = 4
-
+            kwargs["effort"]   = 4
         if bar is not None: bar.progress(0.0)
         copied.write_to_file(str(path), **kwargs)
         if bar is not None: bar.progress(100.0)
-
         if interrupted.is_set(): raise KeyboardInterrupt
-
     except pyvips.Error:
         if interrupted.is_set():
             raise KeyboardInterrupt from None
         raise
-
     finally:
         signal.signal(signal.SIGINT, sigint_handler)
 
@@ -940,11 +903,10 @@ def scale(unit: Scale, image: pyvips.Image, bar: ProgressBar | None = None) -> p
 
     if bar is not None: start_unit(unit, bar)
 
-    scaled = image.resize(factor(unit), kernel = scaler_map[unit.info.algorithm])
-
     interrupted    = Event()
     sigint_handler = signal.getsignal(signal.SIGINT)
     percentage     = -1
+    scaled         = image.resize(factor(unit), kernel = scaler_map[unit.info.algorithm])
 
     def update_interrupt(image: pyvips.Image, _) -> None:
         if interrupted.is_set(): image.set_kill(True)
@@ -956,34 +918,26 @@ def scale(unit: Scale, image: pyvips.Image, bar: ProgressBar | None = None) -> p
             percentage = progress.percent
 
     scaled.set_progress(True)
-
     scaled.signal_connect \
         ("preeval", lambda image, progress: record_scaling_progress("scale", "preeval", progress))
-
     scaled.signal_connect("eval", update_interrupt)
-
     scaled.signal_connect("eval", update_progress)
-
     scaled.signal_connect \
         ("eval", lambda image, progress: record_scaling_progress("scale", "eval", progress))
-
     scaled.signal_connect \
         ("posteval", lambda image, progress: record_scaling_progress("scale", "posteval", progress))
-
     signal.signal(signal.SIGINT, lambda signum, frame: interrupted.set())
 
     try:
         if bar is not None: bar.progress(0.0)
         scaled = scaled.copy_memory()
         if bar is not None: bar.progress(100.0)
-
-        if interrupted.is_set(): raise KeyboardInterrupt
-
+        if interrupted.is_set():
+            raise KeyboardInterrupt
     except pyvips.Error:
         if interrupted.is_set():
             raise KeyboardInterrupt from None
         raise
-
     finally:
         signal.signal(signal.SIGINT, sigint_handler)
 
@@ -1107,7 +1061,6 @@ def export_session(s: Session) -> str:
 ####################################################################################################
 
 def interpret_format(s: str) -> Size | None:
-
     def interpret_k(s: str, horizontal: bool) -> tuple[int, int]:
         mul = int(s[:-1])
         k1  = (960.0 if horizontal else 540.0) * mul / input_size.width
@@ -1116,7 +1069,6 @@ def interpret_format(s: str) -> Size | None:
         w   = round(input_size.width * k)
         h   = round(input_size.height * k)
         return w, h
-
     if re.fullmatch("w[0-9]+", s):
         w = int(s[1:])
         h = round(float(w) * input_size.height / input_size.width)
@@ -1137,7 +1089,6 @@ def interpret_format(s: str) -> Size | None:
         w, h = interpret_k(s[:-1], s[-1:] in "hH")
     else:
         return None
-
     return Size(w, h)
 
 ####################################################################################################
