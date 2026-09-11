@@ -2,10 +2,6 @@
 # Imports
 ####################################################################################################
 
-from __future__ import annotations
-
-#---------------------------------------------------------------------------------------------------
-
 import sys
 import os
 import time
@@ -34,8 +30,8 @@ from pathlib import Path
 from enum import IntEnum, Enum
 from datetime import datetime
 from dataclasses import dataclass
-from threading import Event # Thread, Lock
-from typing import NoReturn, Final, TextIO, Any, cast, NamedTuple, Callable
+from threading import Event
+from typing import NoReturn, Final, TextIO, Any, cast, Callable
 
 ####################################################################################################
 # Constants
@@ -253,8 +249,8 @@ class QuickArgument(IntEnum):
     format_or_preset_b = 1
 
 class RegularOption(IntEnum):
-    log    = 0
-    tiling = 1
+    log  = 0
+    tile = 1
 
 class Flag(IntEnum):
     quiet = 0
@@ -498,9 +494,9 @@ def fast_print(handle:TextIO, message: str) -> None:
 # Failing Early
 ####################################################################################################
 
-def early_fail( message   : str                     ,
-                suggest   : bool = True             ,
-                exception : Exception | None = None ) -> NoReturn:
+def early_fail( message   : str                         ,
+                suggest   : bool = True                 ,
+                exception : BaseException | None = None ) -> NoReturn:
     suggestion = " Run with --help for usage information."
     text = f"{message[:1].upper()}{message[1:]}.{suggestion if suggest else ''}"
     if exception is not None and DEVELOPMENT_MODE:
@@ -509,15 +505,15 @@ def early_fail( message   : str                     ,
         raise SystemExit(text)
 
 ####################################################################################################
-# Information Dispatch
+# Information Check
 ####################################################################################################
 
-def information_dispatch() -> None:
+def information_check() -> None:
     if len(sys.argv) == 1 or len(sys.argv) == 2 and sys.argv[1] in ["-h", "--help"]:
         print_help(); exit()
     if len(sys.argv) == 2 and sys.argv[1] in ["-v", "--version"]:
         print(SOFTWARE_VERSION); exit()
-    register(information_dispatch)
+    register(information_check)
 
 ####################################################################################################
 # Early Checks
@@ -615,9 +611,9 @@ def process_regular_options() -> None:
         values = [level.name for level in LogLevel]
         if regular_options[RegularOption.log] not in values:
             fail("invalid log level")
-    if RegularOption.tiling in regular_options.keys():
+    if RegularOption.tile in regular_options.keys():
         try:
-            n = int(regular_options[RegularOption.tiling])
+            n = int(regular_options[RegularOption.tile])
         except Exception as e:
             fail("tile size is not an integer", True, e)
         if n < MIN_TILE_SIZE:
@@ -625,7 +621,7 @@ def process_regular_options() -> None:
         if n > MAX_TILE_SIZE:
             fail(f"tile size > {MAX_TILE_SIZE}")
     log_level = LogLevel(regular_options.get(RegularOption.log, DEFAULT_LOGLEVEL))
-    tile_size = int(regular_options.get(RegularOption.tiling, DEFAULT_TILE_SIZE))
+    tile_size = int(regular_options.get(RegularOption.tile, DEFAULT_TILE_SIZE))
     register(process_regular_options)
 
 ####################################################################################################
@@ -678,9 +674,9 @@ def log(message: str, level: LogLevel = LogLevel.text, now_ : str | None = None)
 # Failing
 ####################################################################################################
 
-def fail( message   : str                     ,
-          suggest   : bool = True             ,
-          exception : Exception | None = None ) -> NoReturn:
+def fail( message   : str                         ,
+          suggest   : bool = True                 ,
+          exception : BaseException | None = None ) -> NoReturn:
 
     log(message, LogLevel.error)
     record_exit_message(False, message)
@@ -1298,7 +1294,7 @@ def resolve_defaults() -> None:
     ground_settings  = freeze_settings(final_settings)
 
 ####################################################################################################
-# I/O Processing
+# I/O Info Processing
 ####################################################################################################
 
 input_mode      : str
@@ -1308,7 +1304,7 @@ output_mode     : str
 output_size     : Size
 current_image   : pyvips.Image
 
-def process_io() -> None:
+def process_io_info() -> None:
     global input_mode
     global input_size
     global input_image
@@ -1347,24 +1343,15 @@ def create_preset_file() -> None:
         PRESET_FILE_PATH.write_text(export_settings(user_settings))
 
 ####################################################################################################
-# Session Folder
+# Session File
 ####################################################################################################
 
-session: Session
-
-def create_session() -> None:
-    global session
+def create_session_file() -> None:
     session = Session ( InvocationInfo(INVOCATION_STAMP, SOFTWARE_VERSION, log_level.name) ,
                         ImageInfo(input_mode, input_size.width, input_size.height)         ,
                         ImageInfo(output_mode, output_size.width, output_size.height)      ,
                         ground_settings                                                    ,
                         ExtraInfo(tile_size)                                               )
-
-####################################################################################################
-# Session File
-####################################################################################################
-
-def create_session_file() -> None:
     if log_level >= LogLevel.text:
         SESSION_FILE_PATH.write_text(export_session(session))
 
@@ -1683,39 +1670,29 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
 # Dry Check
 ####################################################################################################
 
-def dry_check() -> None:
+def dry_check(cost: float) -> None:
 
-    if savelevel() <= SaveLevel.dry and Flags.quiet not in flags:
+    if log_level <= LogLevel.dry and Flag.quiet not in flags:
         print("")
-        print(f" tile size      : {cast(int, settings.main.tiling) * 64} px")
-        print(f" input format   : {input_width()} x {input_height()} px")
+        print(f" input format   : {input_size.width} x {input_size.height} px")
         print(f" input mode     : {input_mode.replace('--', ', ')}")
-        print(f" inversion      : {cast(str, settings.soft.scaler)} (" 
-              f"{1 / cast(float, settings.main.reduction):.2f}".rstrip("0").rstrip(".")
-              + "x)")
-        print(f" normalization  : {settings.soft.enhancer} (" 
-              f"{cast(float, settings.main.reduction) * main_multiplier:.2f}"
-                  .rstrip("0").rstrip(".")
-              + "x)")
-        print(f" conservative")
-        print(f"    downscaling : {cast(str, settings.soft.scaler)} ("
-              f"{1 / cast(float, settings.soft.divisor):.2f}".rstrip("0").rstrip(".")
-              + "x)")
-        print(f"    upscaling   : {settings.soft.enhancer} "
-              f"({cast(int, settings.soft.multiplier)}x)")
-        print(f"    iterations  : {settings.soft.iterations}")
-        print(f" strong")
-        print(f"    downscaling : {cast(str, settings.hard.scaler)} ("
-              f"{1 / cast(float, settings.hard.divisor):.2f}".rstrip("0").rstrip(".")
-              + "x)")
-        print(f"    upscaling   : {settings.hard.enhancer} "
-              f"({cast(int, settings.hard.multiplier)}x)")
-        print(f"    iterations  : {settings.hard.iterations}")
-        print(f" finisher       : {cast(str, settings.main.closure)}")
-        print(f" output format  : {output_width} x {output_height} px")
+        print(f" closure        : {closure_to_str(ground_settings.main.closure)}")
+        print(f" repair")
+        print(f"    downscaling : {drop_to_str(ground_settings.repair.drop)}")
+        print(f"    upscaling   : {model_to_str(ground_settings.repair.model)}")
+        print(f"    cycles      : {cycles_to_str(ground_settings.repair.cycles)}")
+        print(f" enhance")
+        print(f"    downscaling : {drop_to_str(ground_settings.enhance.drop)}")
+        print(f"    upscaling   : {model_to_str(ground_settings.enhance.model)}")
+        print(f"    cycles      : {cycles_to_str(ground_settings.enhance.cycles)}")
+        print(f" stylize")
+        print(f"    downscaling : {drop_to_str(ground_settings.stylize.drop)}")
+        print(f"    upscaling   : {model_to_str(ground_settings.stylize.model)}")
+        print(f"    cycles      : {cycles_to_str(ground_settings.stylize.cycles)}")
+        print(f" output format  : {output_size.width} x {output_size.height} px")
         print(f" output mode    : {output_mode.replace('--', ', ')}")
-        print(f" total work     : "
-              f"{sum([unit_cost(unit) for unit in execution_plan]):.2f} Mpx")
+        print(f" tile size      : {int(regular_options[RegularOption.tile]) * 64} px")
+        print(f" total work     : {cost:.2f} Mpx")
         print("")
 
     exit()
@@ -1727,115 +1704,82 @@ def dry_check() -> None:
 def main():
 
     try:
-        sort_options()
+        information_check()
+        early_checks()
+        sort_arguments()
+        process_regular_options()
         create_session_folder()
-        create_exit_file()
-        create_log_file()
-
+        prepare_exit_file()
+        prepare_log_file()
     except SystemExit as e:
         raise e
-
     except KeyboardInterrupt as e:
-        early_fail(" └─→ Interrupted by user", False, e)
-
+        early_fail(" └─→ Keyboard Interrupt", False, e)
     except BaseException as e:
-        early_fail("unexpected error", False, e)
+        early_fail("Unexpected Error", False, e)
 
     try:
-        log( "options have been sorted" ,
-             SaveLevel.text             ,
-             sort_options_now           )
-        log( "the session folder has been created" ,
-             SaveLevel.text                        ,
-             create_session_folder_now             )
-        log( "the outcome record system is operative" ,
-             SaveLevel.text                           ,
-             create_exit_file_now                     )
-        log( "the main logging system is operative" ,
-             SaveLevel.text                         ,
-             create_log_file_now                    )
+        log("information check performed", LogLevel.text, recall(information_check))
+        log("early checks performed", LogLevel.text, recall(early_checks))
+        log("early checks performed", LogLevel.text, recall(early_checks))
+        log("arguments have been organized", LogLevel.text, recall(sort_arguments))
+        log("regular options have been processed", LogLevel.text, recall(process_regular_options))
+        log("session folder created", LogLevel.text, recall(create_session_folder))
+        log("exit file prepared", LogLevel.text, recall(prepare_exit_file))
+        log("log file prepared", LogLevel.text, recall(prepare_log_file))
         create_invocation_file()
-        log("the invocation file has been written")
+        log("invocation file written")
         create_temp_folder()
-        log("the temporary file system is operative")
-        create_scaling_file()
-        log("the scaling's logging system is operative")
-        create_scaling_ai_file()
-        log("the AI scaling's logging system is operative")
-        io_existence_checks()
-        log("I/O existence checks have been passed")
-        internal_existence_checks()
-        log("internal existence checks have been passed")
-        load_input_image()
-        log("the input image has been loaded")
-        load_settings()
-        log("settings have been loaded")
-        create_presets_file()
-        log("the presets file has been written")
-        resolve_defaults()
-        log("defaults have been resolved")
-        resolve_overrides()
-        log("overrides have been resolved")
-        compute_dimensions()
-        log("output dimensions have been computed")
-        create_session()
-        log("the session has been created")
-        create_session_file()
-        log("the session file has been written")
-        disjoint_settings_validation()
-        log("settings have passed disjoint validation")
-        combined_settings_validation()
-        log("settings have passed combined validation")
-        init_run_system()
-        log("the run system is operative")
+        log("temporary folder created")
         create_progress_file()
-        log("the progress logging system is operative")
-        init_plan_system()
-        log("the plan system is operative")
-        plan_input_phase()
-        log("the input phase has been planned")
-        plan_main_phase()
-        log("the main phase has been planned")
-        plan_soft_phase()
-        log("the soft phase has been planned")
-        plan_hard_phase()
-        log("the hard phase has been planned")
-        plan_output_phase()
-        log("the output phase has been planned")
-        dry_check()
-        log("the dry check has been performed")
-
+        log("progress file created")
+        prepare_scaling_file()
+        log("scaling file prepared")
+        load_user_settings()
+        log("user settings loaded")
+        resolve_overrides()
+        log("overrides resolved")
+        resolve_defaults()
+        log("defaults resolved")
+        process_io_info()
+        log("io information processed")
+        create_preset_file()
+        log("preset file created")
+        create_session_file()
+        log("session_file_created")
+        create_upscaling_file()
+        log("upscaling file created")
+        create_descaling_file()
+        log("descaling file created")
     except SystemExit as e:
         raise e
-
     except KeyboardInterrupt as e:
-        record_outcome("interrupt")
-        fail(" └─→ Interrupted by user", False, e)
-
+        record_exit_message(False, "Keyboard Interrupt")
+        fail(" └─→ Keyboard Interrupt", False, e)
     except BaseException as e:
-        record_outcome(traceback.format_exc())
-        fail("unexpected error", False, e)
+        record_exit_message(False, traceback.format_exc())
+        fail("Unexpected Error", False, e)
 
     try:
-        execute_plan()
-        log("the plan has been executed")
-
+        cost = process(True)
+        log("execution plan created")
+        dry_check(cost)
+        log("dry check performed")
+        process(False, create_bar(cost))
+        log("execution plan executed")
     except SystemExit as e:
         raise e
-
     except KeyboardInterrupt as e:
-        if Flags.quiet not in flags: print()
-        record_outcome("interrupt")
-        fail(" └─→ Interrupted by user", False, e)
-
+        if Flag.quiet not in flags: print()
+        record_exit_message(False, "Keyboard Interrupt")
+        fail(" └─→ Keyboard Interrupt", False, e)
     except BaseException as e:
-        if Flags.quiet not in flags: print()
-        record_outcome(traceback.format_exc())
-        fail("unexpected error", False, e)
-
+        if Flag.quiet not in flags: print()
+        record_exit_message(False, traceback.format_exc())
+        fail("Unexpected Error", False, e)
     else:
-        if Flags.quiet not in flags: print()
-        record_outcome("success")
+        if Flag.quiet not in flags: print()
+        record_exit_message(True, "")
 
 ####################################################################################################
 # Help
