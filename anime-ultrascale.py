@@ -2,6 +2,10 @@
 # Imports
 ####################################################################################################
 
+from __future__ import annotations
+
+#---------------------------------------------------------------------------------------------------
+
 import sys
 import os
 import time
@@ -14,7 +18,6 @@ import dataclasses
 import subprocess
 import traceback
 import signal
-import string
 
 #---------------------------------------------------------------------------------------------------
 
@@ -92,7 +95,7 @@ MAX_TILE_SIZE      : Final = 16
 #---------------------------------------------------------------------------------------------------
 
 PROMPT_WIDTH         : Final = 80
-DESCALE_ITERATIONS   : Final = 8
+DESCALE_ITERATIONS   : Final = 6
 OPAQUE_EXTENSIONS    : Final = ["jpg", "jpeg", "bmp"]
 ALPHA_EXTENSIONS     : Final = ["png", "webp", "tif", "tiff"]
 PRESET_EXTENSION     : Final = "preset"
@@ -152,15 +155,27 @@ EXTENSIONS: Final = ALPHA_EXTENSIONS + OPAQUE_EXTENSIONS
 
 #---------------------------------------------------------------------------------------------------
 
-class Size(NamedTuple): width: int; height: int
-
-#---------------------------------------------------------------------------------------------------
-
 def extension(path: str | Path) -> str: return Path(path).suffix.lower()[1:]
 
 #---------------------------------------------------------------------------------------------------
 
 def timestring(dt: datetime): return dt.strftime('on %Y/%m/%d at %H:%M:%S and %f')
+
+####################################################################################################
+# Picture Size
+####################################################################################################
+
+@dataclass
+class Size:
+
+    width  : int
+    height : int
+
+    def __mul__(self, k: float)  -> Size:
+        return Size(round(self.width * k), round(self.height * k))
+
+    def __add__(self, x: Size) -> Size:
+        return Size(self.width + x.width, self.height + x.height)
 
 ####################################################################################################
 # Log Levels
@@ -190,11 +205,9 @@ log_level_map: Final = { LogLevel.dry       : ""       ,
 ####################################################################################################
 
 class Phase(Enum):
-    input   = "input"
     repair  = "repair"
     enhance = "enhance"
     stylize = "stylize"
-    output  = "output"
 
 class Scaler(Enum):
     bilinear = "bilinear"
@@ -205,15 +218,6 @@ class Comparer(Enum):
     ssim  = "ssim"
     psim  = "psim"
     gsim  = "gsim"
-
-class Drop(Enum):
-    auto = "auto"
-    full = "full"
-    root = "root"
-    unit = "unit"
-
-class Cycles(Enum):
-    auto = "auto"
 
 #---------------------------------------------------------------------------------------------------
 
@@ -232,16 +236,17 @@ class BasicArgument(IntEnum):
 
 class ConfigArgument(IntEnum):
     main_format    = 0
-    main_closure   = 1
-    repair_drop    = 2
-    repair_model   = 3
-    repair_cycles  = 4
-    enhance_drop   = 5
-    enhance_model  = 6
-    enhance_cycles = 7
-    stylize_drop   = 8
-    stylize_model  = 9
-    stylize_cycles = 1
+    main_helper    = 1
+    main_closer    = 2
+    repair_drop    = 3
+    repair_model   = 4
+    repair_cycles  = 5
+    enhance_drop   = 6
+    enhance_model  = 7
+    enhance_cycles = 8
+    stylize_drop   = 9
+    stylize_model  = 10
+    stylize_cycles = 11
 
 class QuickArgument(IntEnum):
     format_or_preset_a = 0
@@ -285,33 +290,42 @@ flags_map: Final            = ( { short_opt(x.name, False) : x for x in list(Fla
 # Settings
 ####################################################################################################
 
-@dataclass
-class UpscaleInfo:
-    algorithm : str
-    scale     : int
+class SpecialDrop(Enum):
+    unit = "unit"
+
+class SpecialScale(Enum):
+    root = "root"
+    full = "full"
 
 @dataclass
-class ScaleInfo:
-    algorithm : Scaler
-    scale     : int
+class UpscaleData:
+    name  : str
+    scale : int
+    auto  : bool
 
 @dataclass
-class DescaleInfo:
-    algorithm : Comparer
-    scale     : int
+class ScaleData:
+    scaler : Scaler
+    scale  : int | SpecialScale
+
+@dataclass
+class DescaleData:
+    comparer   : Comparer
+    similarity : int
 
 #---------------------------------------------------------------------------------------------------
 
 @dataclass
 class UserMainSettings:
-    format  : None | str       = None
-    closure : None | ScaleInfo = None
+    format  : None | str    = None
+    helper  : None | Scaler = None
+    closer  : None | Scaler = None
 
 @dataclass
 class UserStageSettings:
-    drop    : Drop   | None | ScaleInfo | DescaleInfo = None
-    model   :          None | UpscaleInfo             = None
-    cycles  : Cycles | None | int                     = None
+    drop    : None | SpecialDrop   | ScaleData | DescaleData = None
+    model   : None | UpscaleData                             = None
+    cycles  : None | int                                     = None
 
 @dataclass
 class UserSettings:
@@ -335,14 +349,15 @@ def enrich_settings(base: UserSettings, extra: UserSettings) -> UserSettings:
 
 @dataclass
 class GroundMainSettings:
-    format  : str
-    closure : ScaleInfo
+    format : str
+    helper : Scaler
+    closer : Scaler
 
 @dataclass
 class GroundStageSettings:
-    drop    : Drop | ScaleInfo | DescaleInfo
-    model   : UpscaleInfo
-    cycles  : Cycles | int
+    drop    : SpecialDrop | ScaleData | DescaleData
+    model   : UpscaleData
+    cycles  : int
 
 @dataclass
 class GroundSettings:
@@ -387,87 +402,73 @@ class Session:
     settings   : GroundSettings
     extra      : ExtraInfo
 
-#---------------------------------------------------------------------------------------------------
-
-def info_ratio(info: ScaleInfo | DescaleInfo | UpscaleInfo) -> int | float:
-    if isinstance(info, UpscaleInfo):
-       return info.scale
-    elif isinstance(info, ScaleInfo):
-       return info.scale / 100.00
-    elif isinstance(info, DescaleInfo):
-       return DESCALE_APPROX_RATIO
-    raise ValueError
-
-def info_target(info: DescaleInfo) -> int | float:
-    if isinstance(info, UpscaleInfo):
-       return info.scale / 100.0
-    raise ValueError
-
 ####################################################################################################
 # Work Units
 ####################################################################################################
 
-@dataclass
-class Unit:
-    def __new__(cls, *args, **kwargs):
-        if cls is Unit: raise TypeError
-        return super().__new__(cls)
+#---------------------------------------------------------------------------------------------------
 
-@dataclass
-class Scale(Unit):
-    known_size : Size
-    algorithm  : Scaler
-    ratio      : float
-
-@dataclass
-class Upscale(Unit):
-    known_size : Size
-    algorithm  : str
-    ratio      : int
-
-@dataclass
-class Descale(Unit):
-    known_size : Size
-    algorithm  : Comparer
-    ratio      : float
-    target     : float
-
-@dataclass
-class Save(Unit):
-    known_size : Size
-
-@dataclass
-class Load(Unit):
-    known_size : Size
-
-@dataclass
-class Reload(Unit):
-    pass
-
-@dataclass
-class Checkpoint(Unit):
-    known_size   : Size
-    last_unit    : Unit
-    phase        : Phase
-    phase_index  : int
-    global_index : int
+class Step(Enum):
+    open    = "open"
+    scale   = "scale"
+    descale = "descale"
+    upscale = "upscale"
 
 #---------------------------------------------------------------------------------------------------
 
-unit_weights: Final = { Unit : 0.00 , Upscale : 1.00 , Scale      : 0.10 , Descale      : 0.50 ,
-                        Save : 0.30 , Load    : 0.05 , StepForward: 0.00 , PhaseForward : 0.00 }
+@dataclass
+class Unit:
+    pass
 
-unit_categories: Final = { Unit : 0 , Upscale : 1 , Scale       : 2 , Descale      : 3 ,
-                           Save : 4 , Load    : 5 , StepForward : 6 , PhaseForward : 7 }
+@dataclass
+class Scale(Unit):
+    scaler : Scaler
+    scale  : float
 
-def unit_cost(unit: Unit) -> float:
-    result =  unit_weights[unit.__class__]
-    if isinstance(unit, (Scale, Upscale, Descale, Save, Load)):
-        result *= unit.known_size.width * unit.known_size.height
+@dataclass
+class Upscale(Unit):
+    name  : str
+    scale : float
+
+@dataclass
+class Descale(Unit):
+    comparer   : Comparer
+    scaler     : Scaler
+    similarity : float
+
+@dataclass
+class Save(Unit):
+    path: Path
+
+@dataclass
+class Load(Unit):
+    path: Path
+
+#---------------------------------------------------------------------------------------------------
+
+unit_weights: Final = { Unit : 0.00  , Upscale : 1.00 , Scale :  0.10 , Descale : 0.50 ,
+                        Save : 0.30  , Load    : 0.05                                  }
+
+unit_categories: Final = { Unit : 0 , Upscale : 1 , Scale: 2 , Descale : 3 ,
+                           Save : 4 , Load    : 5                          }
+
+#---------------------------------------------------------------------------------------------------
+
+def unit_cost(size: Size, unit: Unit) -> float:
+    result  = unit_weights[unit.__class__]
+    result *= size.width * size.height
     if isinstance(unit, Scale):
-        result *= unit.ratio ** 2
+        result *= unit.scale ** 2
     result /= 1000000
     return result
+
+def unit_approx_scale(unit: Unit) -> float:
+    if isinstance(unit, (Scale, Upscale)):
+        return unit.scale
+    elif isinstance(unit, Descale):
+        return DESCALE_APPROX_RATIO
+    else:
+        return 1.00
 
 ####################################################################################################
 # Time Recording
@@ -766,8 +767,8 @@ class ProgressBar:
 # Progress Bar Feeding
 ####################################################################################################
 
-def start_unit(unit: Unit, bar: ProgressBar) -> None:
-    bar.start(unit_categories[unit.__class__], unit_cost(unit))
+def start_unit(size: Size, unit: Unit, bar: ProgressBar) -> None:
+    bar.start(unit_categories[unit.__class__], unit_cost(size, unit))
 
 def create_bar(cost: float) -> ProgressBar:
     data   = numpy.random.bytes(2000 * 2000 * 3)
@@ -776,7 +777,7 @@ def create_bar(cost: float) -> ProgressBar:
     scaler = Scaler(DEFAULT_CLOSURE)
     image.resize(0.5, kernel = scaler_map[scaler]).copy_memory()
     delta  = time.perf_counter() - start
-    cost_  = unit_cost(Scale(Size(2000, 2000), scaler, 0.5))
+    cost_  = unit_cost(Size(2000, 2000), Scale(scaler, 0.5))
     mpxs   = cost_ / delta
     return ProgressBar(cost, mpxs, log_bar_progress)
 
@@ -806,17 +807,17 @@ def record_scaling_progress(job: str, event: str, progress: Any) -> None:
 # Loading
 ####################################################################################################
 
-def load(unit: Load, path: Path, bar: ProgressBar | None = None) -> pyvips.Image:
-
-    if bar is not None: start_unit(unit, bar)
+def load(unit: Load, bar: ProgressBar | None = None) -> pyvips.Image:
 
     interrupted    = Event()
     sigint_handler = signal.getsignal(signal.SIGINT)
     percentage     = -1
-    loaded         = pyvips.Image.new_from_file(str(path), access = "sequential")
+    loaded         = pyvips.Image.new_from_file(str(unit.path), access = "sequential")
     loaded         = loaded.colourspace("srgb")
     loaded         = loaded.cast("uchar")
     if loaded.bands > 4: loaded = loaded[:4]
+
+    if bar is not None: start_unit(Size(loaded.width, loaded.height), unit, bar)
 
     def update_interrupt(image: pyvips.Image, _) -> None:
         if interrupted.is_set(): image.set_kill(True)
@@ -858,9 +859,9 @@ def load(unit: Load, path: Path, bar: ProgressBar | None = None) -> pyvips.Image
 # Saving
 ####################################################################################################
 
-def save(unit: Save, image: pyvips.Image, path: Path, bar: ProgressBar | None = None) -> None:
+def save(unit: Save, image: pyvips.Image, bar: ProgressBar | None = None) -> None:
 
-    if bar is not None: start_unit(unit, bar)
+    if bar is not None: start_unit(Size(image.width, image.height), unit, bar)
 
     interrupted    = Event()
     sigint_handler = signal.getsignal(signal.SIGINT)
@@ -889,11 +890,11 @@ def save(unit: Save, image: pyvips.Image, path: Path, bar: ProgressBar | None = 
 
     try:
         kwargs = {}
-        if extension(path) == "webp":
+        if extension(unit.path) == "webp":
             kwargs["lossless"] = True
             kwargs["effort"]   = 4
         if bar is not None: bar.progress(0.0)
-        copied.write_to_file(str(path), **kwargs)
+        copied.write_to_file(str(unit.path), **kwargs)
         if bar is not None: bar.progress(100.0)
         if interrupted.is_set(): raise KeyboardInterrupt
     except pyvips.Error:
@@ -909,14 +910,19 @@ def save(unit: Save, image: pyvips.Image, path: Path, bar: ProgressBar | None = 
 # Scaling
 ####################################################################################################
 
-def scale(unit: Scale, image: pyvips.Image, bar: ProgressBar | None = None) -> pyvips.Image:
+def scale( unit: Scale                    ,
+           image: pyvips.Image            ,
+           vscale : float | None = None   ,
+           bar: ProgressBar | None = None ) -> pyvips.Image:
 
-    if bar is not None: start_unit(unit, bar)
+    if bar is not None: start_unit(Size(image.width, image.height), unit, bar)
 
     interrupted    = Event()
     sigint_handler = signal.getsignal(signal.SIGINT)
     percentage     = -1
-    scaled         = image.resize(unit.ratio, kernel = scaler_map[unit.algorithm])
+    scaled         = image.resize( unit.scale                       ,
+                                   vscale = vscale or unit.scale    ,
+                                   kernel = scaler_map[unit.scaler] )
 
     def update_interrupt(image: pyvips.Image, _) -> None:
         if interrupted.is_set(): image.set_kill(True)
@@ -986,36 +992,39 @@ def unflatten(data: dict[str, object]) -> dict[str, object]:
 # Settings Import/Export
 ####################################################################################################
 
-def closure_to_str(closure: ScaleInfo | None) -> str:
-    if closure is None:
+def closer_to_str(closer: Scaler | None) -> str:
+    if closer is None:
         return DEFAULT_KEYWORD
-    elif isinstance(closure, ScaleInfo):
-        return closure.algorithm.name + str(closure.scale)
+    elif isinstance(closer, Scaler):
+        return closer.name
     raise ValueError
 
-def drop_to_str(drop: Drop | ScaleInfo | DescaleInfo | None) -> str:
+def drop_to_str(drop: SpecialDrop | ScaleData | DescaleData | None) -> str:
     if drop is None:
         return DEFAULT_KEYWORD
-    elif isinstance(drop, Drop):
+    elif isinstance(drop, SpecialDrop):
         return drop.name
-    elif isinstance(drop, ScaleInfo):
-        return drop.algorithm.name + str(drop.scale)
-    elif isinstance(drop, DescaleInfo):
-        return drop.algorithm.name + str(drop.scale)
+    elif isinstance(drop, ScaleData):
+        if isinstance(drop.scale, SpecialScale):
+            return f"{drop.scaler.name}-{drop.scale.name}"
+        elif isinstance(drop.scale, int):
+            return drop.scaler.name + str(drop.scale)
+        else:
+            raise ValueError
+    elif isinstance(drop, DescaleData):
+        return drop.comparer.name + str(drop.similarity)
     raise ValueError
 
-def model_to_str(model: UpscaleInfo | None) -> str:
+def model_to_str(model: UpscaleData | None) -> str:
     if model is None:
         return DEFAULT_KEYWORD
-    elif isinstance(model, UpscaleInfo):
-        return model.algorithm + str(model.scale)
+    elif isinstance(model, UpscaleData):
+        return model.name + str(model.scale) + ('-auto' if model.auto else '')
     raise ValueError
 
-def cycles_to_str(cycles: Cycles | int | None) -> str:
+def cycles_to_str(cycles: int | None) -> str:
     if cycles is None:
         return DEFAULT_KEYWORD
-    elif isinstance(cycles, Cycles):
-        return cycles.name
     elif isinstance(cycles, int):
         return str(cycles)
     raise ValueError
@@ -1038,7 +1047,7 @@ def export_settings(s: UserSettings) -> str:
 
 def rewind_settings(s: UserSettings) -> list[str]:
     return [ s.main.format or DEFAULT_KEYWORD ,
-             closure_to_str(s.main.closure)   ,
+             closer_to_str(s.main.closer)   ,
              drop_to_str(s.repair.drop)       ,
              model_to_str(s.repair.model)     ,
              cycles_to_str(s.repair.cycles)   ,
@@ -1107,7 +1116,7 @@ def parse_format(_: str, s: str) -> str | None:
         fail("the format is invalid")
     return s
 
-def parse_closure(name: str, s: str) -> ScaleInfo | None:
+def parse_closer(name: str, s: str) -> ScaleData | None:
     if s == DEFAULT_KEYWORD: return None
     match = re.match(r"^([a-zA-Z]+)([0-9]+)$", s)
     if match is None:
@@ -1117,50 +1126,54 @@ def parse_closure(name: str, s: str) -> ScaleInfo | None:
     if arg < MIN_SCALE_SCALE or arg > MAX_SCALE_SCALE:
         fail(f"the argument '{name}' is invalid")
     elif name in Scaler.__members__():
-        return ScaleInfo(Scaler[name], arg)
+        return ScaleData(Scaler[name], arg)
     fail(f"the argument '{name}' is invalid")
 
-def parse_drop(name: str, s: str) -> Drop | ScaleInfo | DescaleInfo | None:
-    if s == DEFAULT_KEYWORD: return None
-    if s in Drop.__members__() : return Drop[s]
+def parse_drop(name: str, s: str) -> SpecialDrop | ScaleData | DescaleData | None:
+    if   s == DEFAULT_KEYWORD: return None
+    elif s == SpecialDrop.unit.name : return SpecialDrop.unit
+    elif s in [ f"{x.name}-{y.name}" for x in Scaler.__members__()
+                                     for y in SpecialScale.__members__() ]:
+        [algorithm, scale] = s.split("-")
+        return ScaleData(Scaler[algorithm], SpecialScale[scale])
     match = re.match(r"^([a-zA-Z]+)([0-9]+)$", s)
+    if match is None:
+        fail(f"the argument '{name}' is invalid")
+    algorithm = match.group(1)
+    scale     = int(match.group(2))
+    if algorithm in Scaler.__members__():
+        if scale < MIN_SCALE_SCALE or scale > MAX_SCALE_SCALE:
+            fail(f"the argument '{algorithm}' is invalid")
+        return ScaleData(Scaler[algorithm], scale)
+    elif algorithm in Comparer.__members__():
+        if scale < MIN_DESCALE_TARGET or scale > MAX_DESCALE_TARGET:
+            fail(f"the argument '{algorithm}' is invalid")
+        return DescaleData(Comparer[algorithm], scale)
+    fail(f"the argument '{algorithm}' is invalid")
+
+def parse_model(name: str, s: str) -> UpscaleData | None:
+    if s == DEFAULT_KEYWORD: return None
+    match = re.match(r"^([a-zA-Z]+)([0-9]+)((\\-auto)?)$", s)
     if match is None:
         fail(f"the argument '{name}' is invalid")
     name = match.group(1)
     arg  = int(match.group(2))
-    if name in Scaler.__members__():
-        if arg < MIN_SCALE_SCALE or arg > MAX_SCALE_SCALE:
-            fail(f"the argument '{name}' is invalid")
-        return ScaleInfo(Scaler[name], arg)
-    elif name in Comparer.__members__():
-        if arg < MIN_DESCALE_TARGET or arg > MAX_DESCALE_TARGET:
-            fail(f"the argument '{name}' is invalid")
-        return DescaleInfo(Comparer[name], arg)
-    fail(f"the argument '{name}' is invalid")
-
-def parse_model(name: str, s: str) -> UpscaleInfo | None:
-    if s == DEFAULT_KEYWORD: return None
-    match = re.match(r"^([a-zA-Z]+)([0-9]+)$", s)
-    if match is None:
-        fail(f"the argument '{name}' is invalid")
-    name = match.group(1)
-    arg = int(match.group(2))
+    auto = bool(match.group(2))
     if arg < MIN_UPSCALE_SCALE or arg > MAX_UPSCALE_SCALE:
         fail(f"the argument '{name}' is invalid")
     if not (MODEL_FOLDER_PATH / f"{s}.bin").is_file():
         fail(f"the model {name}{arg}'s weights (.bin) are missing")
     if not (MODEL_FOLDER_PATH / f"{s}.param").is_file():
         fail(f"the model {name}{arg}'s parameters (.param) are missing")
-    return UpscaleInfo(name, arg)
+    return UpscaleData(name, arg, auto)
 
-def parse_cycles(name: str, s: str) -> int | Cycles | None:
+def parse_cycles(name: str, s: str) -> int | None:
     if s == DEFAULT_KEYWORD: return None
-    if s in Cycles.__members__() : return Cycles[s]
     try: arg = int(s)
     except ValueError:
         fail(f"the argument '{name}' is invalid")
     if arg < MIN_CYCLES or arg > MAX_CYCLES:
-        fail(f"the argument '{name}' is invalid")
+        fail(f"the argument '{name}' is out of range")
     return arg
 
 #---------------------------------------------------------------------------------------------------
@@ -1172,7 +1185,7 @@ def settings_from_config_arguments(config_args: list[str]) -> UserSettings:
 
    return UserSettings \
         ( UserMainSettings  ( feed(ConfigArgument.main_format    , parse_format   ) ,
-                              feed(ConfigArgument.main_closure   , parse_closure  ) ) ,
+                              feed(ConfigArgument.main_closer   , parse_closer  ) ) ,
           UserStageSettings ( feed(ConfigArgument.repair_drop    , parse_drop     ) ,
                               feed(ConfigArgument.repair_model   , parse_model    ) ,
                               feed(ConfigArgument.repair_cycles  , parse_cycles   ) ) ,
@@ -1296,7 +1309,7 @@ input_size      : Size
 input_image     : pyvips.Image
 output_mode     : str
 output_size     : Size
-output_image    : pyvips.Image
+current_image   : pyvips.Image
 
 def process_io() -> None:
     global input_mode
@@ -1304,7 +1317,7 @@ def process_io() -> None:
     global input_image
     global output_mode
     global output_size
-    global output_image
+    global current_image
 
     temp = pyvips.Image.new_from_file(str(input_file_path), access="sequential")
 
@@ -1313,7 +1326,7 @@ def process_io() -> None:
     ialpha      = 'alpha' if temp.hasalpha() else 'opaque'
     input_mode  = f"{iext}--{imode}--{ialpha}"
     input_size  = Size(temp.width, temp.height)
-    input_image = load(Load(input_size), input_file_path).copy_memory()
+    input_image = load(Load(input_file_path)).copy_memory()
 
     if ialpha == 'alpha' and extension(output_file_path) in OPAQUE_EXTENSIONS:
         fail(f"the output can't carry input's alpha channel")
@@ -1321,12 +1334,12 @@ def process_io() -> None:
     size = interpret_format(ground_settings.main.format)
     if size is None: fail("the format is invalid")
 
-    oext         = extension(output_file_path)
-    omode        = "srgb"
-    oalpha       = ialpha
-    output_mode  = f"{oext}--{omode}--{oalpha}"
-    output_size  = size
-    output_image = input_image.copy_memory()
+    oext          = extension(output_file_path)
+    omode         = "srgb"
+    oalpha        = ialpha
+    output_mode   = f"{oext}--{omode}--{oalpha}"
+    output_size   = size
+    current_image = input_image.copy_memory()
 
 ####################################################################################################
 # Preset File
@@ -1396,17 +1409,18 @@ def record_descaling_progress(line: str) -> None:
 
 def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
 
-    if bar is not None: start_unit(unit, bar)
+    size = Size(current_image.width, current_image.height)
+    if bar is not None: start_unit(size, unit, bar)
 
     process = subprocess.Popen( [ str(RENV_FILE_PATH)              ,
                                   "-i", str(TEMP_INPUT_FILE_PATH)  ,
                                   "-o", str(TEMP_OUTPUT_FILE_PATH) ,
                                   "-m", str(MODEL_FOLDER_PATH)     ,
-                                  "-n", unit.algorithm             ,
+                                  "-n", unit.name                  ,
                                   "-t", str(64 * tile_size)        ,
                                   "-g", "0"                        ,
                                   "-j", "1:1:1"                    ,
-                                  "-s", str(unit.ratio)            ],
+                                  "-s", str(unit.scale)            ],
                                   stdout  = subprocess.PIPE         ,
                                   stderr  = subprocess.STDOUT       ,
                                   text    = True                    ,
@@ -1481,14 +1495,14 @@ def ndarray(image: pyvips.Image) -> numpy.ndarray:
                           shape=(image.height, image.width) )
 
 def roundtrip(image: pyvips.Image, div: float) -> pyvips.Image:
-    forth = image.resize(1.0 / div, kernel = scaler_map[Scaler["lanczos"]])
-    back  = forth.resize(div, kernel = scaler_map[Scaler["lanczos"]])
+    forth = image.resize(1.0 / div, kernel = scaler_map[Scaler[INTERNAL_SCALER]])
+    back  = forth.resize(div, kernel = scaler_map[Scaler[INTERNAL_SCALER]])
     return back
 
 #---------------------------------------------------------------------------------------------------
 
 def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) -> pyvips.Image:
-    if bar is not None: start_unit(unit, bar)
+    if bar is not None: start_unit(Size(image.width, image.height), unit, bar)
     bw = image.copy()
     bw = bw[:3] if bw.bands > 3 else bw
     bw = bw.colourspace("b-w").cast("uchar")
@@ -1496,7 +1510,7 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
     hi_div = 2.0
     bar_n = 0
     bar_p = 0
-    while ( sim(ref, ndarray(roundtrip(bw, hi_div)), unit.algorithm) >= unit.target
+    while ( sim(ref, ndarray(roundtrip(bw, hi_div)), unit.comparer) >= unit.similarity
             and (round(bw.width / hi_div) >= 1 or round(bw.height / hi_div) >= 1)        ):
         hi_div *= 2.0
         bar_p += 25.0 / 2 ** bar_n
@@ -1507,255 +1521,170 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
     lo_div = hi_div / 2.0
     div = (lo_div + hi_div) / 2.0
     for _ in range(DESCALE_ITERATIONS):
-        b = sim(ref, ndarray(roundtrip(bw, div)), unit.algorithm) >= unit.target
+        b = sim(ref, ndarray(roundtrip(bw, div)), unit.comparer) >= unit.similarity
         lo_div = div if     b else lo_div
         hi_div = div if not b else hi_div
         div = (lo_div + hi_div) / 2.0
-        if bar is not None: bar.progress(bar_p + (90.0 - bar_p) / DESCALE_ITERATIONS)
+        if bar is not None: bar.progress(bar_p + (90.0 - bar_p) / unit.scaler)
     result = image.resize(1.0 / div, kernel = scaler_map[Scaler["lanczos"]]).copy_memory()
     if bar is not None: bar.progress(100.0); bar.stop()
     return result
 
 ####################################################################################################
-#
+# Picture Logging
 ####################################################################################################
 
+def log_input(size: Size, index: int, dry: bool, bar: ProgressBar | None = None) -> float:
 
-# overall_scaling: float
-# overall_scaling = output_size.width / input_size.width
+    cost           = 0
 
-# def input_min_length() : return int(min(input_width(), input_height()))
-# def input_max_length() : return int(max(input_width(), input_height()))
-# def input_mpx()        : return input_width() * input_height() / float(1000000)
-#
-# def main_factor() : return main_multiplier / settings.main.reduction
-# def soft_factor() : return cast(int, settings.soft.multiplier) / settings.soft.divisor
-# def hard_factor() : return cast(int, settings.hard.multiplier) / settings.hard.divisor
-#
-# def max_factor()   : return max(soft_factor(), hard_factor())
-# def main_scaling() : return main_multiplier * settings.main.reduction
-# def limit_factor() : return ( 1 if ( main_scaling()                     >=
-#                                      cast(int, settings.soft.multiplier) )
-#                                 else ( cast(int, settings.soft.multiplier) /
-#                                        settings.main.reduction             ) )
-# def total_factor() : return max(main_multiplier * max_factor(), limit_factor())
-# def output_min_length() : return min(output_width, output_height)
-# def output_max_length() : return max(output_width, output_height)
-#
-# def base_main_width()  : return int(input_width()  / settings.main.reduction)
-# def base_main_height() : return int(input_height() / settings.main.reduction)
-# def base_soft_width()  : return int(output_width   / settings.soft.divisor)
-# def base_soft_height() : return int(output_height  / settings.soft.divisor)
-# def base_hard_width()  : return int(output_width   / settings.hard.divisor)
-# def base_hard_height() : return int(output_height  / settings.hard.divisor)
+    if log_level >= LogLevel.endpoints:
+        filename = f"{index:02}_import_{current_image.width}x{current_image.height}.png"
+        unit     = Save(SESSION_FOLDER_PATH / filename)
+        if not dry: save(unit, current_image, bar)
+        cost += unit_cost(size, unit)
 
-# def step_forward(unit: StepForward, bar: ProgressBar):
-#
-#     global forward_j
-#     global forward_k
-#
-#     phase, steps = PHASES[run_i]
-#     step         = steps[forward_j]
-#
-#     if unit.save:
-#
-#         save_unit = Save(unit.width, unit.height)
-#
-#         if step == "export":
-#             save(save_unit, current_image, output_file_path, bar)
-#         else:
-#             file_name = "_".join((f"{(forward_k + 1):02}",
-#                                   f"{phase}-phase",
-#                                   f"{step}-step",
-#                                   f"{unit.width}x{unit.height}.png"))
-#             file_path = SESSION_FOLDER_PATH / file_name
-#             save(save_unit, current_image, file_path, bar)
-#
-#         forward_k += 1
-#
-#     log(f"a{'n' if step[0] in 'aeiou' else ''} {step} "
-#         f"step in the {phase} phase has been completed "
-#         f"with output size {unit.width}x{unit.height}")
-#
-#     if step == "export":
-#         log(f"the output image has been saved, {current_width()}x"
-#             f"{current_height()}px {output_mode}")
-#
-#     forward_j = (forward_j + 1) % len(steps)
-#
-# def phase_forward(unit : PhaseForward, bar: ProgressBar) -> None:
-#
-#     global run_i
-#     global forward_j
-#
-#     log(f"the {PHASES[run_i][0]} phase has been completed")
-#
-#     run_i += 1
-#     forward_j = 0
+    if not dry: log( f"the import has been completed with output"
+                     f" size {current_image.width}x{current_image.height}" )
 
-# def plan_phase_forward() -> None:
-#     execution_plan.append(PhaseForward())
-#
-# def plan_step_forward(save_level_: SaveLevel) -> None:
-#     width, height = current_size()
-#     execution_plan.append(StepForward(savelevel() >= save_level_, width, height))
+    return cost
+
+def log_step ( size  : Size                      ,
+               index : int                       ,
+               dry   : bool                      ,
+               phase : Phase                     ,
+               step  : Step                      ,
+               bar   : ProgressBar | None = None ) -> float:
+
+    cost = 0
+
+    if log_level >= LogLevel.research:
+        filename = ( f"{index:02}_"                f"{phase.name}-phase_"
+                     f"{step.name}-step_"          f"{current_image.width}x"
+                     f"{current_image.height}.png" )
+        unit     = Save(SESSION_FOLDER_PATH / filename)
+        if not dry: save(unit, current_image, bar)
+        cost += unit_cost(size, unit)
+
+    if not dry:
+        article = "a" + "n" if step.name[0] in 'aeiou' else ''
+        log( f"{article} {step.name} step in the {phase.name} phase has been "
+             f"completed with output size {current_image.width}x{current_image.height}" )
+
+    return cost
+
+def log_output(size: Size, index: int, dry: bool, bar: ProgressBar | None = None) -> float:
+
+    cost = 0
+
+    if log_level >= LogLevel.endpoints:
+        filename = f"{index:02}_export_{current_image.width}x{current_image.height}.png"
+        unit = Save(SESSION_FOLDER_PATH / filename)
+        if not dry: save(unit, current_image, bar)
+        cost += unit_cost(size, unit)
+
+    if log_level >= LogLevel.nothing:
+        unit = Save(output_file_path)
+        if not dry: save(unit, current_image, bar)
+        cost += unit_cost(size, unit)
+
+    if not dry: log ( f"the export has been completed with output"
+                      f" size {current_image.width}x{current_image.height}" )
+
+    return cost
 
 ####################################################################################################
-# Checkpoints
+# Processing
 ####################################################################################################
 
-def checkpoint(unit: Checkpoint) -> None:
-    pass
+def process(dry: bool, bar: ProgressBar | None = None) -> float:
+
+    global current_image
+
+    i              = 1
+    cost           = 0
+    estimated_size = input_size
+
+    def index(): nonlocal i; i += 1; return i - 1
+
+    cost += log_input(estimated_size, index(), dry, bar)
+
+    for phase in Phase:
+
+        s: GroundStageSettings = getattr(ground_settings, phase.name)
+
+        for i in range(s.cycles):
+            match s.drop:
+                case SpecialDrop.unit:
+                    continue
+                case ScaleData():
+                    match s.drop.scale:
+                        case SpecialScale.root:
+                            scale_ = math.sqrt(s.model.scale)
+                        case SpecialScale.full:
+                            scale_ = s.model.scale
+                        case int():
+                            scale_ = s.drop.scale / 100.0
+                        case _:
+                            raise ValueError
+                    unit = Scale(s.drop.scaler, scale_)
+                    if not dry: current_image = scale(unit, current_image, None, bar)
+                    cost += unit_cost(estimated_size, unit)
+                    cost += log_step(estimated_size, index(), dry, phase, Step.scale, bar)
+                    estimated_size *= unit_approx_scale(unit)
+                case DescaleData():
+                    similarity_ = s.drop.similarity / 100.0
+                    unit = Descale(s.drop.comparer, ground_settings.main.helper, similarity_)
+                    if not dry: current_image = descale(unit, current_image, bar)
+                    cost += unit_cost(estimated_size, unit)
+                    cost += log_step(estimated_size, index(), dry, phase, Step.descale, bar)
+                    estimated_size *= unit_approx_scale(unit)
+                case _:
+                    raise ValueError
+
+            match s.model:
+                case UpscaleData():
+                    if s.model.auto:
+                        r = output_size.width / current_image.width
+                        n = math.ceil(math.log(r, s.model.scale))
+                        k = (r / s.model.scale **  n) ** (1.0 / (n - 1))
+                        for _ in range(n):
+                            unit = Upscale(s.model.name, s.model.scale)
+                            if not dry: upscale(unit, bar)
+                            cost += unit_cost(estimated_size, unit)
+                            unit = Scale(ground_settings.main.helper, k)
+                            if not dry: current_image = scale(unit, current_image, None, bar)
+                            cost += unit_cost(estimated_size, unit)
+                        cost += log_step(estimated_size, index(), dry, phase, Step.upscale, bar)
+                        estimated_size = output_size
+                    else:
+                        unit = Save(TEMP_INPUT_FILE_PATH)
+                        if not dry: save(unit, current_image, bar)
+                        cost += unit_cost(estimated_size, unit)
+                        unit = Upscale(s.model.name, s.model.scale)
+                        if not dry: upscale(unit, bar)
+                        cost += unit_cost(estimated_size, unit)
+                        cost += log_step(estimated_size, index(), dry, phase, Step.upscale, bar)
+                        estimated_size *= unit_approx_scale(unit)
+                        unit = Load(TEMP_OUTPUT_FILE_PATH)
+                        if not dry: current_image = load(unit, bar)
+                        cost += unit_cost(estimated_size, unit)
+                case _:
+                    raise ValueError
+
+    hscale = output_size.width  / current_image.width
+    vscale = output_size.height / current_image.height
+    unit = Scale(ground_settings.main.closer, hscale)
+    if not dry: current_image = scale(unit, current_image, vscale, bar)
+    cost += unit_cost(estimated_size, unit)
+    cost += log_output(estimated_size, index(), dry, bar)
+    estimated_size *= unit_approx_scale(unit)
+
+    return cost
 
 ####################################################################################################
-# Planning
-####################################################################################################
-
-plan: list[Unit]
-
-#---------------------------------------------------------------------------------------------------
-
-def current_size() -> Size:
-    for i in range(len(plan) - 1, -1, -1):
-        unit = plan[i]
-        if isinstance(unit, (Scale, Upscale, Descale)):
-            return Size(round(unit.known_size.width  * unit.ratio),
-                        round(unit.known_size.height * unit.ratio))
-        elif isinstance(unit, Reload):
-            return output_size
-    return input_size
-
-def last_scaling() -> Unit:
-    for i in range(len(plan) - 1, -1, -1):
-        unit = plan[i]
-        if isinstance(unit, (Scale, Upscale, Descale)):
-            return unit
-    raise RuntimeError
-
-#---------------------------------------------------------------------------------------------------
-
-def init_planning() -> None:
-    global plan
-    plan = []
-
-def plan_scale(scaler: Scaler, arg: float | Size) -> None:
-    size = current_size()
-    if isinstance(arg, Size):
-        k = float(arg.width) / size.width
-    elif isinstance(arg, float):
-        k = arg
-    else:
-        raise ValueError
-    unit = Scale(size, scaler, k)
-    plan.append(unit)
-
-def plan_upscale(model: str, ratio: int) -> None:
-    size = current_size()
-    unit = Upscale(size, model, ratio)
-    plan.append(unit)
-
-def plan_descale(comparer: Comparer, target: float) -> None:
-    size = current_size()
-    unit = Descale(size, comparer, DESCALE_APPROX_RATIO, target)
-    plan.append(unit)
-
-def plan_reload() -> None:
-    plan.append(Reload())
-
-def plan_checkpoint(phase: Phase, phase_index: int, global_index: int) -> None:
-    size = current_size()
-    unit = Checkpoint(size, last_scaling(), phase, phase_index, global_index)
-    plan.append(unit)
-
-########################################################################################
-# Planning - Input Phase
-########################################################################################
-
-def plan_input_phase() -> None:
-
-    plan_step_forward(SaveLevel.endpoints)
-
-    plan_scale( Scaler[cast(str, settings.soft.scaler)] ,
-                (base_main_width(), base_main_height()) )
-    plan_step_forward(SaveLevel.research)
-
-    plan_phase_forward()
-
-########################################################################################
-# Planning - Main Phase
-########################################################################################
-
-def plan_main_phase() -> None:
-
-    main_iterations = math.ceil( math.log(main_scaling(),
-                                 cast(int, settings.soft.multiplier)) )
-    factor = ( (main_scaling() / settings.soft.multiplier ** main_iterations) **
-               (1 / (main_iterations - 1) if main_iterations != 1 else 0)      )
-
-    for _ in range(main_iterations - 1):
-        plan_enhance(settings.soft.enhancer, cast(int,settings.soft.multiplier))
-        plan_step_forward(SaveLevel.research)
-
-        plan_scale(Scaler[cast(str, settings.soft.scaler)], factor)
-        plan_step_forward(SaveLevel.research)
-
-    if main_iterations != 0:
-        plan_enhance(settings.soft.enhancer, cast(int, settings.soft.multiplier))
-        plan_step_forward(SaveLevel.research)
-
-    plan_phase_forward()
-
-########################################################################################
-# Planning - Soft Phase
-########################################################################################
-
-def plan_soft_phase() -> None:
-
-    for _ in range(settings.soft.iterations):
-
-        plan_scale( Scaler[cast(str, settings.soft.scaler)] ,
-                    (base_soft_width(), base_soft_height()) )
-        plan_step_forward(SaveLevel.research)
-
-        plan_enhance(settings.soft.enhancer, cast(int, settings.soft.multiplier))
-        plan_step_forward(SaveLevel.research)
-
-    plan_phase_forward()
-
-########################################################################################
-# Planning - Hard Phase
-########################################################################################
-
-def plan_hard_phase() -> None:
-
-    for _ in range(settings.hard.iterations):
-
-        plan_scale( Scaler[cast(str, settings.hard.scaler)] ,
-                    (base_hard_width(), base_hard_height()) )
-        plan_step_forward(SaveLevel.research)
-
-        plan_enhance(settings.hard.enhancer, cast(int, settings.hard.multiplier))
-        plan_step_forward(SaveLevel.research)
-
-    plan_phase_forward()
-
-########################################################################################
-# Planning - Output Phase
-########################################################################################
-
-def plan_output_phase() -> None:
-
-    plan_scale( Scaler[cast(str, settings.main.closure)] ,
-                (output_width, output_height)            )
-    plan_step_forward(SaveLevel.endpoints)
-
-    plan_step_forward(SaveLevel.nothing)
-
-    plan_phase_forward()
-
-########################################################################################
 # Dry Check
-########################################################################################
+####################################################################################################
 
 def dry_check() -> None:
 
@@ -1785,7 +1714,7 @@ def dry_check() -> None:
         print(f"    upscaling   : {settings.hard.enhancer} "
               f"({cast(int, settings.hard.multiplier)}x)")
         print(f"    iterations  : {settings.hard.iterations}")
-        print(f" finisher       : {cast(str, settings.main.closure)}")
+        print(f" finisher       : {cast(str, settings.main.closer)}")
         print(f" output format  : {output_width} x {output_height} px")
         print(f" output mode    : {output_mode.replace('--', ', ')}")
         print(f" total work     : "
@@ -1794,30 +1723,9 @@ def dry_check() -> None:
 
     exit()
 
-
-########################################################################################
-# Execution
-########################################################################################
-
-def execute_plan() -> None:
-
-    total_cost = sum([unit_cost(unit) for unit in execution_plan])
-
-    with ProgressBar(total_cost) as bar:
-        for unit in execution_plan:
-            if isinstance(unit, Scale):
-                scale(unit, bar)
-            elif isinstance(unit, Enhance):
-                enhance(unit, bar)
-            elif isinstance(unit, StepForward):
-                step_forward(unit,bar)
-            elif isinstance(unit, PhaseForward):
-                phase_forward(unit, bar)
-        bar.complete()
-
-########################################################################################
+####################################################################################################
 # Main
-########################################################################################
+####################################################################################################
 
 def main():
 
@@ -1932,9 +1840,9 @@ def main():
         if Flags.quiet not in flags: print()
         record_outcome("success")
 
-########################################################################################
+####################################################################################################
 # Help
-########################################################################################
+####################################################################################################
 
 def print_help() -> None:
 
@@ -2206,13 +2114,13 @@ def print_help() -> None:
         Licensed under the MIT License.
 """)
 
-########################################################################################
+####################################################################################################
 # Main Call
-########################################################################################
+####################################################################################################
 
 if __name__ == "__main__":
     main()
 
-########################################################################################
+####################################################################################################
 # End
-########################################################################################
+####################################################################################################
