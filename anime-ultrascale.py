@@ -2,6 +2,10 @@
 # Imports
 ####################################################################################################
 
+from __future__ import annotations
+
+#---------------------------------------------------------------------------------------------------
+
 import sys
 import os
 import time
@@ -29,7 +33,7 @@ import scipy
 from pathlib import Path
 from enum import IntEnum, Enum
 from datetime import datetime
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from threading import Event
 from typing import NoReturn, Final, TextIO, Any, cast, Callable
 
@@ -164,13 +168,10 @@ def timestring(dt: datetime): return dt.strftime('on %Y/%m/%d at %H:%M:%S and %f
 
 @dataclass
 class Size:
-
     width  : int
     height : int
-
     def __mul__(self, k: float)  -> Size:
         return Size(round(self.width * k), round(self.height * k))
-
     def __add__(self, x: Size) -> Size:
         return Size(self.width + x.width, self.height + x.height)
 
@@ -242,7 +243,7 @@ class ConfigArgument(IntEnum):
     enhance_cycles = 7
     stylize_drop   = 8
     stylize_model  = 9
-    stylize_cycles = 1
+    stylize_cycles = 10
 
 class QuickArgument(IntEnum):
     format_or_preset_a = 0
@@ -324,10 +325,10 @@ class UserStageSettings:
 
 @dataclass
 class UserSettings:
-    main    : UserMainSettings  = UserMainSettings()
-    repair  : UserStageSettings = UserStageSettings()
-    enhance : UserStageSettings = UserStageSettings()
-    stylize : UserStageSettings = UserStageSettings()
+    main    : UserMainSettings  = field(default_factory = UserMainSettings)
+    repair  : UserStageSettings = field(default_factory = UserStageSettings)
+    enhance : UserStageSettings = field(default_factory = UserStageSettings)
+    stylize : UserStageSettings = field(default_factory = UserStageSettings)
 
 #---------------------------------------------------------------------------------------------------
 
@@ -467,10 +468,9 @@ def unit_approx_scale(unit: Unit) -> float:
 # Time Recording
 ####################################################################################################
 
-call_timestamps: dict[object, datetime]
+call_timestamps: dict[object, datetime] = {}
 
 def register(function: object):
-    global call_timestamps
     call_timestamps[function] = datetime.now()
 
 def recall(function: object) -> str:
@@ -495,8 +495,8 @@ def fast_print(handle:TextIO, message: str) -> None:
 ####################################################################################################
 
 def early_fail( message   : str                         ,
-                suggest   : bool = True                 ,
-                exception : BaseException | None = None ) -> NoReturn:
+                exception : BaseException | None = None ,
+                suggest   : bool = True                 ) -> NoReturn:
     suggestion = " Run with --help for usage information."
     text = f"{message[:1].upper()}{message[1:]}.{suggestion if suggest else ''}"
     if exception is not None and DEVELOPMENT_MODE:
@@ -523,15 +523,15 @@ def early_checks() -> None:
     if len(sys.argv) <= 2:
         early_fail("invalid low-argument invocation")
     if not RENV_FILE_PATH.is_file():
-        early_fail("the upscaling runner is missing")
+        early_fail("missing upscaling runner")
     if not Path(sys.argv[1]).is_file():
-        early_fail("invalid input file path")
+        early_fail("non-existing input file")
     if not Path(sys.argv[2]).parent.is_dir():
-        early_fail("invalid output file path")
+        early_fail("non-existing output file's parent directory")
     if not extension(Path(sys.argv[1])) in EXTENSIONS:
-        early_fail("invalid input file extension")
+        early_fail("unrecognized input extension")
     if not extension(Path(sys.argv[2])) in EXTENSIONS:
-        early_fail("invalid output file extension")
+        early_fail("unrecognized output extension")
     register(early_checks)
 
 ####################################################################################################
@@ -568,30 +568,31 @@ def sort_arguments() -> None:
 
         if not arg.startswith("-"):
             if regular_options or override_options or flags:
-                early_fail(f"argument '{arg}' is preceded by options" )
+                early_fail(f"positional argument '{arg}' preceded by options" )
             positional_arguments.append(arg)
             i += 1; continue
 
-        if arg in flags_map.keys():
+        if arg in flags_map:
             if flags_map[arg] in flags:
-                early_fail(f"multiple occurrences of flag '{arg}'" )
+                early_fail(f"flag '{arg}' occurs more than once" )
             flags.add(flags_map[arg])
             i += 1; continue
 
         if i + 1 >= len(sys.argv) or sys.argv[i + 1].startswith("-"):
-            early_fail(f"missing value for option '{arg}'")
+            early_fail(f"option '{arg}' has no value")
 
-        if arg in regular_options_map.keys():
+        if arg in regular_options_map:
             resolver  = regular_options_map
             collector = regular_options
-        elif arg in override_options.keys():
+        elif arg in override_options_map:
             resolver  = override_options_map
             collector = override_options
         else:
-            early_fail(f"the option '{arg}' is invalid")
+            early_fail(f"unrecognized option '{arg}'")
 
         option = resolver[arg]
-        if option.name in collector: early_fail (f"multiple values for option {arg}" )
+        if option in collector:
+            early_fail (f"option {arg} occurs more than once" )
         collector[option] = sys.argv[i + 1]
         i += 2
 
@@ -607,21 +608,22 @@ tile_size : int
 def process_regular_options() -> None:
     global log_level
     global tile_size
-    if RegularOption.log in regular_options.keys():
-        values = [level.name for level in LogLevel]
-        if regular_options[RegularOption.log] not in values:
-            fail("invalid log level")
-    if RegularOption.tile in regular_options.keys():
+    if RegularOption.log in regular_options:
         try:
-            n = int(regular_options[RegularOption.tile])
-        except Exception as e:
-            fail("tile size is not an integer", True, e)
-        if n < MIN_TILE_SIZE:
-            fail(f"tile size < {MIN_TILE_SIZE}")
-        if n > MAX_TILE_SIZE:
-            fail(f"tile size > {MAX_TILE_SIZE}")
-    log_level = LogLevel(regular_options.get(RegularOption.log, DEFAULT_LOGLEVEL))
-    tile_size = int(regular_options.get(RegularOption.tile, DEFAULT_TILE_SIZE))
+            log_level = LogLevel[regular_options[RegularOption.log]]
+        except KeyError as e:
+            early_fail("invalid log level", e)
+    else:
+        log_level = LogLevel(DEFAULT_LOGLEVEL)
+    if RegularOption.tile in regular_options:
+        try:
+            tile_size = int(regular_options[RegularOption.tile])
+        except ValueError as e:
+            early_fail("tile size is not an integer", e)
+        if tile_size < MIN_TILE_SIZE or tile_size > MAX_TILE_SIZE:
+            early_fail(f"tile size out of range [{MIN_TILE_SIZE}, {MAX_TILE_SIZE}]")
+    else:
+        tile_size = int(DEFAULT_TILE_SIZE)
     register(process_regular_options)
 
 ####################################################################################################
@@ -1144,21 +1146,21 @@ def parse_drop(name: str, s: str) -> SpecialDrop | ScaleData | DescaleData | Non
         return DescaleData(Comparer[algorithm], scale)
     fail(f"the argument '{algorithm}' is invalid")
 
-def parse_model(name: str, s: str) -> UpscaleData | None:
-    if s == DEFAULT_KEYWORD: return None
-    match = re.match(r"^([a-zA-Z]+)([0-9]+)((\\-auto)?)$", s)
+def parse_model(arg: str, name: str) -> UpscaleData | None:
+    if name == DEFAULT_KEYWORD: return None
+    match = re.match(r"^([a-zA-Z]+)([0-9]+)x(-auto)?$", name)
     if match is None:
-        fail(f"the argument '{name}' is invalid")
-    name = match.group(1)
-    arg  = int(match.group(2))
-    auto = bool(match.group(2))
-    if arg < MIN_UPSCALE_SCALE or arg > MAX_UPSCALE_SCALE:
-        fail(f"the argument '{name}' is invalid")
-    if not (MODEL_FOLDER_PATH / f"{s}.bin").is_file():
-        fail(f"the model {name}{arg}'s weights (.bin) are missing")
-    if not (MODEL_FOLDER_PATH / f"{s}.param").is_file():
-        fail(f"the model {name}{arg}'s parameters (.param) are missing")
-    return UpscaleData(name, arg, auto)
+        fail(f"the argument '{arg}' is invalid")
+    prefix = match.group(1)
+    scale  = int(match.group(2))
+    auto   = bool(match.group(3))
+    if scale < MIN_UPSCALE_SCALE or scale > MAX_UPSCALE_SCALE:
+        fail(f"the argument '{arg}' is invalid")
+    if not (MODEL_FOLDER_PATH / f"{name}{arg}x.bin").is_file():
+        fail(f"the {arg}'s weights (.bin) are missing")
+    if not (MODEL_FOLDER_PATH / f"{name}{arg}x.param").is_file():
+        fail(f"the {arg}'s parameters (.param) are missing")
+    return UpscaleData(prefix, scale, auto)
 
 def parse_cycles(name: str, s: str) -> int | None:
     if s == DEFAULT_KEYWORD: return None
@@ -1428,7 +1430,7 @@ def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
 # Descaling
 ####################################################################################################
 
-def gsim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
+def gradient_similarity(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
     sigma = 1.0
     k     = 1e-6
     gamma = 0.5
@@ -1442,7 +1444,7 @@ def gsim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
     similarity_map = (2.0 * g_ref * g_can + k) / (g_ref ** 2 + g_can ** 2 + k)
     return numpy.mean(similarity_map)
 
-def psim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
+def phase_similarity(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
     coefficient_sigma = 1.0
     window_sigma      = 3.0
     stabilizer        = 1e-6
@@ -1459,18 +1461,18 @@ def psim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
     coherence = (numpy.abs(local_cross) + stabilizer) / (energy + stabilizer)
     return numpy.sum(coherence * energy) / numpy.sum(energy)
 
-def ssim(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
+def structural_similarity(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
     return skimage.metrics.structural_similarity(reference, candidate, data_range = 255)
 
 #---------------------------------------------------------------------------------------------------
 
 def sim(reference: numpy.ndarray, candidate: numpy.ndarray, comparer: Comparer) -> float:
     if   comparer == Comparer.ssim:
-        return ssim(reference, candidate)
+        return structural_similarity(reference, candidate)
     elif comparer == Comparer.psim:
-        return psim(reference, candidate)
+        return phase_similarity(reference, candidate)
     elif comparer == Comparer.gsim:
-        return gsim(reference, candidate)
+        return gradient_similarity(reference, candidate)
     raise ValueError
 
 def ndarray(image: pyvips.Image) -> numpy.ndarray:
