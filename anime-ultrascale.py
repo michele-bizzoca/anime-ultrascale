@@ -102,6 +102,7 @@ PRESET_EXTENSION     : Final = "preset"
 OUTPUT_PRESET        : Final = "preset"
 DEFAULT_KEYWORD      : Final = "base"
 DESCALE_APPROX_RATIO : Final = 0.5
+INTERNAL_SCALER      : Final = "lanczos"
 
 ####################################################################################################
 # Invocation Data
@@ -236,17 +237,16 @@ class BasicArgument(IntEnum):
 
 class ConfigArgument(IntEnum):
     main_format    = 0
-    main_helper    = 1
-    main_closer    = 2
-    repair_drop    = 3
-    repair_model   = 4
-    repair_cycles  = 5
-    enhance_drop   = 6
-    enhance_model  = 7
-    enhance_cycles = 8
-    stylize_drop   = 9
-    stylize_model  = 10
-    stylize_cycles = 11
+    main_closure   = 1
+    repair_drop    = 2
+    repair_model   = 3
+    repair_cycles  = 4
+    enhance_drop   = 5
+    enhance_model  = 6
+    enhance_cycles = 7
+    stylize_drop   = 8
+    stylize_model  = 9
+    stylize_cycles = 1
 
 class QuickArgument(IntEnum):
     format_or_preset_a = 0
@@ -318,8 +318,7 @@ class DescaleData:
 @dataclass
 class UserMainSettings:
     format  : None | str    = None
-    helper  : None | Scaler = None
-    closer  : None | Scaler = None
+    closure : None | Scaler = None
 
 @dataclass
 class UserStageSettings:
@@ -349,9 +348,8 @@ def enrich_settings(base: UserSettings, extra: UserSettings) -> UserSettings:
 
 @dataclass
 class GroundMainSettings:
-    format : str
-    helper : Scaler
-    closer : Scaler
+    format  : str
+    closure : Scaler
 
 @dataclass
 class GroundStageSettings:
@@ -433,7 +431,6 @@ class Upscale(Unit):
 @dataclass
 class Descale(Unit):
     comparer   : Comparer
-    scaler     : Scaler
     similarity : float
 
 @dataclass
@@ -992,11 +989,11 @@ def unflatten(data: dict[str, object]) -> dict[str, object]:
 # Settings Import/Export
 ####################################################################################################
 
-def closer_to_str(closer: Scaler | None) -> str:
-    if closer is None:
+def closure_to_str(closure: Scaler | None) -> str:
+    if closure is None:
         return DEFAULT_KEYWORD
-    elif isinstance(closer, Scaler):
-        return closer.name
+    elif isinstance(closure, Scaler):
+        return closure.name
     raise ValueError
 
 def drop_to_str(drop: SpecialDrop | ScaleData | DescaleData | None) -> str:
@@ -1047,7 +1044,7 @@ def export_settings(s: UserSettings) -> str:
 
 def rewind_settings(s: UserSettings) -> list[str]:
     return [ s.main.format or DEFAULT_KEYWORD ,
-             closer_to_str(s.main.closer)   ,
+             closure_to_str(s.main.closure)   ,
              drop_to_str(s.repair.drop)       ,
              model_to_str(s.repair.model)     ,
              cycles_to_str(s.repair.cycles)   ,
@@ -1116,7 +1113,7 @@ def parse_format(_: str, s: str) -> str | None:
         fail("the format is invalid")
     return s
 
-def parse_closer(name: str, s: str) -> ScaleData | None:
+def parse_closure(name: str, s: str) -> ScaleData | None:
     if s == DEFAULT_KEYWORD: return None
     match = re.match(r"^([a-zA-Z]+)([0-9]+)$", s)
     if match is None:
@@ -1185,7 +1182,7 @@ def settings_from_config_arguments(config_args: list[str]) -> UserSettings:
 
    return UserSettings \
         ( UserMainSettings  ( feed(ConfigArgument.main_format    , parse_format   ) ,
-                              feed(ConfigArgument.main_closer   , parse_closer  ) ) ,
+                              feed(ConfigArgument.main_closure   , parse_closure  ) ) ,
           UserStageSettings ( feed(ConfigArgument.repair_drop    , parse_drop     ) ,
                               feed(ConfigArgument.repair_model   , parse_model    ) ,
                               feed(ConfigArgument.repair_cycles  , parse_cycles   ) ) ,
@@ -1525,7 +1522,7 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
         lo_div = div if     b else lo_div
         hi_div = div if not b else hi_div
         div = (lo_div + hi_div) / 2.0
-        if bar is not None: bar.progress(bar_p + (90.0 - bar_p) / unit.scaler)
+        if bar is not None: bar.progress(bar_p + (90.0 - bar_p) / DESCALE_ITERATIONS)
     result = image.resize(1.0 / div, kernel = scaler_map[Scaler["lanczos"]]).copy_memory()
     if bar is not None: bar.progress(100.0); bar.stop()
     return result
@@ -1634,7 +1631,7 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
                     estimated_size *= unit_approx_scale(unit)
                 case DescaleData():
                     similarity_ = s.drop.similarity / 100.0
-                    unit = Descale(s.drop.comparer, ground_settings.main.helper, similarity_)
+                    unit = Descale(s.drop.comparer, similarity_)
                     if not dry: current_image = descale(unit, current_image, bar)
                     cost += unit_cost(estimated_size, unit)
                     cost += log_step(estimated_size, index(), dry, phase, Step.descale, bar)
@@ -1652,7 +1649,7 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
                             unit = Upscale(s.model.name, s.model.scale)
                             if not dry: upscale(unit, bar)
                             cost += unit_cost(estimated_size, unit)
-                            unit = Scale(ground_settings.main.helper, k)
+                            unit = Scale(Scaler[INTERNAL_SCALER], k)
                             if not dry: current_image = scale(unit, current_image, None, bar)
                             cost += unit_cost(estimated_size, unit)
                         cost += log_step(estimated_size, index(), dry, phase, Step.upscale, bar)
@@ -1674,7 +1671,7 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
 
     hscale = output_size.width  / current_image.width
     vscale = output_size.height / current_image.height
-    unit = Scale(ground_settings.main.closer, hscale)
+    unit = Scale(ground_settings.main.closure, hscale)
     if not dry: current_image = scale(unit, current_image, vscale, bar)
     cost += unit_cost(estimated_size, unit)
     cost += log_output(estimated_size, index(), dry, bar)
@@ -1714,7 +1711,7 @@ def dry_check() -> None:
         print(f"    upscaling   : {settings.hard.enhancer} "
               f"({cast(int, settings.hard.multiplier)}x)")
         print(f"    iterations  : {settings.hard.iterations}")
-        print(f" finisher       : {cast(str, settings.main.closer)}")
+        print(f" finisher       : {cast(str, settings.main.closure)}")
         print(f" output format  : {output_width} x {output_height} px")
         print(f" output mode    : {output_mode.replace('--', ', ')}")
         print(f" total work     : "
