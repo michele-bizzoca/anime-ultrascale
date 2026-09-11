@@ -37,7 +37,7 @@ from typing import NoReturn, Final, TextIO, Any, cast, Callable
 # Constants
 ####################################################################################################
 
-SOFTWARE_VERSION : Final = "1.0"
+SOFTWARE_VERSION : Final = "2.0"
 DEVELOPMENT_MODE : Final = False
 
 #---------------------------------------------------------------------------------------------------
