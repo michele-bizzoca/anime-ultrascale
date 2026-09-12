@@ -10,18 +10,18 @@ DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/.."
 # File Deployment
 ################################################################################
 
-mkdir $DIR/.bin $DIR/.venv $DIR/renv $DIR/models $DIR/sessions $DIR/temp
+mkdir $DIR/.bin   $DIR/.venv    $DIR/runner
+mkdir $DIR/models $DIR/sessions $DIR/temp $DIR/presets
 
 cp $DIR/setup-files/launcher                      $DIR/.bin/anime-ultrascale
-cp $DIR/third-party/realesrgan-ncnn-vulkan        $DIR/renv
+cp $DIR/third-party/realesrgan-ncnn-vulkan        $DIR/runner
 cp $DIR/third-party/ani2x.bin                     $DIR/models
 cp $DIR/third-party/ani2x.param                   $DIR/models
 cp $DIR/third-party/as2x.bin                      $DIR/models
 cp $DIR/third-party/as2x.param                    $DIR/models
 cp $DIR/third-party/rpa4x.bin                     $DIR/models
 cp $DIR/third-party/rpa4x.param                   $DIR/models
-cp $DIR/third-party/realesrgan-x4plus-anime.bin   $DIR/models
-cp $DIR/third-party/realesrgan-x4plus-anime.param $DIR/models
+cp $DIR/setup-files/quality.preset                $DIR/presets
 
 chmod +x $DIR/.bin/anime-ultrascale $DIR/renv/realesrgan-ncnn-vulkan
 
