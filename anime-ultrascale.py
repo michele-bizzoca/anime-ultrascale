@@ -72,7 +72,7 @@ DEFAULT_FORMAT        : Final = "4k"
 DEFAULT_CLOSURE       : Final = "bicubic"
 DEFAULT_DROP          : Final = "ssim95"
 DEFAULT_REPAIR_MODEL  : Final = "ani2x"
-DEFAULT_ENHANCE_MODEL : Final = "us4x"
+DEFAULT_ENHANCE_MODEL : Final = "as2x"
 DEFAULT_STYLIZE_MODEL : Final = "rpa4x"
 DEFAULT_CYCLES        : Final = "1"
 DEFAULT_PRESET        : Final = "quality"
@@ -176,6 +176,9 @@ class Size:
         return Size(round(self.width * k), round(self.height * k))
     def __add__(self, x: Size) -> Size:
         return Size(self.width + x.width, self.height + x.height)
+
+def get_size(image: pyvips.Image) -> Size:
+    return Size(image.width, image.height)
 
 ####################################################################################################
 # Log Levels
@@ -528,6 +531,8 @@ def early_checks() -> None:
         early_fail("non-existing input file")
     if not Path(sys.argv[2]).parent.is_dir():
         early_fail("non-existing output file's parent directory")
+    if Path(sys.argv[2]).is_dir():
+        early_fail("output file is a directory")
     input_ext = extension(Path(sys.argv[1]))
     if not input_ext in EXTENSIONS:
         early_fail(f"unrecognized input extension '{input_ext}'")
@@ -829,11 +834,11 @@ def load(unit: Load, bar: ProgressBar | None = None) -> pyvips.Image:
     loaded         = loaded.colourspace("srgb")
     loaded         = loaded.cast("uchar")
 
-    if loaded.bands > 4:
-        if loaded.hasalpha():
+    if loaded.hasalpha():
+        if loaded.bands > 4:
             loaded = loaded[:3].bandjoin(loaded.extract_band(loaded.bands - 1))
-        else:
-            loaded = loaded[:3]
+    elif loaded.bands > 3:
+        loaded = loaded[:3]
 
     if bar is not None: start_unit(Size(loaded.width, loaded.height), unit, bar)
 
@@ -884,9 +889,10 @@ def save(unit: Save, image: pyvips.Image, bar: ProgressBar | None = None) -> Non
     interrupted    = Event()
     sigint_handler = signal.getsignal(signal.SIGINT)
     percentage     = -1
-    copied         = image.copy()
 
     try:
+        copied = image.copy()
+
         def update_interrupt(image: pyvips.Image, _) -> None:
             if interrupted.is_set(): image.set_kill(True)
 
@@ -937,11 +943,11 @@ def scale( unit: Scale                    ,
     interrupted    = Event()
     sigint_handler = signal.getsignal(signal.SIGINT)
     percentage     = -1
-    scaled         = image.resize( unit.scale                       ,
-                                   vscale = vscale or unit.scale    ,
-                                   kernel = scaler_map[unit.scaler] )
 
     try:
+        scaled = image.resize( unit.scale                                            ,
+                               vscale = vscale if vscale is not None else unit.scale ,
+                               kernel = scaler_map[unit.scaler]                      )
         def update_interrupt(image: pyvips.Image, _) -> None:
             if interrupted.is_set(): image.set_kill(True)
 
@@ -1148,8 +1154,6 @@ def interpret_format(s: str) -> Size | None:
         w, h = interpret_k(s[:-1], s[-1:] in "hH")
     else:
         return None
-    if w == 0 or h == 0:
-        fail(f"empty format '{s}'")
     return Size(w, h)
 
 ####################################################################################################
@@ -1164,8 +1168,9 @@ def parse_format(s: str) -> str | None:
 
 def parse_closure(s: str) -> Scaler | None:
     if s == DEFAULT_KEYWORD: return None
-    try: return Scaler(s)
-    except ValueError as e: fail(f"unrecognized scaler '{s}'", e)
+    if s not in Scaler.__members__:
+        fail(f"unrecognized scaler '{s}'")
+    return Scaler(s)
 
 def parse_drop(s: str) -> SpecialDrop | ScaleData | DescaleData | None:
     if   s == DEFAULT_KEYWORD: return None
@@ -1450,12 +1455,10 @@ def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
         exit_code = process.wait()
         if exit_code != 0:
             fail(f"upscaling runner failed with code {exit_code}")
-    except KeyboardInterrupt:
+    finally:
         if process is not None and process.poll() is None:
             process.terminate()
             process.wait()
-        raise
-    finally:
         if bar is not None: bar.stop()
 
 ####################################################################################################
@@ -1540,7 +1543,9 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
             return image.copy_memory()
         lo_div = 1.0
         while round(bw.width / hi_div) >= MIN_WIDTH and round(bw.height / hi_div) >= MIN_HEIGHT:
-            similarity = sim(ref, ndarray(roundtrip(bw, hi_div)), unit.comparer)
+            candidate = roundtrip(bw, hi_div)
+            if candidate.width < MIN_WIDTH or candidate.height < MIN_HEIGHT: break
+            similarity = sim(ref, ndarray(candidate), unit.comparer)
             record_descaling_progress(f"divisor = {hi_div:.2f}, similarity = {similarity}")
             if similarity < unit.similarity: break
             lo_div = hi_div
@@ -1661,6 +1666,7 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
                 case SpecialDrop.unit:
                     pass
                 case ScaleData():
+                    step_size = estimated_size if dry else get_size(current_image)
                     match s.drop.scale:
                         case SpecialScale.root:
                             scale_ = 1.0 / math.sqrt(s.model.scale)
@@ -1670,7 +1676,8 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
                             scale_ = s.drop.scale / 100.0
                         case _:
                             raise ValueError
-                    unit = Scale(s.drop.scaler, scale_)
+                    min_scale = max(MIN_WIDTH / step_size.width, MIN_HEIGHT / step_size.height)
+                    unit = Scale(s.drop.scaler, max(scale_, min_scale))
                     if not dry: current_image = scale(unit, current_image, None, bar)
                     cost += unit_cost(estimated_size, unit)
                     cost += log_step(estimated_size, index(), dry, phase, Step.scale, bar)
@@ -1774,7 +1781,7 @@ def dry_check(cost: float) -> None:
             print(f" tile size      : {int(tile_size) * 64} px")
             print(f" total work     : {cost:.2f} Mpx")
             print("")
-        exit()
+        sys.exit()
 
 ####################################################################################################
 # Main
