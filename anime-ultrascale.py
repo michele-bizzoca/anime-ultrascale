@@ -46,7 +46,7 @@ DEVELOPMENT_MODE : Final = False
 
 #---------------------------------------------------------------------------------------------------
 
-RENV_FOLDER        : Final = "renv"
+RENV_FOLDER        : Final = "runner"
 MODEL_FOLDER       : Final = "models"
 PRESET_FOLDER      : Final = "presets"
 SESSION_FOLDER     : Final = "sessions"
@@ -76,7 +76,7 @@ DEFAULT_ENHANCE_MODEL : Final = "us4x"
 DEFAULT_STYLIZE_MODEL : Final = "rpa4x"
 DEFAULT_CYCLES        : Final = "1"
 DEFAULT_PRESET        : Final = "quality"
-DEFAULT_LOGLEVEL      : Final = "text"
+DEFAULT_LOG_LEVEL     : Final = "text"
 DEFAULT_TILE_SIZE     : Final = "4"
 
 #---------------------------------------------------------------------------------------------------
@@ -85,7 +85,7 @@ MIN_SCALING_SCALE        : Final = 1
 MAX_SCALING_SCALE        : Final = 99
 MIN_DESCALING_SIMILARITY : Final = 80
 MAX_DESCALING_SIMILARITY : Final = 95
-MIN_UPSCALING_SCALE      : Final = 1
+MIN_UPSCALING_SCALE      : Final = 2
 MAX_UPSCALING_SCALE      : Final = 16
 MIN_CYCLES               : Final = 0
 MAX_CYCLES               : Final = 4
@@ -202,24 +202,24 @@ log_level_map: Final = { LogLevel.dry       : ""       ,
 # Enumerations
 ####################################################################################################
 
-class Phase(Enum, str):
+class Phase(str, Enum):
     repair  = "repair"
     enhance = "enhance"
     stylize = "stylize"
 
-class Step(Enum):
+class Step(str, Enum):
     scale   = "scale"
     descale = "descale"
     upscale = "upscale"
 
 # ---------------------------------------------------------------------------------------------------
 
-class Scaler(Enum, str):
+class Scaler(str, Enum):
     bilinear = "bilinear"
     bicubic  = "bicubic"
     lanczos  = "lanczos"
 
-class Comparer(Enum, str):
+class Comparer(str, Enum):
     ssim  = "ssim"
     psim  = "psim"
     gsim  = "gsim"
@@ -294,10 +294,10 @@ flags_map: Final            = ( { short_opt(x.name, False) : x for x in list(Fla
 # Settings
 ####################################################################################################
 
-class SpecialDrop(Enum, str):
+class SpecialDrop(str, Enum):
     unit = "unit"
 
-class SpecialScale(Enum, str):
+class SpecialScale(str, Enum):
     root = "root"
     full = "full"
 
@@ -345,7 +345,7 @@ def enrich_settings(base: UserSettings, extra: UserSettings) -> UserSettings:
         n, m = arg.name.split('_')
         x = getattr(getattr(base, n), m)
         y = getattr(getattr(extra, n), m)
-        setattr(getattr(result, n), m, y if x is None else y)
+        setattr(getattr(result, n), m, y if x is None else x)
     return result
 
 #---------------------------------------------------------------------------------------------------
@@ -612,17 +612,21 @@ def process_regular_options() -> None:
     global log_level
     global tile_size
     if RegularOption.log in regular_options:
+        level_str = regular_options[RegularOption.log]
         try:
-            log_level = LogLevel[regular_options[RegularOption.log]]
+            log_level = LogLevel[level_str]
         except KeyError as e:
-            early_fail(f"unrecognized log level '{log_level}'", e)
+            early_fail(f"unrecognized log level '{level_str}'", e)
+        if log_level == LogLevel.error:
+            early_fail(f"unrecognized log level '{log_level}'")
     else:
-        log_level = LogLevel(DEFAULT_LOGLEVEL)
+        log_level = LogLevel[DEFAULT_LOG_LEVEL]
     if RegularOption.tile in regular_options:
+        tile_str = regular_options[RegularOption.tile]
         try:
-            tile_size = int(regular_options[RegularOption.tile])
+            tile_size = int(tile_str)
         except ValueError as e:
-            early_fail(f"tile size '{tile_size}' not an integer", e)
+            early_fail(f"tile size '{tile_str}' not an integer", e)
         if tile_size < MIN_TILE_SIZE or tile_size > MAX_TILE_SIZE:
             early_fail( f"tile size '{tile_size}' out of range "
                         f"[{MIN_TILE_SIZE}, {MAX_TILE_SIZE}]" )
@@ -643,20 +647,25 @@ def create_session_folder() -> None:
 # Exiting
 ####################################################################################################
 
-exit_file_handle: TextIO
+exit_file_handle:  TextIO
+exit_file_written: bool
 
 #---------------------------------------------------------------------------------------------------
 
 def prepare_exit_file() -> None:
     global exit_file_handle
+    global exit_file_written
     if log_level >= LogLevel.debug:
         exit_file_handle = safe_open(EXIT_FILE_PATH)
+    exit_file_written = False
     register(prepare_exit_file)
 
 def record_exit_message(success: bool, message: str) -> None:
-    if log_level >= LogLevel.debug:
+    global exit_file_written
+    if log_level >= LogLevel.debug and not exit_file_written:
         outcome = 'SUCCESS' if success else 'FAILURE'
         fast_print(exit_file_handle, f"{outcome}\n\n{message}")
+        exit_file_written = True
 
 ####################################################################################################
 # Logging
@@ -853,8 +862,8 @@ def load(unit: Load, bar: ProgressBar | None = None) -> pyvips.Image:
         raise
     finally:
         signal.signal(signal.SIGINT, sigint_handler)
+        if bar is not None: bar.stop()
 
-    if bar is not None: bar.stop()
     return loaded
 
 ####################################################################################################
@@ -905,8 +914,7 @@ def save(unit: Save, image: pyvips.Image, bar: ProgressBar | None = None) -> Non
         raise
     finally:
         signal.signal(signal.SIGINT, sigint_handler)
-
-    if bar is not None: bar.stop()
+        if bar is not None: bar.stop()
 
 ####################################################################################################
 # Scaling
@@ -958,8 +966,8 @@ def scale( unit: Scale                    ,
         raise
     finally:
         signal.signal(signal.SIGINT, sigint_handler)
+        if bar is not None: bar.stop()
 
-    if bar is not None: bar.stop()
     return scaled
 
 ####################################################################################################
@@ -1026,7 +1034,7 @@ def model_to_str(model: UpscaleData | None) -> str:
     if model is None:
         return DEFAULT_KEYWORD
     elif isinstance(model, UpscaleData):
-        return f"{model.name}{model.scale}{'-auto' if model.auto else ''}"
+        return f"{model.name}{model.scale}x{'-auto' if model.auto else ''}"
     raise ValueError
 
 def cycles_to_str(cycles: int | None) -> str:
@@ -1079,34 +1087,23 @@ def export_session(s: Session) -> str:
     return json.dumps(dataclasses.asdict(s), indent = 4, sort_keys = False)
 
 ####################################################################################################
-# Session Import/Export
+# Input Info Processing
 ####################################################################################################
 
 input_mode: str
 input_size: Size
-input_image: pyvips.Image
-
-####################################################################################################
-# Input Info Processing
-####################################################################################################
-
-global input_mode
-global input_size
-global input_image
 
 #---------------------------------------------------------------------------------------------------
 
 def process_input_info() -> None:
     global input_mode
     global input_size
-    global input_image
     temp        = pyvips.Image.new_from_file(str(input_file_path), access="sequential")
     iext        = extension(input_file_path)
-    imode       = cast(str, temp.interpretation)
+    imode       = str(cast(str, temp.interpretation))
     ialpha      = 'alpha' if temp.hasalpha() else 'opaque'
     input_mode  = f"{iext}--{imode}--{ialpha}"
     input_size  = Size(temp.width, temp.height)
-    input_image = load(Load(input_file_path)).copy_memory()
 
 ####################################################################################################
 # Format Interpretation
@@ -1141,6 +1138,8 @@ def interpret_format(s: str) -> Size | None:
         w, h = interpret_k(s[:-1], s[-1:] in "hH")
     else:
         return None
+    if w == 0 or h == 0:
+        fail(f"empty format '{s}'")
     return Size(w, h)
 
 ####################################################################################################
@@ -1156,24 +1155,23 @@ def parse_format(s: str) -> str | None:
 def parse_closure(s: str) -> Scaler | None:
     if s == DEFAULT_KEYWORD: return None
     try: return Scaler(s)
-    except KeyError as e: fail(f"unrecognized scaler '{s}'", e)
+    except ValueError as e: fail(f"unrecognized scaler '{s}'", e)
 
 def parse_drop(s: str) -> SpecialDrop | ScaleData | DescaleData | None:
     if   s == DEFAULT_KEYWORD: return None
     elif s == SpecialDrop.unit.name : return SpecialDrop.unit
-    elif s in [ f"{x}-{y}" for x in Scaler.__members__()
-                           for y in SpecialScale.__members__() ]:
+    elif s in [ f"{x.name}-{y.name}" for x in Scaler for y in SpecialScale]:
         [algorithm, scale] = s.split("-")
         return ScaleData(Scaler(algorithm), SpecialScale(scale))
     match = re.match(r"^([a-zA-Z]+)([0-9]+)$", s)
     if match is None: fail(f"unrecognized drop '{s}'")
     algorithm, arg = match.group(1), int(match.group(2))
-    if algorithm in Scaler.__members__():
+    if algorithm in Scaler.__members__:
         if arg < MIN_SCALING_SCALE or arg > MAX_SCALING_SCALE:
             fail( f"scale '{arg}' out of range "
                   f"[{MIN_SCALING_SCALE}, {MAX_SCALING_SCALE}]" )
         return ScaleData(Scaler(algorithm), arg)
-    elif algorithm in Comparer.__members__():
+    elif algorithm in Comparer.__members__:
         if arg < MIN_DESCALING_SIMILARITY or arg > MAX_DESCALING_SIMILARITY:
             fail(f"similarity '{arg}' out of range "
                   f"[{MIN_DESCALING_SIMILARITY}, {MAX_DESCALING_SIMILARITY}]" )
@@ -1329,14 +1327,10 @@ def resolve_defaults() -> None:
 
 output_mode     : str
 output_size     : Size
-current_image   : pyvips.Image
-
-#---------------------------------------------------------------------------------------------------
 
 def process_output_info() -> None:
     global output_mode
     global output_size
-    global current_image
     size = interpret_format(ground_settings.main.format)
     if size is None: fail(f"unrecognized format '{ground_settings.main.format}'")
     oext          = extension(output_file_path)
@@ -1344,7 +1338,6 @@ def process_output_info() -> None:
     oalpha        = 'alpha' if input_mode.endswith('alpha') else 'opaque'
     output_mode   = f"{oext}--{omode}--{oalpha}"
     output_size   = size
-    current_image = input_image.copy_memory()
     if input_mode.endswith('alpha') and extension(output_file_path) in OPAQUE_EXTENSIONS:
         fail(f"output can't carry input's alpha channel")
 
@@ -1406,14 +1399,18 @@ def record_descaling_progress(line: str) -> None:
         fast_print(descaling_file_handle, message)
 
 ####################################################################################################
+# Current Image
+####################################################################################################
+
+current_image   : pyvips.Image
+
+####################################################################################################
 # Upscaling
 ####################################################################################################
 
 def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
-
     size = Size(current_image.width, current_image.height)
     if bar is not None: start_unit(size, unit, bar)
-
     process = subprocess.Popen( [ str(RENV_FILE_PATH)                  ,
                                   "-i", str(TEMP_INPUT_FILE_PATH)      ,
                                   "-o", str(TEMP_OUTPUT_FILE_PATH)     ,
@@ -1427,21 +1424,24 @@ def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
                                   stderr  = subprocess.STDOUT          ,
                                   text    = True                       ,
                                   bufsize = 1                          )
-
     if process.stdout is None:
         fail("failed to capture upscaling runner's output")
-
-    for line in process.stdout:
-        record_upscaling_progress(line)
-        if bar is not None:
-            x = re.search(r"^([0-9]+(\.[0-9]+)?)%$", line)
-            if x is not None: bar.progress(float(x.group(1)))
-
-    exit_code = process.wait()
-    if exit_code != 0:
-        fail(f"upscaling runner failed with code {exit_code}")
-
-    if bar is not None: bar.stop()
+    try:
+        for line in process.stdout:
+            line = line.rstrip("\n")
+            record_upscaling_progress(line)
+            if bar is not None:
+                x = re.search(r"^([0-9]+(\.[0-9]+)?)%$", line)
+                if x is not None: bar.progress(float(x.group(1)))
+        exit_code = process.wait()
+        if exit_code != 0:
+            fail(f"upscaling runner failed with code {exit_code}")
+    except KeyboardInterrupt:
+        process.terminate()
+        process.wait()
+        raise
+    finally:
+        if bar is not None: bar.stop()
 
 ####################################################################################################
 # Descaling
@@ -1476,7 +1476,9 @@ def phase_similarity(reference: numpy.ndarray, candidate: numpy.ndarray) -> floa
                     1j * gf(cross.imag, window_sigma) )
     energy = gf(numpy.abs(cross), window_sigma)
     coherence = (numpy.abs(local_cross) + stabilizer) / (energy + stabilizer)
-    return numpy.sum(coherence * energy) / numpy.sum(energy)
+    weight = numpy.sum(energy)
+    if weight == 0: return 1.0
+    return numpy.sum(coherence * energy) / weight
 
 def structural_similarity(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
     return skimage.metrics.structural_similarity(reference, candidate, data_range = 255)
@@ -1508,32 +1510,43 @@ def roundtrip(image: pyvips.Image, div: float) -> pyvips.Image:
 
 def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) -> pyvips.Image:
     if bar is not None: start_unit(Size(image.width, image.height), unit, bar)
-    bw = image.copy()
-    bw = bw[:3] if bw.bands > 3 else bw
-    bw = bw.colourspace("b-w").cast("uchar")
-    ref  = ndarray(bw)
-    hi_div = 2.0
-    bar_n = 0
-    bar_p = 0
-    while ( (round(bw.width / hi_div) >= 1 and round(bw.height / hi_div) >= 1) and
-            sim(ref, ndarray(roundtrip(bw, hi_div)), unit.comparer) >= unit.similarity ):
-        hi_div *= 2.0
+    try:
+        bw = image.copy()
+        bw = bw[:3] if bw.bands > 3 else bw
+        bw = bw.colourspace("b-w").cast("uchar")
+        ref  = ndarray(bw)
+        hi_div = 2.0
+        bar_n = 0
+        bar_p = 0
+        while round(bw.width / hi_div) >= 1 and round(bw.height / hi_div) >= 1:
+            similarity = sim(ref, ndarray(roundtrip(bw, hi_div)), unit.comparer)
+            record_descaling_progress(f"divisor = {hi_div:.2f}, similarity = {similarity}")
+            if similarity < unit.similarity: break
+            hi_div *= 2.0
+            bar_p += 25.0 / 2 ** bar_n
+            if bar is not None: bar.progress(bar_p)
+            bar_n += 1
+        else: fail("descaling search space exhausted")
         bar_p += 25.0 / 2 ** bar_n
         if bar is not None: bar.progress(bar_p)
-        bar_n += 1
-    bar_p += 25.0 / 2 ** bar_n
-    if bar is not None: bar.progress(bar_p)
-    lo_div = hi_div / 2.0
-    div = (lo_div + hi_div) / 2.0
-    for i in range(DESCALE_ITERATIONS):
-        b = sim(ref, ndarray(roundtrip(bw, div)), unit.comparer) >= unit.similarity
-        lo_div = div if     b else lo_div
-        hi_div = div if not b else hi_div
+        lo_div = hi_div / 2.0
         div = (lo_div + hi_div) / 2.0
-        if bar is not None: bar.progress(bar_p + (90.0 - bar_p) * (i + 1) / DESCALE_ITERATIONS)
-    result = image.resize(1.0 / div, kernel = scaler_map[Scaler(INTERNAL_SCALER)]).copy_memory()
-    if bar is not None: bar.progress(100.0); bar.stop()
-    return result
+        for i in range(DESCALE_ITERATIONS):
+            similarity = sim(ref, ndarray(roundtrip(bw, div)), unit.comparer)
+            record_descaling_progress(f"divisor = {div:.2f}, similarity = {similarity}")
+            b = similarity >= unit.similarity
+            lo_div = div if     b else lo_div
+            hi_div = div if not b else hi_div
+            div = (lo_div + hi_div) / 2.0
+            delta_p = (90.0 - bar_p) * (i + 1) / DESCALE_ITERATIONS
+            if bar is not None: bar.progress(bar_p + delta_p)
+        kernel = scaler_map[Scaler(INTERNAL_SCALER)]
+        result = image.resize(1.0 / lo_div, kernel = kernel).copy_memory()
+        if bar is not None: bar.progress(100.0)
+        return result
+    finally:
+        if bar is not None:
+            bar.stop()
 
 ####################################################################################################
 # Picture Logging
@@ -1542,10 +1555,13 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
 def log_input(size: Size, index: int, dry: bool, bar: ProgressBar | None = None) -> float:
     cost = 0
     if log_level >= LogLevel.endpoints:
-        filename = f"{index:02}_import_{current_image.width}x{current_image.height}.png"
-        unit     = Save(SESSION_FOLDER_PATH / filename)
-        if not dry: save(unit, current_image, bar)
-        cost += unit_cost(size, unit)
+        if not dry:
+            filename = f"{index:02}_import_{current_image.width}x{current_image.height}.png"
+            unit     = Save(SESSION_FOLDER_PATH / filename)
+            save(unit, current_image, bar)
+            cost += unit_cost(size, unit)
+        else:
+            cost += unit_cost(size, Save(Path()))
     if not dry: log( f"the import has been completed with output"
                      f" size {current_image.width}x{current_image.height}" )
     return cost
@@ -1558,12 +1574,15 @@ def log_step ( size  : Size                      ,
                bar   : ProgressBar | None = None ) -> float:
     cost = 0
     if log_level >= LogLevel.research:
-        filename = ( f"{index:02}_"                f"{phase.name}-phase_"
-                     f"{step.name}-step_"          f"{current_image.width}x"
-                     f"{current_image.height}.png" )
-        unit     = Save(SESSION_FOLDER_PATH / filename)
-        if not dry: save(unit, current_image, bar)
-        cost += unit_cost(size, unit)
+        if not dry:
+            filename = (f"{index:02}_"                f"{phase.name}-phase_"
+                        f"{step.name}-step_"          f"{current_image.width}x"
+                        f"{current_image.height}.png")
+            unit = Save(SESSION_FOLDER_PATH / filename)
+            save(unit, current_image, bar)
+            cost += unit_cost(size, unit)
+        else:
+            cost += unit_cost(size, Save(Path()))
     if not dry:
         article = "an" if step.name[0] in 'aeiou' else 'a'
         log( f"{article} {step.name} step in the {phase.name} phase has been "
@@ -1573,14 +1592,20 @@ def log_step ( size  : Size                      ,
 def log_output(size: Size, index: int, dry: bool, bar: ProgressBar | None = None) -> float:
     cost = 0
     if log_level >= LogLevel.endpoints:
-        filename = f"{index:02}_export_{current_image.width}x{current_image.height}.png"
-        unit = Save(SESSION_FOLDER_PATH / filename)
-        if not dry: save(unit, current_image, bar)
-        cost += unit_cost(size, unit)
+        if not dry:
+            filename = f"{index:02}_export_{current_image.width}x{current_image.height}.png"
+            unit = Save(SESSION_FOLDER_PATH / filename)
+            save(unit, current_image, bar)
+            cost += unit_cost(size, unit)
+        else:
+            cost += unit_cost(size, Save(Path()))
     if log_level >= LogLevel.nothing:
-        unit = Save(output_file_path)
-        if not dry: save(unit, current_image, bar)
-        cost += unit_cost(size, unit)
+        if not dry:
+            unit = Save(output_file_path)
+            save(unit, current_image, bar)
+            cost += unit_cost(size, unit)
+        else:
+            cost += unit_cost(size, Save(Path()))
     if not dry: log ( f"the export has been completed with output"
                       f" size {current_image.width}x{current_image.height}" )
     return cost
@@ -1599,6 +1624,9 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
 
     def index(): nonlocal i; i += 1; return i - 1
 
+    unit = Load(input_file_path)
+    if not dry: current_image = load(unit, bar)
+    cost += unit_cost(estimated_size, unit)
     cost += log_input(estimated_size, index(), dry, bar)
 
     for phase in Phase:
@@ -1614,7 +1642,7 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
                         case SpecialScale.root:
                             scale_ = 1.0 / math.sqrt(s.model.scale)
                         case SpecialScale.full:
-                            scale_ = s.model.scale
+                            scale_ = 1.0 / s.model.scale
                         case int():
                             scale_ = s.drop.scale / 100.0
                         case _:
@@ -1636,13 +1664,15 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
 
             match s.model:
                 case UpscaleData():
-                    r = output_size.width / current_image.width
+                    w = estimated_size.width if dry else current_image.width
+                    r = output_size.width / w
                     n = math.ceil(math.log(r, s.model.scale))
-                    if r <= 1:
+                    if s.model.auto and r <= 1:
                         pass
                     elif s.model.auto and n > 1:
                         k = (r / s.model.scale **  n) ** (1.0 / (n - 1))
-                        for _ in range(n):
+                        for j in range(n):
+                            step_size = estimated_size
                             unit = Save(TEMP_INPUT_FILE_PATH)
                             if not dry: save(unit, current_image, bar)
                             cost += unit_cost(estimated_size, unit)
@@ -1653,12 +1683,15 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
                             unit = Load(TEMP_OUTPUT_FILE_PATH)
                             if not dry: current_image = load(unit, bar)
                             cost += unit_cost(estimated_size, unit)
-                            unit = Scale(Scaler(INTERNAL_SCALER), k)
-                            if not dry: current_image = scale(unit, current_image, None, bar)
-                            cost += unit_cost(estimated_size, unit)
-                        cost += log_step(estimated_size, index(), dry, phase, Step.upscale, bar)
+                            cost += log_step(step_size, index(), dry, phase, Step.upscale, bar)
+                            if j < n - 1:
+                                unit = Scale(Scaler(INTERNAL_SCALER), k)
+                                if not dry: current_image = scale(unit, current_image, None, bar)
+                                cost += unit_cost(estimated_size, unit)
+                                estimated_size *= unit_approx_scale(unit)
                         estimated_size = output_size
                     else:
+                        step_size = estimated_size
                         unit = Save(TEMP_INPUT_FILE_PATH)
                         if not dry: save(unit, current_image, bar)
                         cost += unit_cost(estimated_size, unit)
@@ -1669,12 +1702,14 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
                         unit = Load(TEMP_OUTPUT_FILE_PATH)
                         if not dry: current_image = load(unit, bar)
                         cost += unit_cost(estimated_size, unit)
-                        cost += log_step(estimated_size, index(), dry, phase, Step.upscale, bar)
+                        cost += log_step(step_size, index(), dry, phase, Step.upscale, bar)
                 case _:
                     raise ValueError
 
-    hscale = output_size.width  / current_image.width
-    vscale = output_size.height / current_image.height
+    w = estimated_size.width  if dry else current_image.width
+    h = estimated_size.height if dry else current_image.height
+    hscale = output_size.width  / w
+    vscale = output_size.height / h
     unit = Scale(ground_settings.main.closure, hscale)
     if not dry: current_image = scale(unit, current_image, vscale, bar)
     cost += unit_cost(estimated_size, unit)
