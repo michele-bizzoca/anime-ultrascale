@@ -202,17 +202,24 @@ log_level_map: Final = { LogLevel.dry       : ""       ,
 # Enumerations
 ####################################################################################################
 
-class Phase(Enum):
+class Phase(Enum, str):
     repair  = "repair"
     enhance = "enhance"
     stylize = "stylize"
 
-class Scaler(Enum):
+class Step(Enum):
+    scale   = "scale"
+    descale = "descale"
+    upscale = "upscale"
+
+# ---------------------------------------------------------------------------------------------------
+
+class Scaler(Enum, str):
     bilinear = "bilinear"
     bicubic  = "bicubic"
     lanczos  = "lanczos"
 
-class Comparer(Enum):
+class Comparer(Enum, str):
     ssim  = "ssim"
     psim  = "psim"
     gsim  = "gsim"
@@ -287,10 +294,10 @@ flags_map: Final            = ( { short_opt(x.name, False) : x for x in list(Fla
 # Settings
 ####################################################################################################
 
-class SpecialDrop(Enum):
+class SpecialDrop(Enum, str):
     unit = "unit"
 
-class SpecialScale(Enum):
+class SpecialScale(Enum, str):
     root = "root"
     full = "full"
 
@@ -338,7 +345,7 @@ def enrich_settings(base: UserSettings, extra: UserSettings) -> UserSettings:
         n, m = arg.name.split('_')
         x = getattr(getattr(base, n), m)
         y = getattr(getattr(extra, n), m)
-        setattr( getattr(result, n), m, x or y)
+        setattr(getattr(result, n), m, y if x is None else y)
     return result
 
 #---------------------------------------------------------------------------------------------------
@@ -400,16 +407,6 @@ class Session:
 ####################################################################################################
 # Work Units
 ####################################################################################################
-
-#---------------------------------------------------------------------------------------------------
-
-class Step(Enum):
-    open    = "open"
-    scale   = "scale"
-    descale = "descale"
-    upscale = "upscale"
-
-#---------------------------------------------------------------------------------------------------
 
 @dataclass
 class Unit:
@@ -547,6 +544,8 @@ override_options     : dict[ConfigArgument, str]
 regular_options      : dict[RegularOption, str]
 flags                : set[Flag]
 
+#---------------------------------------------------------------------------------------------------
+
 def sort_arguments() -> None:
 
     global input_file_path
@@ -607,6 +606,8 @@ def sort_arguments() -> None:
 log_level : LogLevel
 tile_size : int
 
+#---------------------------------------------------------------------------------------------------
+
 def process_regular_options() -> None:
     global log_level
     global tile_size
@@ -644,6 +645,8 @@ def create_session_folder() -> None:
 
 exit_file_handle: TextIO
 
+#---------------------------------------------------------------------------------------------------
+
 def prepare_exit_file() -> None:
     global exit_file_handle
     if log_level >= LogLevel.debug:
@@ -660,6 +663,8 @@ def record_exit_message(success: bool, message: str) -> None:
 ####################################################################################################
 
 log_file_handle: TextIO
+
+#---------------------------------------------------------------------------------------------------
 
 def prepare_log_file() -> None:
     global log_file_handle
@@ -719,6 +724,8 @@ def create_temp_folder() -> None:
 
 bar_file_handle: TextIO
 
+#---------------------------------------------------------------------------------------------------
+
 def create_progress_file() -> None:
     global bar_file_handle
     if log_level >= LogLevel.debug:
@@ -770,9 +777,9 @@ def create_bar(cost: float) -> ProgressBar:
     data   = numpy.random.bytes(2000 * 2000 * 3)
     image  = pyvips.Image.new_from_memory(data, 2000, 2000, 3, "uchar")
     start  = time.perf_counter()
-    image.resize(0.5, kernel = scaler_map[Scaler[INTERNAL_SCALER]]).copy_memory()
+    image.resize(0.5, kernel = scaler_map[Scaler(INTERNAL_SCALER)]).copy_memory()
     delta  = time.perf_counter() - start
-    cost_  = unit_cost(Size(2000, 2000), Scale(Scaler[INTERNAL_SCALER], 0.5))
+    cost_  = unit_cost(Size(2000, 2000), Scale(Scaler(INTERNAL_SCALER), 0.5))
     mpxs   = cost_ / delta
     return ProgressBar(cost, mpxs, log_bar_progress)
 
@@ -1037,7 +1044,7 @@ def import_settings(s : str) -> UserSettings:
     s = "{" + s[:-1] + "}"
     return dacite.from_dict( data_class = UserSettings,
                              data = unflatten(json.loads(s)),
-                             config = dacite.Config(check_types=True) )
+                             config = dacite.Config(check_types = True, cast = [Enum]) )
 
 def export_settings(s: UserSettings) -> str:
     result: str = ""
@@ -1065,11 +1072,41 @@ def rewind_settings(s: UserSettings) -> list[str]:
 def import_session(s : str) -> Session:
     return dacite.from_dict( data_class = Session,
                              data       = json.loads(s),
-                             config     = dacite.Config(check_types=True) )
+                             config     = dacite.Config(check_types = True, cast = [Enum]) )
 
 
 def export_session(s: Session) -> str:
     return json.dumps(dataclasses.asdict(s), indent = 4, sort_keys = False)
+
+####################################################################################################
+# Session Import/Export
+####################################################################################################
+
+input_mode: str
+input_size: Size
+input_image: pyvips.Image
+
+####################################################################################################
+# Input Info Processing
+####################################################################################################
+
+global input_mode
+global input_size
+global input_image
+
+#---------------------------------------------------------------------------------------------------
+
+def process_input_info() -> None:
+    global input_mode
+    global input_size
+    global input_image
+    temp        = pyvips.Image.new_from_file(str(input_file_path), access="sequential")
+    iext        = extension(input_file_path)
+    imode       = cast(str, temp.interpretation)
+    ialpha      = 'alpha' if temp.hasalpha() else 'opaque'
+    input_mode  = f"{iext}--{imode}--{ialpha}"
+    input_size  = Size(temp.width, temp.height)
+    input_image = load(Load(input_file_path)).copy_memory()
 
 ####################################################################################################
 # Format Interpretation
@@ -1100,7 +1137,7 @@ def interpret_format(s: str) -> Size | None:
         h = round(input_size.height * k)
     elif re.fullmatch("[0-9]+[kK]", s):
         w, h = interpret_k(s, input_size.width > input_size.height)
-    elif re.fullmatch("[0-9]+(kh|kv|KH|KV)?", s):
+    elif re.fullmatch("[0-9]+(kh|kv|KH|KV)", s):
         w, h = interpret_k(s[:-1], s[-1:] in "hH")
     else:
         return None
@@ -1118,9 +1155,8 @@ def parse_format(s: str) -> str | None:
 
 def parse_closure(s: str) -> Scaler | None:
     if s == DEFAULT_KEYWORD: return None
-    try: return Scaler[s]
-    except KeyError as e:
-        fail(f"unrecognized scaler '{s}'", e)
+    try: return Scaler(s)
+    except KeyError as e: fail(f"unrecognized scaler '{s}'", e)
 
 def parse_drop(s: str) -> SpecialDrop | ScaleData | DescaleData | None:
     if   s == DEFAULT_KEYWORD: return None
@@ -1128,7 +1164,7 @@ def parse_drop(s: str) -> SpecialDrop | ScaleData | DescaleData | None:
     elif s in [ f"{x}-{y}" for x in Scaler.__members__()
                            for y in SpecialScale.__members__() ]:
         [algorithm, scale] = s.split("-")
-        return ScaleData(Scaler[algorithm], SpecialScale[scale])
+        return ScaleData(Scaler(algorithm), SpecialScale(scale))
     match = re.match(r"^([a-zA-Z]+)([0-9]+)$", s)
     if match is None: fail(f"unrecognized drop '{s}'")
     algorithm, arg = match.group(1), int(match.group(2))
@@ -1136,59 +1172,51 @@ def parse_drop(s: str) -> SpecialDrop | ScaleData | DescaleData | None:
         if arg < MIN_SCALING_SCALE or arg > MAX_SCALING_SCALE:
             fail( f"scale '{arg}' out of range "
                   f"[{MIN_SCALING_SCALE}, {MAX_SCALING_SCALE}]" )
-        return ScaleData(Scaler[algorithm], arg)
+        return ScaleData(Scaler(algorithm), arg)
     elif algorithm in Comparer.__members__():
         if arg < MIN_DESCALING_SIMILARITY or arg > MAX_DESCALING_SIMILARITY:
             fail(f"similarity '{arg}' out of range "
                   f"[{MIN_DESCALING_SIMILARITY}, {MAX_DESCALING_SIMILARITY}]" )
-        return DescaleData(Comparer[algorithm], arg)
+        return DescaleData(Comparer(algorithm), arg)
     fail(f"unrecognized algorithm '{algorithm}'")
 
-def parse_model(arg: str, name: str) -> UpscaleData | None:
-    if name == DEFAULT_KEYWORD: return None
-    match = re.match(r"^([a-zA-Z]+)([0-9]+)x(-auto)?$", name)
-    if match is None:
-        fail(f"the argument '{arg}' is invalid")
-    prefix = match.group(1)
-    scale  = int(match.group(2))
-    auto   = bool(match.group(3))
-    if scale < MIN_UPSCALE_SCALE or scale > MAX_UPSCALE_SCALE:
-        fail(f"the argument '{arg}' is invalid")
-    if not (MODEL_FOLDER_PATH / f"{name}{arg}x.bin").is_file():
-        fail(f"the {arg}'s weights (.bin) are missing")
-    if not (MODEL_FOLDER_PATH / f"{name}{arg}x.param").is_file():
-        fail(f"the {arg}'s parameters (.param) are missing")
-    return UpscaleData(prefix, scale, auto)
-
-def parse_cycles(name: str, s: str) -> int | None:
+def parse_model(s: str) -> UpscaleData | None:
     if s == DEFAULT_KEYWORD: return None
-    try: arg = int(s)
-    except ValueError:
-        fail(f"the argument '{name}' is invalid")
-    if arg < MIN_CYCLES or arg > MAX_CYCLES:
-        fail(f"the argument '{name}' is out of range")
-    return arg
+    match = re.match(r"^([a-zA-Z]+)([0-9]+)x(-auto)?$", s)
+    if match is None: fail(f"unrecognized model '{s}'")
+    name, scale, auto = match.group(1), int(match.group(2)), bool(match.group(3))
+    if scale < MIN_UPSCALING_SCALE or scale > MAX_UPSCALING_SCALE:
+        fail( f"scale '{scale}' out of range "
+              f"[{MIN_UPSCALING_SCALE}, {MAX_UPSCALING_SCALE}]" )
+    if not (MODEL_FOLDER_PATH / f"{name}{scale}x.bin").is_file():
+        fail(f"missing weights (.bin) of model '{name}{scale}x'")
+    if not (MODEL_FOLDER_PATH / f"{name}{scale}x.param").is_file():
+        fail(f"missing parameters (.param) of model '{name}{scale}x'")
+    return UpscaleData(name, scale, auto)
+
+def parse_cycles(s: str) -> int | None:
+    if s == DEFAULT_KEYWORD: return None
+    try: cycles = int(s)
+    except ValueError as e: fail(f"unrecognized cycles '{s}'", e)
+    if cycles < MIN_CYCLES or cycles > MAX_CYCLES:
+        fail(f"cycles '{s}' out of range [{MIN_CYCLES}, {MAX_CYCLES}]")
+    return cycles
 
 #---------------------------------------------------------------------------------------------------
 
-def settings_from_config_arguments(config_args: list[str]) -> UserSettings:
-
-   def feed(arg: ConfigArgument, parser):
-       return parser(arg.name.replace("_", "-"), config_args[arg])
-
+def settings_from_config_arguments(args: list[str]) -> UserSettings:
    return UserSettings \
-        ( UserMainSettings  ( feed(ConfigArgument.main_format    , parse_format   ) ,
-                              feed(ConfigArgument.main_closure   , parse_closure  ) ) ,
-          UserStageSettings ( feed(ConfigArgument.repair_drop    , parse_drop     ) ,
-                              feed(ConfigArgument.repair_model   , parse_model    ) ,
-                              feed(ConfigArgument.repair_cycles  , parse_cycles   ) ) ,
-          UserStageSettings ( feed(ConfigArgument.enhance_drop   , parse_drop     ) ,
-                              feed(ConfigArgument.enhance_model  , parse_model    ) ,
-                              feed(ConfigArgument.enhance_cycles , parse_cycles   ) ) ,
-          UserStageSettings ( feed(ConfigArgument.stylize_drop   , parse_drop     ) ,
-                              feed(ConfigArgument.stylize_model  , parse_model    ) ,
-                              feed(ConfigArgument.stylize_cycles , parse_cycles   ) ) )
-
+        ( UserMainSettings  ( parse_format  ( args[ConfigArgument.main_format]    ) ,
+                              parse_closure ( args[ConfigArgument.main_closure]   ) ) ,
+          UserStageSettings ( parse_drop    ( args[ConfigArgument.repair_drop]    ) ,
+                              parse_model   ( args[ConfigArgument.repair_model]   ) ,
+                              parse_cycles  ( args[ConfigArgument.repair_cycles]  ) ) ,
+          UserStageSettings ( parse_drop    ( args[ConfigArgument.enhance_drop]   ) ,
+                              parse_model   ( args[ConfigArgument.enhance_model]  ) ,
+                              parse_cycles  ( args[ConfigArgument.enhance_cycles] ) ) ,
+          UserStageSettings ( parse_drop    ( args[ConfigArgument.stylize_drop]   ) ,
+                              parse_model   ( args[ConfigArgument.stylize_model]  ) ,
+                              parse_cycles  ( args[ConfigArgument.stylize_cycles] ) ) )
 
 ####################################################################################################
 # Quick Arguments -> Settings
@@ -1199,7 +1227,7 @@ def settings_from_format_and_preset(arg1: str, arg2: str) -> UserSettings:
     b1 = interpret_format(arg1) is not None
     b2 = interpret_format(arg2) is not None
 
-    if not b1 and not b2: fail("format is missing")
+    if not b1 and not b2: fail("missing format")
     if     b1 and     b2: fail("format specified twice")
 
     format_ = arg1 if b1 else arg2
@@ -1208,18 +1236,18 @@ def settings_from_format_and_preset(arg1: str, arg2: str) -> UserSettings:
     if extension(preset) == "preset":
         preset_path = Path(preset)
         if not preset_path.is_file():
-            fail("the preset file does not exists")
+            fail(f"non-existing file of preset '{preset}'")
     else:
         preset_path = PRESET_FOLDER_PATH / f"{preset}.{PRESET_EXTENSION}"
         if not preset_path.is_file():
-            fail("the specified preset is unavailable")
+            fail(f"unrecognized preset '{preset}'")
 
     imported = import_settings(preset_path.read_text())
     rewind   = rewind_settings(imported)
     settings = settings_from_config_arguments(rewind)
 
     if interpret_format(format_) is None:
-        fail("the format is invalid")
+        fail(f"unrecognized format '{format_}'")
     settings.main.format = format_
 
     return settings
@@ -1227,14 +1255,14 @@ def settings_from_format_and_preset(arg1: str, arg2: str) -> UserSettings:
 #---------------------------------------------------------------------------------------------------
 
 def settings_from_two_arguments(quick_args: list[str]) -> UserSettings:
-    arg1 = quick_args[QuickArgument.format_or_preset_a]
-    arg2 = quick_args[QuickArgument.format_or_preset_b]
-    return settings_from_format_and_preset(arg1, arg2)
+    fpa = quick_args[QuickArgument.format_or_preset_a]
+    fpb = quick_args[QuickArgument.format_or_preset_b]
+    return settings_from_format_and_preset(fpa, fpb)
 
 def settings_from_one_argument(quick_args: list[str]) -> UserSettings:
-    arg1 = quick_args[QuickArgument.format_or_preset_a]
-    arg2 = DEFAULT_FORMAT if interpret_format(arg1) is None else DEFAULT_PRESET
-    return settings_from_format_and_preset(arg1, arg2)
+    fpa = quick_args[QuickArgument.format_or_preset_a]
+    fpb = DEFAULT_FORMAT if interpret_format(fpa) is None else DEFAULT_PRESET
+    return settings_from_format_and_preset(fpa, fpb)
 
 def settings_from_zero_arguments() -> UserSettings:
     return settings_from_format_and_preset(DEFAULT_FORMAT, DEFAULT_PRESET)
@@ -1245,10 +1273,10 @@ def settings_from_zero_arguments() -> UserSettings:
 
 user_settings: UserSettings
 
+#---------------------------------------------------------------------------------------------------
+
 def load_user_settings() -> None:
-
     global user_settings
-
     if   len(positional_arguments) == 0:
         user_settings = settings_from_zero_arguments()
     elif len(positional_arguments) == 1:
@@ -1276,6 +1304,8 @@ def resolve_overrides() -> None:
 
 ground_settings: GroundSettings
 
+#---------------------------------------------------------------------------------------------------
+
 def resolve_defaults() -> None:
     global ground_settings
     default_args = [ DEFAULT_FORMAT        ,
@@ -1294,45 +1324,29 @@ def resolve_defaults() -> None:
     ground_settings  = freeze_settings(final_settings)
 
 ####################################################################################################
-# I/O Info Processing
+# Output Info Processing
 ####################################################################################################
 
-input_mode      : str
-input_size      : Size
-input_image     : pyvips.Image
 output_mode     : str
 output_size     : Size
 current_image   : pyvips.Image
 
-def process_io_info() -> None:
-    global input_mode
-    global input_size
-    global input_image
+#---------------------------------------------------------------------------------------------------
+
+def process_output_info() -> None:
     global output_mode
     global output_size
     global current_image
-
-    temp = pyvips.Image.new_from_file(str(input_file_path), access="sequential")
-
-    iext        = extension(input_file_path)
-    imode       = cast(str, temp.interpretation)
-    ialpha      = 'alpha' if temp.hasalpha() else 'opaque'
-    input_mode  = f"{iext}--{imode}--{ialpha}"
-    input_size  = Size(temp.width, temp.height)
-    input_image = load(Load(input_file_path)).copy_memory()
-
-    if ialpha == 'alpha' and extension(output_file_path) in OPAQUE_EXTENSIONS:
-        fail(f"the output can't carry input's alpha channel")
-
     size = interpret_format(ground_settings.main.format)
-    if size is None: fail("the format is invalid")
-
+    if size is None: fail(f"unrecognized format '{ground_settings.main.format}'")
     oext          = extension(output_file_path)
     omode         = "srgb"
-    oalpha        = ialpha
+    oalpha        = 'alpha' if input_mode.endswith('alpha') else 'opaque'
     output_mode   = f"{oext}--{omode}--{oalpha}"
     output_size   = size
     current_image = input_image.copy_memory()
+    if input_mode.endswith('alpha') and extension(output_file_path) in OPAQUE_EXTENSIONS:
+        fail(f"output can't carry input's alpha channel")
 
 ####################################################################################################
 # Preset File
@@ -1361,6 +1375,8 @@ def create_session_file() -> None:
 
 upscaling_file_handle: TextIO
 
+#---------------------------------------------------------------------------------------------------
+
 def create_upscaling_file() -> None:
     global upscaling_file_handle
     if log_level >= LogLevel.debug:
@@ -1377,6 +1393,8 @@ def record_upscaling_progress(line: str) -> None:
 
 descaling_file_handle: TextIO
 
+#---------------------------------------------------------------------------------------------------
+
 def create_descaling_file() -> None:
     global descaling_file_handle
     if log_level >= LogLevel.debug:
@@ -1385,7 +1403,7 @@ def create_descaling_file() -> None:
 def record_descaling_progress(line: str) -> None:
     if log_level >= LogLevel.debug:
         message = f"{timestring(datetime.now())}: {line}"
-        fast_print(upscaling_file_handle, message)
+        fast_print(descaling_file_handle, message)
 
 ####################################################################################################
 # Upscaling
@@ -1396,22 +1414,22 @@ def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
     size = Size(current_image.width, current_image.height)
     if bar is not None: start_unit(size, unit, bar)
 
-    process = subprocess.Popen( [ str(RENV_FILE_PATH)              ,
-                                  "-i", str(TEMP_INPUT_FILE_PATH)  ,
-                                  "-o", str(TEMP_OUTPUT_FILE_PATH) ,
-                                  "-m", str(MODEL_FOLDER_PATH)     ,
-                                  "-n", unit.name                  ,
-                                  "-t", str(64 * tile_size)        ,
-                                  "-g", "0"                        ,
-                                  "-j", "1:1:1"                    ,
-                                  "-s", str(unit.scale)            ],
-                                  stdout  = subprocess.PIPE         ,
-                                  stderr  = subprocess.STDOUT       ,
-                                  text    = True                    ,
-                                  bufsize = 1                       )
+    process = subprocess.Popen( [ str(RENV_FILE_PATH)                  ,
+                                  "-i", str(TEMP_INPUT_FILE_PATH)      ,
+                                  "-o", str(TEMP_OUTPUT_FILE_PATH)     ,
+                                  "-m", str(MODEL_FOLDER_PATH)         ,
+                                  "-n", f"{unit.name}{unit.scale:0f}x" ,
+                                  "-t", str(64 * tile_size)            ,
+                                  "-g", "0"                            ,
+                                  "-j", "1:1:1"                        ,
+                                  "-s", str(unit.scale)                ],
+                                  stdout  = subprocess.PIPE            ,
+                                  stderr  = subprocess.STDOUT          ,
+                                  text    = True                       ,
+                                  bufsize = 1                          )
 
     if process.stdout is None:
-        fail("failed to capture the runner's output")
+        fail("failed to capture upscaling runner's output")
 
     for line in process.stdout:
         record_upscaling_progress(line)
@@ -1420,7 +1438,8 @@ def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
             if x is not None: bar.progress(float(x.group(1)))
 
     exit_code = process.wait()
-    if exit_code != 0: fail(f"the runner failed with code {exit_code}" )
+    if exit_code != 0:
+        fail(f"upscaling runner failed with code {exit_code}")
 
     if bar is not None: bar.stop()
 
@@ -1479,8 +1498,10 @@ def ndarray(image: pyvips.Image) -> numpy.ndarray:
                           shape=(image.height, image.width) )
 
 def roundtrip(image: pyvips.Image, div: float) -> pyvips.Image:
-    forth = image.resize(1.0 / div, kernel = scaler_map[Scaler[INTERNAL_SCALER]])
-    back  = forth.resize(div, kernel = scaler_map[Scaler[INTERNAL_SCALER]])
+    forth = image.resize(1.0 / div, kernel = scaler_map[Scaler(INTERNAL_SCALER)])
+    back  = forth.resize( image.width / forth.width                    ,
+                          vscale = image.height / forth.height         ,
+                          kernel = scaler_map[Scaler(INTERNAL_SCALER)] )
     return back
 
 #---------------------------------------------------------------------------------------------------
@@ -1494,8 +1515,8 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
     hi_div = 2.0
     bar_n = 0
     bar_p = 0
-    while ( sim(ref, ndarray(roundtrip(bw, hi_div)), unit.comparer) >= unit.similarity
-            and (round(bw.width / hi_div) >= 1 or round(bw.height / hi_div) >= 1)        ):
+    while ( (round(bw.width / hi_div) >= 1 and round(bw.height / hi_div) >= 1) and
+            sim(ref, ndarray(roundtrip(bw, hi_div)), unit.comparer) >= unit.similarity ):
         hi_div *= 2.0
         bar_p += 25.0 / 2 ** bar_n
         if bar is not None: bar.progress(bar_p)
@@ -1504,13 +1525,13 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
     if bar is not None: bar.progress(bar_p)
     lo_div = hi_div / 2.0
     div = (lo_div + hi_div) / 2.0
-    for _ in range(DESCALE_ITERATIONS):
+    for i in range(DESCALE_ITERATIONS):
         b = sim(ref, ndarray(roundtrip(bw, div)), unit.comparer) >= unit.similarity
         lo_div = div if     b else lo_div
         hi_div = div if not b else hi_div
         div = (lo_div + hi_div) / 2.0
-        if bar is not None: bar.progress(bar_p + (90.0 - bar_p) / DESCALE_ITERATIONS)
-    result = image.resize(1.0 / div, kernel = scaler_map[Scaler["lanczos"]]).copy_memory()
+        if bar is not None: bar.progress(bar_p + (90.0 - bar_p) * (i + 1) / DESCALE_ITERATIONS)
+    result = image.resize(1.0 / div, kernel = scaler_map[Scaler(INTERNAL_SCALER)]).copy_memory()
     if bar is not None: bar.progress(100.0); bar.stop()
     return result
 
@@ -1519,18 +1540,14 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
 ####################################################################################################
 
 def log_input(size: Size, index: int, dry: bool, bar: ProgressBar | None = None) -> float:
-
-    cost           = 0
-
+    cost = 0
     if log_level >= LogLevel.endpoints:
         filename = f"{index:02}_import_{current_image.width}x{current_image.height}.png"
         unit     = Save(SESSION_FOLDER_PATH / filename)
         if not dry: save(unit, current_image, bar)
         cost += unit_cost(size, unit)
-
     if not dry: log( f"the import has been completed with output"
                      f" size {current_image.width}x{current_image.height}" )
-
     return cost
 
 def log_step ( size  : Size                      ,
@@ -1539,9 +1556,7 @@ def log_step ( size  : Size                      ,
                phase : Phase                     ,
                step  : Step                      ,
                bar   : ProgressBar | None = None ) -> float:
-
     cost = 0
-
     if log_level >= LogLevel.research:
         filename = ( f"{index:02}_"                f"{phase.name}-phase_"
                      f"{step.name}-step_"          f"{current_image.width}x"
@@ -1549,32 +1564,25 @@ def log_step ( size  : Size                      ,
         unit     = Save(SESSION_FOLDER_PATH / filename)
         if not dry: save(unit, current_image, bar)
         cost += unit_cost(size, unit)
-
     if not dry:
-        article = "a" + "n" if step.name[0] in 'aeiou' else ''
+        article = "an" if step.name[0] in 'aeiou' else 'a'
         log( f"{article} {step.name} step in the {phase.name} phase has been "
              f"completed with output size {current_image.width}x{current_image.height}" )
-
     return cost
 
 def log_output(size: Size, index: int, dry: bool, bar: ProgressBar | None = None) -> float:
-
     cost = 0
-
     if log_level >= LogLevel.endpoints:
         filename = f"{index:02}_export_{current_image.width}x{current_image.height}.png"
         unit = Save(SESSION_FOLDER_PATH / filename)
         if not dry: save(unit, current_image, bar)
         cost += unit_cost(size, unit)
-
     if log_level >= LogLevel.nothing:
         unit = Save(output_file_path)
         if not dry: save(unit, current_image, bar)
         cost += unit_cost(size, unit)
-
     if not dry: log ( f"the export has been completed with output"
                       f" size {current_image.width}x{current_image.height}" )
-
     return cost
 
 ####################################################################################################
@@ -1597,14 +1605,14 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
 
         s: GroundStageSettings = getattr(ground_settings, phase.name)
 
-        for i in range(s.cycles):
+        for _ in range(s.cycles):
             match s.drop:
                 case SpecialDrop.unit:
-                    continue
+                    pass
                 case ScaleData():
                     match s.drop.scale:
                         case SpecialScale.root:
-                            scale_ = math.sqrt(s.model.scale)
+                            scale_ = 1.0 / math.sqrt(s.model.scale)
                         case SpecialScale.full:
                             scale_ = s.model.scale
                         case int():
@@ -1628,15 +1636,24 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
 
             match s.model:
                 case UpscaleData():
-                    if s.model.auto:
-                        r = output_size.width / current_image.width
-                        n = math.ceil(math.log(r, s.model.scale))
+                    r = output_size.width / current_image.width
+                    n = math.ceil(math.log(r, s.model.scale))
+                    if r <= 1:
+                        pass
+                    elif s.model.auto and n > 1:
                         k = (r / s.model.scale **  n) ** (1.0 / (n - 1))
                         for _ in range(n):
+                            unit = Save(TEMP_INPUT_FILE_PATH)
+                            if not dry: save(unit, current_image, bar)
+                            cost += unit_cost(estimated_size, unit)
                             unit = Upscale(s.model.name, s.model.scale)
                             if not dry: upscale(unit, bar)
                             cost += unit_cost(estimated_size, unit)
-                            unit = Scale(Scaler[INTERNAL_SCALER], k)
+                            estimated_size *= unit_approx_scale(unit)
+                            unit = Load(TEMP_OUTPUT_FILE_PATH)
+                            if not dry: current_image = load(unit, bar)
+                            cost += unit_cost(estimated_size, unit)
+                            unit = Scale(Scaler(INTERNAL_SCALER), k)
                             if not dry: current_image = scale(unit, current_image, None, bar)
                             cost += unit_cost(estimated_size, unit)
                         cost += log_step(estimated_size, index(), dry, phase, Step.upscale, bar)
@@ -1648,11 +1665,11 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
                         unit = Upscale(s.model.name, s.model.scale)
                         if not dry: upscale(unit, bar)
                         cost += unit_cost(estimated_size, unit)
-                        cost += log_step(estimated_size, index(), dry, phase, Step.upscale, bar)
                         estimated_size *= unit_approx_scale(unit)
                         unit = Load(TEMP_OUTPUT_FILE_PATH)
                         if not dry: current_image = load(unit, bar)
                         cost += unit_cost(estimated_size, unit)
+                        cost += log_step(estimated_size, index(), dry, phase, Step.upscale, bar)
                 case _:
                     raise ValueError
 
@@ -1671,31 +1688,30 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
 ####################################################################################################
 
 def dry_check(cost: float) -> None:
-
-    if log_level <= LogLevel.dry and Flag.quiet not in flags:
-        print("")
-        print(f" input format   : {input_size.width} x {input_size.height} px")
-        print(f" input mode     : {input_mode.replace('--', ', ')}")
-        print(f" closure        : {closure_to_str(ground_settings.main.closure)}")
-        print(f" repair")
-        print(f"    downscaling : {drop_to_str(ground_settings.repair.drop)}")
-        print(f"    upscaling   : {model_to_str(ground_settings.repair.model)}")
-        print(f"    cycles      : {cycles_to_str(ground_settings.repair.cycles)}")
-        print(f" enhance")
-        print(f"    downscaling : {drop_to_str(ground_settings.enhance.drop)}")
-        print(f"    upscaling   : {model_to_str(ground_settings.enhance.model)}")
-        print(f"    cycles      : {cycles_to_str(ground_settings.enhance.cycles)}")
-        print(f" stylize")
-        print(f"    downscaling : {drop_to_str(ground_settings.stylize.drop)}")
-        print(f"    upscaling   : {model_to_str(ground_settings.stylize.model)}")
-        print(f"    cycles      : {cycles_to_str(ground_settings.stylize.cycles)}")
-        print(f" output format  : {output_size.width} x {output_size.height} px")
-        print(f" output mode    : {output_mode.replace('--', ', ')}")
-        print(f" tile size      : {int(regular_options[RegularOption.tile]) * 64} px")
-        print(f" total work     : {cost:.2f} Mpx")
-        print("")
-
-    exit()
+    if log_level <= LogLevel.dry:
+        if Flag.quiet not in flags:
+            print("")
+            print(f" input format   : {input_size.width} x {input_size.height} px")
+            print(f" input mode     : {input_mode.replace('--', ', ')}")
+            print(f" closure        : {closure_to_str(ground_settings.main.closure)}")
+            print(f" repair")
+            print(f"    downscaling : {drop_to_str(ground_settings.repair.drop)}")
+            print(f"    upscaling   : {model_to_str(ground_settings.repair.model)}")
+            print(f"    cycles      : {cycles_to_str(ground_settings.repair.cycles)}")
+            print(f" enhance")
+            print(f"    downscaling : {drop_to_str(ground_settings.enhance.drop)}")
+            print(f"    upscaling   : {model_to_str(ground_settings.enhance.model)}")
+            print(f"    cycles      : {cycles_to_str(ground_settings.enhance.cycles)}")
+            print(f" stylize")
+            print(f"    downscaling : {drop_to_str(ground_settings.stylize.drop)}")
+            print(f"    upscaling   : {model_to_str(ground_settings.stylize.model)}")
+            print(f"    cycles      : {cycles_to_str(ground_settings.stylize.cycles)}")
+            print(f" output format  : {output_size.width} x {output_size.height} px")
+            print(f" output mode    : {output_mode.replace('--', ', ')}")
+            print(f" tile size      : {int(tile_size) * 64} px")
+            print(f" total work     : {cost:.2f} Mpx")
+            print("")
+        exit()
 
 ####################################################################################################
 # Main
@@ -1714,13 +1730,12 @@ def main():
     except SystemExit as e:
         raise e
     except KeyboardInterrupt as e:
-        early_fail(" └─→ Keyboard Interrupt", False, e)
+        early_fail(" └─→ Keyboard Interrupt", e, False)
     except BaseException as e:
-        early_fail("Unexpected Error", False, e)
+        early_fail("Unexpected Error", e, False)
 
     try:
         log("information check performed", LogLevel.text, recall(information_check))
-        log("early checks performed", LogLevel.text, recall(early_checks))
         log("early checks performed", LogLevel.text, recall(early_checks))
         log("arguments have been organized", LogLevel.text, recall(sort_arguments))
         log("regular options have been processed", LogLevel.text, recall(process_regular_options))
@@ -1735,14 +1750,16 @@ def main():
         log("progress file created")
         prepare_scaling_file()
         log("scaling file prepared")
+        process_input_info()
+        log("input information processed")
         load_user_settings()
         log("user settings loaded")
         resolve_overrides()
         log("overrides resolved")
         resolve_defaults()
         log("defaults resolved")
-        process_io_info()
-        log("io information processed")
+        process_output_info()
+        log("output information processed")
         create_preset_file()
         log("preset file created")
         create_session_file()
@@ -1755,10 +1772,10 @@ def main():
         raise e
     except KeyboardInterrupt as e:
         record_exit_message(False, "Keyboard Interrupt")
-        fail(" └─→ Keyboard Interrupt", False, e)
+        fail(" └─→ Keyboard Interrupt", e, False)
     except BaseException as e:
         record_exit_message(False, traceback.format_exc())
-        fail("Unexpected Error", False, e)
+        fail("Unexpected Error", e, False)
 
     try:
         cost = process(True)
@@ -1772,11 +1789,11 @@ def main():
     except KeyboardInterrupt as e:
         if Flag.quiet not in flags: print()
         record_exit_message(False, "Keyboard Interrupt")
-        fail(" └─→ Keyboard Interrupt", False, e)
+        fail(" └─→ Keyboard Interrupt", e, False)
     except BaseException as e:
         if Flag.quiet not in flags: print()
         record_exit_message(False, traceback.format_exc())
-        fail("Unexpected Error", False, e)
+        fail("Unexpected Error", e, False)
     else:
         if Flag.quiet not in flags: print()
         record_exit_message(True, "")
