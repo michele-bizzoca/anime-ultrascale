@@ -81,16 +81,16 @@ DEFAULT_TILE_SIZE     : Final = "4"
 
 #---------------------------------------------------------------------------------------------------
 
-MIN_SCALE_SCALE    : Final = 1
-MAX_SCALE_SCALE    : Final = 99
-MIN_DESCALE_TARGET : Final = 80
-MAX_DESCALE_TARGET : Final = 95
-MIN_UPSCALE_SCALE  : Final = 1
-MAX_UPSCALE_SCALE  : Final = 16
-MIN_CYCLES         : Final = 0
-MAX_CYCLES         : Final = 4
-MIN_TILE_SIZE      : Final = 1
-MAX_TILE_SIZE      : Final = 16
+MIN_SCALING_SCALE        : Final = 1
+MAX_SCALING_SCALE        : Final = 99
+MIN_DESCALING_SIMILARITY : Final = 80
+MAX_DESCALING_SIMILARITY : Final = 95
+MIN_UPSCALING_SCALE      : Final = 1
+MAX_UPSCALING_SCALE      : Final = 16
+MIN_CYCLES               : Final = 0
+MAX_CYCLES               : Final = 4
+MIN_TILE_SIZE            : Final = 1
+MAX_TILE_SIZE            : Final = 16
 
 #---------------------------------------------------------------------------------------------------
 
@@ -528,10 +528,12 @@ def early_checks() -> None:
         early_fail("non-existing input file")
     if not Path(sys.argv[2]).parent.is_dir():
         early_fail("non-existing output file's parent directory")
-    if not extension(Path(sys.argv[1])) in EXTENSIONS:
-        early_fail("unrecognized input extension")
-    if not extension(Path(sys.argv[2])) in EXTENSIONS:
-        early_fail("unrecognized output extension")
+    input_ext = extension(Path(sys.argv[1]))
+    if not input_ext in EXTENSIONS:
+        early_fail(f"unrecognized input extension '{input_ext}'")
+    output_ext = extension(Path(sys.argv[2]))
+    if not output_ext in EXTENSIONS:
+        early_fail(f"unrecognized output extension '{output_ext}'")
     register(early_checks)
 
 ####################################################################################################
@@ -612,16 +614,17 @@ def process_regular_options() -> None:
         try:
             log_level = LogLevel[regular_options[RegularOption.log]]
         except KeyError as e:
-            early_fail("invalid log level", e)
+            early_fail(f"unrecognized log level '{log_level}'", e)
     else:
         log_level = LogLevel(DEFAULT_LOGLEVEL)
     if RegularOption.tile in regular_options:
         try:
             tile_size = int(regular_options[RegularOption.tile])
         except ValueError as e:
-            early_fail("tile size is not an integer", e)
+            early_fail(f"tile size '{tile_size}' not an integer", e)
         if tile_size < MIN_TILE_SIZE or tile_size > MAX_TILE_SIZE:
-            early_fail(f"tile size out of range [{MIN_TILE_SIZE}, {MAX_TILE_SIZE}]")
+            early_fail( f"tile size '{tile_size}' out of range "
+                        f"[{MIN_TILE_SIZE}, {MAX_TILE_SIZE}]" )
     else:
         tile_size = int(DEFAULT_TILE_SIZE)
     register(process_regular_options)
@@ -632,7 +635,7 @@ def process_regular_options() -> None:
 
 def create_session_folder() -> None:
     if log_level >= LogLevel.text:
-        SESSION_FOLDER_PATH.mkdir(exist_ok = True)
+        SESSION_FOLDER_PATH.mkdir(parents = True)
     register(create_session_folder)
 
 ####################################################################################################
@@ -665,7 +668,6 @@ def prepare_log_file() -> None:
     register(prepare_log_file)
 
 def log(message: str, level: LogLevel = LogLevel.text, now_ : str | None = None):
-
     if log_level >= LogLevel.text and log_level >= level:
         message = ( f"{now_ or timestring(datetime.now())}, "
                     f"level {log_level_map[level].upper()}: "
@@ -677,12 +679,11 @@ def log(message: str, level: LogLevel = LogLevel.text, now_ : str | None = None)
 ####################################################################################################
 
 def fail( message   : str                         ,
-          suggest   : bool = True                 ,
-          exception : BaseException | None = None ) -> NoReturn:
-
+          exception : BaseException | None = None ,
+          suggest   : bool = True                 ) -> NoReturn:
     log(message, LogLevel.error)
     record_exit_message(False, message)
-    early_fail(message, suggest, exception)
+    early_fail(message, exception, suggest)
 
 ####################################################################################################
 # Invocation File
@@ -708,7 +709,7 @@ def remove_temp_folder() -> None:
     TEMP_FOLDER_PATH.rmdir()
 
 def create_temp_folder() -> None:
-    TEMP_FOLDER_PATH.mkdir(exist_ok = True)
+    TEMP_FOLDER_PATH.mkdir(parents = True)
     atexit.register(remove_temp_folder)
     atexit.register(clean_temp_folder)
 
@@ -769,10 +770,9 @@ def create_bar(cost: float) -> ProgressBar:
     data   = numpy.random.bytes(2000 * 2000 * 3)
     image  = pyvips.Image.new_from_memory(data, 2000, 2000, 3, "uchar")
     start  = time.perf_counter()
-    scaler = Scaler(DEFAULT_CLOSURE)
-    image.resize(0.5, kernel = scaler_map[scaler]).copy_memory()
+    image.resize(0.5, kernel = scaler_map[Scaler[INTERNAL_SCALER]]).copy_memory()
     delta  = time.perf_counter() - start
-    cost_  = unit_cost(Size(2000, 2000), Scale(scaler, 0.5))
+    cost_  = unit_cost(Size(2000, 2000), Scale(Scaler[INTERNAL_SCALER], 0.5))
     mpxs   = cost_ / delta
     return ProgressBar(cost, mpxs, log_bar_progress)
 
@@ -987,6 +987,11 @@ def unflatten(data: dict[str, object]) -> dict[str, object]:
 # Settings Import/Export
 ####################################################################################################
 
+def format_to_str(format_: str | None) -> str:
+    if format_ is None:
+        return DEFAULT_KEYWORD
+    return format_
+
 def closure_to_str(closure: Scaler | None) -> str:
     if closure is None:
         return DEFAULT_KEYWORD
@@ -1003,18 +1008,18 @@ def drop_to_str(drop: SpecialDrop | ScaleData | DescaleData | None) -> str:
         if isinstance(drop.scale, SpecialScale):
             return f"{drop.scaler.name}-{drop.scale.name}"
         elif isinstance(drop.scale, int):
-            return drop.scaler.name + str(drop.scale)
+            return f"{drop.scaler.name}{drop.scale}"
         else:
             raise ValueError
     elif isinstance(drop, DescaleData):
-        return drop.comparer.name + str(drop.similarity)
+        return f"{drop.comparer.name}{drop.similarity}"
     raise ValueError
 
 def model_to_str(model: UpscaleData | None) -> str:
     if model is None:
         return DEFAULT_KEYWORD
     elif isinstance(model, UpscaleData):
-        return model.name + str(model.scale) + ('-auto' if model.auto else '')
+        return f"{model.name}{model.scale}{'-auto' if model.auto else ''}"
     raise ValueError
 
 def cycles_to_str(cycles: int | None) -> str:
@@ -1041,7 +1046,7 @@ def export_settings(s: UserSettings) -> str:
     return result
 
 def rewind_settings(s: UserSettings) -> list[str]:
-    return [ s.main.format or DEFAULT_KEYWORD ,
+    return [ format_to_str(s.main.format)     ,
              closure_to_str(s.main.closure)   ,
              drop_to_str(s.repair.drop)       ,
              model_to_str(s.repair.model)     ,
@@ -1105,46 +1110,39 @@ def interpret_format(s: str) -> Size | None:
 # Config Arguments -> Settings
 ####################################################################################################
 
-def parse_format(_: str, s: str) -> str | None:
+def parse_format(s: str) -> str | None:
     if s == DEFAULT_KEYWORD: return None
     if interpret_format(s) is None:
-        fail("the format is invalid")
+        fail(f"unrecognized format '{s}'")
     return s
 
-def parse_closure(name: str, s: str) -> ScaleData | None:
+def parse_closure(s: str) -> Scaler | None:
     if s == DEFAULT_KEYWORD: return None
-    match = re.match(r"^([a-zA-Z]+)([0-9]+)$", s)
-    if match is None:
-        fail(f"the argument '{name}' is invalid")
-    name = match.group(1)
-    arg  = int(match.group(2))
-    if arg < MIN_SCALE_SCALE or arg > MAX_SCALE_SCALE:
-        fail(f"the argument '{name}' is invalid")
-    elif name in Scaler.__members__():
-        return ScaleData(Scaler[name], arg)
-    fail(f"the argument '{name}' is invalid")
+    try: return Scaler[s]
+    except KeyError as e:
+        fail(f"unrecognized scaler '{s}'", e)
 
-def parse_drop(name: str, s: str) -> SpecialDrop | ScaleData | DescaleData | None:
+def parse_drop(s: str) -> SpecialDrop | ScaleData | DescaleData | None:
     if   s == DEFAULT_KEYWORD: return None
     elif s == SpecialDrop.unit.name : return SpecialDrop.unit
-    elif s in [ f"{x.name}-{y.name}" for x in Scaler.__members__()
-                                     for y in SpecialScale.__members__() ]:
+    elif s in [ f"{x}-{y}" for x in Scaler.__members__()
+                           for y in SpecialScale.__members__() ]:
         [algorithm, scale] = s.split("-")
         return ScaleData(Scaler[algorithm], SpecialScale[scale])
     match = re.match(r"^([a-zA-Z]+)([0-9]+)$", s)
-    if match is None:
-        fail(f"the argument '{name}' is invalid")
-    algorithm = match.group(1)
-    scale     = int(match.group(2))
+    if match is None: fail(f"unrecognized drop '{s}'")
+    algorithm, arg = match.group(1), int(match.group(2))
     if algorithm in Scaler.__members__():
-        if scale < MIN_SCALE_SCALE or scale > MAX_SCALE_SCALE:
-            fail(f"the argument '{algorithm}' is invalid")
-        return ScaleData(Scaler[algorithm], scale)
+        if arg < MIN_SCALING_SCALE or arg > MAX_SCALING_SCALE:
+            fail( f"scale '{arg}' out of range "
+                  f"[{MIN_SCALING_SCALE}, {MAX_SCALING_SCALE}]" )
+        return ScaleData(Scaler[algorithm], arg)
     elif algorithm in Comparer.__members__():
-        if scale < MIN_DESCALE_TARGET or scale > MAX_DESCALE_TARGET:
-            fail(f"the argument '{algorithm}' is invalid")
-        return DescaleData(Comparer[algorithm], scale)
-    fail(f"the argument '{algorithm}' is invalid")
+        if arg < MIN_DESCALING_SIMILARITY or arg > MAX_DESCALING_SIMILARITY:
+            fail(f"similarity '{arg}' out of range "
+                  f"[{MIN_DESCALING_SIMILARITY}, {MAX_DESCALING_SIMILARITY}]" )
+        return DescaleData(Comparer[algorithm], arg)
+    fail(f"unrecognized algorithm '{algorithm}'")
 
 def parse_model(arg: str, name: str) -> UpscaleData | None:
     if name == DEFAULT_KEYWORD: return None
@@ -1176,7 +1174,7 @@ def parse_cycles(name: str, s: str) -> int | None:
 def settings_from_config_arguments(config_args: list[str]) -> UserSettings:
 
    def feed(arg: ConfigArgument, parser):
-       return parser(arg.name.replace("_", " "), config_args[arg])
+       return parser(arg.name.replace("_", "-"), config_args[arg])
 
    return UserSettings \
         ( UserMainSettings  ( feed(ConfigArgument.main_format    , parse_format   ) ,
