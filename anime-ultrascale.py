@@ -91,6 +91,8 @@ MIN_CYCLES               : Final = 0
 MAX_CYCLES               : Final = 4
 MIN_TILE_SIZE            : Final = 1
 MAX_TILE_SIZE            : Final = 16
+MIN_WIDTH                : Final = 16
+MIN_HEIGHT               : Final = 16
 
 #---------------------------------------------------------------------------------------------------
 
@@ -385,6 +387,7 @@ class InvocationInfo:
     time    : str
     version : str
     log     : str
+    quiet   : bool
 
 @dataclass
 class ImageInfo:
@@ -420,7 +423,7 @@ class Scale(Unit):
 @dataclass
 class Upscale(Unit):
     name  : str
-    scale : float
+    scale : int
 
 @dataclass
 class Descale(Unit):
@@ -507,9 +510,9 @@ def early_fail( message   : str                         ,
 
 def information_check() -> None:
     if len(sys.argv) == 1 or len(sys.argv) == 2 and sys.argv[1] in ["-h", "--help"]:
-        print_help(); exit()
+        print_help(); sys.exit()
     if len(sys.argv) == 2 and sys.argv[1] in ["-v", "--version"]:
-        print(SOFTWARE_VERSION); exit()
+        print(SOFTWARE_VERSION); sys.exit()
     register(information_check)
 
 ####################################################################################################
@@ -613,12 +616,11 @@ def process_regular_options() -> None:
     global tile_size
     if RegularOption.log in regular_options:
         level_str = regular_options[RegularOption.log]
-        try:
-            log_level = LogLevel[level_str]
-        except KeyError as e:
-            early_fail(f"unrecognized log level '{level_str}'", e)
+        if level_str not in LogLevel.__members__:
+            early_fail(f"unrecognized log level '{level_str}'")
+        log_level = LogLevel[level_str]
         if log_level == LogLevel.error:
-            early_fail(f"unrecognized log level '{log_level}'")
+            early_fail(f"unrecognized log level '{level_str}'")
     else:
         log_level = LogLevel[DEFAULT_LOG_LEVEL]
     if RegularOption.tile in regular_options:
@@ -826,31 +828,36 @@ def load(unit: Load, bar: ProgressBar | None = None) -> pyvips.Image:
     loaded         = pyvips.Image.new_from_file(str(unit.path), access = "sequential")
     loaded         = loaded.colourspace("srgb")
     loaded         = loaded.cast("uchar")
-    if loaded.bands > 4: loaded = loaded[:4]
+
+    if loaded.bands > 4:
+        if loaded.hasalpha():
+            loaded = loaded[:3].bandjoin(loaded.extract_band(loaded.bands - 1))
+        else:
+            loaded = loaded[:3]
 
     if bar is not None: start_unit(Size(loaded.width, loaded.height), unit, bar)
 
-    def update_interrupt(image: pyvips.Image, _) -> None:
-        if interrupted.is_set(): image.set_kill(True)
-
-    def update_progress(_, progress: Any) -> None:
-        nonlocal percentage
-        if bar is not None and percentage != progress.percent:
-            bar.progress(float(progress.percent))
-            percentage = progress.percent
-
-    loaded.set_progress(True)
-    loaded.signal_connect \
-        ("preeval", lambda image, progress: record_scaling_progress("load", "preeval", progress))
-    loaded.signal_connect("eval", update_interrupt)
-    loaded.signal_connect("eval", update_progress)
-    loaded.signal_connect \
-        ("eval", lambda image, progress: record_scaling_progress("load", "eval", progress))
-    loaded.signal_connect \
-        ("posteval", lambda image, progress: record_scaling_progress("load", "posteval", progress))
-    signal.signal(signal.SIGINT, lambda signum, frame: interrupted.set())
-
     try:
+        def update_interrupt(image: pyvips.Image, _) -> None:
+            if interrupted.is_set(): image.set_kill(True)
+
+        def update_progress(_, progress: Any) -> None:
+            nonlocal percentage
+            if bar is not None and percentage != progress.percent:
+                bar.progress(float(progress.percent))
+                percentage = progress.percent
+
+        loaded.set_progress(True)
+        loaded.signal_connect \
+            ("preeval", lambda _, progress: record_scaling_progress("load", "preeval", progress))
+        loaded.signal_connect("eval", update_interrupt)
+        loaded.signal_connect("eval", update_progress)
+        loaded.signal_connect \
+            ("eval", lambda _, progress: record_scaling_progress("load", "eval", progress))
+        loaded.signal_connect \
+            ("posteval", lambda _, progress: record_scaling_progress("load", "posteval", progress))
+        signal.signal(signal.SIGINT, lambda signum, frame: interrupted.set())
+
         if bar is not None: bar.progress(0.0)
         loaded = loaded.copy_memory()
         if bar is not None: bar.progress(100.0)
@@ -879,27 +886,27 @@ def save(unit: Save, image: pyvips.Image, bar: ProgressBar | None = None) -> Non
     percentage     = -1
     copied         = image.copy()
 
-    def update_interrupt(image: pyvips.Image, _) -> None:
-        if interrupted.is_set(): image.set_kill(True)
-
-    def update_progress(_, progress: Any) -> None:
-        nonlocal percentage
-        if bar is not None and percentage != progress.percent:
-            bar.progress(float(progress.percent))
-            percentage = progress.percent
-
-    copied.set_progress(True)
-    copied.signal_connect \
-        ("preeval", lambda image, progress: record_scaling_progress("save", "preeval", progress))
-    copied.signal_connect("eval", update_interrupt)
-    copied.signal_connect("eval", update_progress)
-    copied.signal_connect \
-        ("eval", lambda image, progress: record_scaling_progress("save", "eval", progress))
-    copied.signal_connect \
-        ("posteval", lambda image, progress: record_scaling_progress("save", "posteval", progress))
-    signal.signal(signal.SIGINT, lambda signum, frame: interrupted.set())
-
     try:
+        def update_interrupt(image: pyvips.Image, _) -> None:
+            if interrupted.is_set(): image.set_kill(True)
+
+        def update_progress(_, progress: Any) -> None:
+            nonlocal percentage
+            if bar is not None and percentage != progress.percent:
+                bar.progress(float(progress.percent))
+                percentage = progress.percent
+
+        copied.set_progress(True)
+        copied.signal_connect \
+            ("preeval", lambda _, progress: record_scaling_progress("save", "preeval", progress))
+        copied.signal_connect("eval", update_interrupt)
+        copied.signal_connect("eval", update_progress)
+        copied.signal_connect \
+            ("eval", lambda _, progress: record_scaling_progress("save", "eval", progress))
+        copied.signal_connect \
+            ("posteval", lambda _, progress: record_scaling_progress("save", "posteval", progress))
+        signal.signal(signal.SIGINT, lambda signum, frame: interrupted.set())
+
         kwargs = {}
         if extension(unit.path) == "webp":
             kwargs["lossless"] = True
@@ -934,27 +941,27 @@ def scale( unit: Scale                    ,
                                    vscale = vscale or unit.scale    ,
                                    kernel = scaler_map[unit.scaler] )
 
-    def update_interrupt(image: pyvips.Image, _) -> None:
-        if interrupted.is_set(): image.set_kill(True)
-
-    def update_progress(_, progress: Any) -> None:
-        nonlocal percentage
-        if bar is not None and percentage != progress.percent:
-            bar.progress(float(progress.percent))
-            percentage = progress.percent
-
-    scaled.set_progress(True)
-    scaled.signal_connect \
-        ("preeval", lambda image, progress: record_scaling_progress("scale", "preeval", progress))
-    scaled.signal_connect("eval", update_interrupt)
-    scaled.signal_connect("eval", update_progress)
-    scaled.signal_connect \
-        ("eval", lambda image, progress: record_scaling_progress("scale", "eval", progress))
-    scaled.signal_connect \
-        ("posteval", lambda image, progress: record_scaling_progress("scale", "posteval", progress))
-    signal.signal(signal.SIGINT, lambda signum, frame: interrupted.set())
-
     try:
+        def update_interrupt(image: pyvips.Image, _) -> None:
+            if interrupted.is_set(): image.set_kill(True)
+
+        def update_progress(_, progress: Any) -> None:
+            nonlocal percentage
+            if bar is not None and percentage != progress.percent:
+                bar.progress(float(progress.percent))
+                percentage = progress.percent
+
+        scaled.set_progress(True)
+        scaled.signal_connect \
+            ("preeval", lambda image, progress: record_scaling_progress("scale", "preeval", progress))
+        scaled.signal_connect("eval", update_interrupt)
+        scaled.signal_connect("eval", update_progress)
+        scaled.signal_connect \
+            ("eval", lambda image, progress: record_scaling_progress("scale", "eval", progress))
+        scaled.signal_connect \
+            ("posteval", lambda image, progress: record_scaling_progress("scale", "posteval", progress))
+        signal.signal(signal.SIGINT, lambda signum, frame: interrupted.set())
+
         if bar is not None: bar.progress(0.0)
         scaled = scaled.copy_memory()
         if bar is not None: bar.progress(100.0)
@@ -1049,7 +1056,8 @@ def cycles_to_str(cycles: int | None) -> str:
 def import_settings(s : str) -> UserSettings:
     s = re.sub(r'^\s*(#.*)?$\n?', '', s, flags = re.MULTILINE)
     s = re.sub(r'^\s*(\w+)\s*=([^#\n]*)(#.*)?$\n?', r'"\1": \2,', s, flags=re.MULTILINE)
-    s = "{" + s[:-1] + "}"
+    s = re.sub(r",\s*$", "", s)
+    s = "{" + s + "}"
     return dacite.from_dict( data_class = UserSettings,
                              data = unflatten(json.loads(s)),
                              config = dacite.Config(check_types = True, cast = [Enum]) )
@@ -1098,12 +1106,14 @@ input_size: Size
 def process_input_info() -> None:
     global input_mode
     global input_size
-    temp        = pyvips.Image.new_from_file(str(input_file_path), access="sequential")
+    temp        = pyvips.Image.new_from_file(str(input_file_path))
     iext        = extension(input_file_path)
     imode       = str(cast(str, temp.interpretation))
     ialpha      = 'alpha' if temp.hasalpha() else 'opaque'
     input_mode  = f"{iext}--{imode}--{ialpha}"
     input_size  = Size(temp.width, temp.height)
+    if input_size.width < MIN_WIDTH or input_size.height < MIN_HEIGHT:
+        fail(f"input image too small ({input_size.width} x {input_size.height} px)")
 
 ####################################################################################################
 # Format Interpretation
@@ -1163,7 +1173,7 @@ def parse_drop(s: str) -> SpecialDrop | ScaleData | DescaleData | None:
     elif s in [ f"{x.name}-{y.name}" for x in Scaler for y in SpecialScale]:
         [algorithm, scale] = s.split("-")
         return ScaleData(Scaler(algorithm), SpecialScale(scale))
-    match = re.match(r"^([a-zA-Z]+)([0-9]+)$", s)
+    match = re.match(r"^([a-zA-Z-]+)([0-9]+)$", s)
     if match is None: fail(f"unrecognized drop '{s}'")
     algorithm, arg = match.group(1), int(match.group(2))
     if algorithm in Scaler.__members__:
@@ -1180,7 +1190,7 @@ def parse_drop(s: str) -> SpecialDrop | ScaleData | DescaleData | None:
 
 def parse_model(s: str) -> UpscaleData | None:
     if s == DEFAULT_KEYWORD: return None
-    match = re.match(r"^([a-zA-Z]+)([0-9]+)x(-auto)?$", s)
+    match = re.match(r"^([a-zA-Z0-9-]*[a-zA-Z-])([0-9]+)x(-auto)?$", s)
     if match is None: fail(f"unrecognized model '{s}'")
     name, scale, auto = match.group(1), int(match.group(2)), bool(match.group(3))
     if scale < MIN_UPSCALING_SCALE or scale > MAX_UPSCALING_SCALE:
@@ -1338,6 +1348,8 @@ def process_output_info() -> None:
     oalpha        = 'alpha' if input_mode.endswith('alpha') else 'opaque'
     output_mode   = f"{oext}--{omode}--{oalpha}"
     output_size   = size
+    if output_size.width < MIN_WIDTH or output_size.height < MIN_HEIGHT:
+        fail(f"output image too small ({output_size.width} x {output_size.height} px)")
     if input_mode.endswith('alpha') and extension(output_file_path) in OPAQUE_EXTENSIONS:
         fail(f"output can't carry input's alpha channel")
 
@@ -1354,11 +1366,12 @@ def create_preset_file() -> None:
 ####################################################################################################
 
 def create_session_file() -> None:
-    session = Session ( InvocationInfo(INVOCATION_STAMP, SOFTWARE_VERSION, log_level.name) ,
-                        ImageInfo(input_mode, input_size.width, input_size.height)         ,
-                        ImageInfo(output_mode, output_size.width, output_size.height)      ,
-                        ground_settings                                                    ,
-                        ExtraInfo(tile_size)                                               )
+    session = Session (
+        InvocationInfo(INVOCATION_STAMP, SOFTWARE_VERSION, log_level.name, Flag.quiet in flags) ,
+        ImageInfo(input_mode, input_size.width, input_size.height)                              ,
+        ImageInfo(output_mode, output_size.width, output_size.height)                           ,
+        ground_settings                                                                         ,
+        ExtraInfo(tile_size)                                                                    )
     if log_level >= LogLevel.text:
         SESSION_FILE_PATH.write_text(export_session(session))
 
@@ -1411,22 +1424,23 @@ current_image   : pyvips.Image
 def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
     size = Size(current_image.width, current_image.height)
     if bar is not None: start_unit(size, unit, bar)
-    process = subprocess.Popen( [ str(RENV_FILE_PATH)                  ,
-                                  "-i", str(TEMP_INPUT_FILE_PATH)      ,
-                                  "-o", str(TEMP_OUTPUT_FILE_PATH)     ,
-                                  "-m", str(MODEL_FOLDER_PATH)         ,
-                                  "-n", f"{unit.name}{unit.scale:0f}x" ,
-                                  "-t", str(64 * tile_size)            ,
-                                  "-g", "0"                            ,
-                                  "-j", "1:1:1"                        ,
-                                  "-s", str(unit.scale)                ],
-                                  stdout  = subprocess.PIPE            ,
-                                  stderr  = subprocess.STDOUT          ,
-                                  text    = True                       ,
-                                  bufsize = 1                          )
-    if process.stdout is None:
-        fail("failed to capture upscaling runner's output")
+    process = None
     try:
+        process = subprocess.Popen( [ str(RENV_FILE_PATH)                   ,
+                                      "-i", str(TEMP_INPUT_FILE_PATH)       ,
+                                      "-o", str(TEMP_OUTPUT_FILE_PATH)      ,
+                                      "-m", str(MODEL_FOLDER_PATH)          ,
+                                      "-n", f"{unit.name}{unit.scale}x"     ,
+                                      "-t", str(64 * tile_size)             ,
+                                      "-g", "0"                             ,
+                                      "-j", "1:1:1"                         ,
+                                      "-s", str(unit.scale)                 ],
+                                      stdout  = subprocess.PIPE             ,
+                                      stderr  = subprocess.STDOUT           ,
+                                      text    = True                        ,
+                                      bufsize = 1                           )
+        if process.stdout is None:
+            fail("failed to capture upscaling runner's output")
         for line in process.stdout:
             line = line.rstrip("\n")
             record_upscaling_progress(line)
@@ -1437,8 +1451,9 @@ def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
         if exit_code != 0:
             fail(f"upscaling runner failed with code {exit_code}")
     except KeyboardInterrupt:
-        process.terminate()
-        process.wait()
+        if process is not None and process.poll() is None:
+            process.terminate()
+            process.wait()
         raise
     finally:
         if bar is not None: bar.stop()
@@ -1512,24 +1527,32 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
     if bar is not None: start_unit(Size(image.width, image.height), unit, bar)
     try:
         bw = image.copy()
-        bw = bw[:3] if bw.bands > 3 else bw
+        if bw.hasalpha(): bw = bw[:-1]
+        if bw.bands > 3: bw = bw[:3]
         bw = bw.colourspace("b-w").cast("uchar")
         ref  = ndarray(bw)
-        hi_div = 2.0
+        max_div = min(bw.width / MIN_WIDTH, bw.height / MIN_HEIGHT)
+        hi_div = min(2.0, max_div)
         bar_n = 0
         bar_p = 0
-        while round(bw.width / hi_div) >= 1 and round(bw.height / hi_div) >= 1:
+        if bw.width <= MIN_WIDTH or bw.height <= MIN_HEIGHT:
+            if bar is not None: bar.progress(100.0)
+            return image.copy_memory()
+        lo_div = 1.0
+        while round(bw.width / hi_div) >= MIN_WIDTH and round(bw.height / hi_div) >= MIN_HEIGHT:
             similarity = sim(ref, ndarray(roundtrip(bw, hi_div)), unit.comparer)
             record_descaling_progress(f"divisor = {hi_div:.2f}, similarity = {similarity}")
             if similarity < unit.similarity: break
-            hi_div *= 2.0
+            lo_div = hi_div
+            next_div = min(hi_div * 2.0, max_div)
+            if next_div == hi_div: break
+            hi_div = next_div
             bar_p += 25.0 / 2 ** bar_n
             if bar is not None: bar.progress(bar_p)
             bar_n += 1
         else: fail("descaling search space exhausted")
         bar_p += 25.0 / 2 ** bar_n
         if bar is not None: bar.progress(bar_p)
-        lo_div = hi_div / 2.0
         div = (lo_div + hi_div) / 2.0
         for i in range(DESCALE_ITERATIONS):
             similarity = sim(ref, ndarray(roundtrip(bw, div)), unit.comparer)
@@ -1665,11 +1688,30 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
             match s.model:
                 case UpscaleData():
                     w = estimated_size.width if dry else current_image.width
-                    r = output_size.width / w
-                    n = math.ceil(math.log(r, s.model.scale))
-                    if s.model.auto and r <= 1:
+                    if s.model.auto and w >= output_size.width:
                         pass
-                    elif s.model.auto and n > 1:
+                    elif not s.model.auto or w * s.model.scale >= output_size.width:
+                        step_size = estimated_size
+                        unit = Save(TEMP_INPUT_FILE_PATH)
+                        if not dry: save(unit, current_image, bar)
+                        cost += unit_cost(estimated_size, unit)
+                        unit = Upscale(s.model.name, s.model.scale)
+                        if not dry: upscale(unit, bar)
+                        cost += unit_cost(estimated_size, unit)
+                        estimated_size *= unit_approx_scale(unit)
+                        unit = Load(TEMP_OUTPUT_FILE_PATH)
+                        if not dry: current_image = load(unit, bar)
+                        cost += unit_cost(estimated_size, unit)
+                        cost += log_step(step_size, index(), dry, phase, Step.upscale, bar)
+                        if s.model.auto:
+                            k = output_size.width / (w * s.model.scale)
+                            unit = Scale(Scaler(INTERNAL_SCALER), k)
+                            if not dry: current_image = scale(unit, current_image, None, bar)
+                            cost += unit_cost(estimated_size, unit)
+                            estimated_size = output_size
+                    else:
+                        r = output_size.width / w
+                        n = math.ceil(math.log(r, s.model.scale))
                         k = (r / s.model.scale **  n) ** (1.0 / (n - 1))
                         for j in range(n):
                             step_size = estimated_size
@@ -1690,19 +1732,6 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
                                 cost += unit_cost(estimated_size, unit)
                                 estimated_size *= unit_approx_scale(unit)
                         estimated_size = output_size
-                    else:
-                        step_size = estimated_size
-                        unit = Save(TEMP_INPUT_FILE_PATH)
-                        if not dry: save(unit, current_image, bar)
-                        cost += unit_cost(estimated_size, unit)
-                        unit = Upscale(s.model.name, s.model.scale)
-                        if not dry: upscale(unit, bar)
-                        cost += unit_cost(estimated_size, unit)
-                        estimated_size *= unit_approx_scale(unit)
-                        unit = Load(TEMP_OUTPUT_FILE_PATH)
-                        if not dry: current_image = load(unit, bar)
-                        cost += unit_cost(estimated_size, unit)
-                        cost += log_step(step_size, index(), dry, phase, Step.upscale, bar)
                 case _:
                     raise ValueError
 
@@ -1714,7 +1743,6 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
     if not dry: current_image = scale(unit, current_image, vscale, bar)
     cost += unit_cost(estimated_size, unit)
     cost += log_output(estimated_size, index(), dry, bar)
-    estimated_size *= unit_approx_scale(unit)
 
     return cost
 
@@ -1765,15 +1793,15 @@ def main():
     except SystemExit as e:
         raise e
     except KeyboardInterrupt as e:
-        early_fail(" └─→ Keyboard Interrupt", e, False)
+        early_fail(" └─→ keyboard interrupt", e, False)
     except BaseException as e:
-        early_fail("Unexpected Error", e, False)
+        early_fail("unexpected error", e, False)
 
     try:
         log("information check performed", LogLevel.text, recall(information_check))
         log("early checks performed", LogLevel.text, recall(early_checks))
-        log("arguments have been organized", LogLevel.text, recall(sort_arguments))
-        log("regular options have been processed", LogLevel.text, recall(process_regular_options))
+        log("arguments organized", LogLevel.text, recall(sort_arguments))
+        log("regular options processed", LogLevel.text, recall(process_regular_options))
         log("session folder created", LogLevel.text, recall(create_session_folder))
         log("exit file prepared", LogLevel.text, recall(prepare_exit_file))
         log("log file prepared", LogLevel.text, recall(prepare_log_file))
@@ -1786,7 +1814,7 @@ def main():
         prepare_scaling_file()
         log("scaling file prepared")
         process_input_info()
-        log("input information processed")
+        log("input info processed")
         load_user_settings()
         log("user settings loaded")
         resolve_overrides()
@@ -1794,7 +1822,7 @@ def main():
         resolve_defaults()
         log("defaults resolved")
         process_output_info()
-        log("output information processed")
+        log("output info processed")
         create_preset_file()
         log("preset file created")
         create_session_file()
@@ -1806,29 +1834,29 @@ def main():
     except SystemExit as e:
         raise e
     except KeyboardInterrupt as e:
-        record_exit_message(False, "Keyboard Interrupt")
-        fail(" └─→ Keyboard Interrupt", e, False)
+        record_exit_message(False, "keyboard interrupt")
+        fail(" └─→ keyboard interrupt", e, False)
     except BaseException as e:
         record_exit_message(False, traceback.format_exc())
-        fail("Unexpected Error", e, False)
-
+        fail("unexpected error", e, False)
     try:
         cost = process(True)
         log("execution plan created")
         dry_check(cost)
         log("dry check performed")
-        process(False, create_bar(cost))
+        with create_bar(cost) as bar:
+            process(False, bar)
         log("execution plan executed")
     except SystemExit as e:
         raise e
     except KeyboardInterrupt as e:
         if Flag.quiet not in flags: print()
-        record_exit_message(False, "Keyboard Interrupt")
-        fail(" └─→ Keyboard Interrupt", e, False)
+        record_exit_message(False, "keyboard interrupt")
+        fail(" └─→ keyboard interrupt", e, False)
     except BaseException as e:
         if Flag.quiet not in flags: print()
         record_exit_message(False, traceback.format_exc())
-        fail("Unexpected Error", e, False)
+        fail("unexpected error", e, False)
     else:
         if Flag.quiet not in flags: print()
         record_exit_message(True, "")
@@ -1842,269 +1870,7 @@ def print_help() -> None:
     def printer(s: str): print(textwrap.dedent(textwrap.dedent(s[1:])),end="")
 
     printer("""
-        Anime-Ultrascale
-        A Tool for Extreme Anime Upscaling.
-    
-        USAGE
-    
-        (1) anime-ultrascale 
-              INPUT OUTPUT
-              FORMAT REDUCTION CLOSURE TILING
-              ENHANCER  ITERATIONS  MULTIPLIER  DIVISOR  SCALER
-              ENHANCER_ ITERATIONS_ MULTIPLIER_ DIVISOR_ SCALER_
-              [OPTIONS]
-            
-        (2) anime-ultrascale INPUT OUTPUT FORMAT PRESET [OPTIONS]
-            anime-ultrascale INPUT OUTPUT PRESET FORMAT [OPTIONS]
-        
-        (3) anime-ultrascale INPUT OUTPUT FORMAT [OPTIONS]
-            anime-ultrascale INPUT OUTPUT PRESET [OPTIONS]
-        
-        (4) anime-ultrascale INPUT OUTPUT [OPTIONS]
-            anime-ultrascale INPUT OUTPUT [OPTIONS]
-        
-        (5) anime-ultrascale {-h│--help│-v│--version}
-        
-        (6) anime-ultrascale 
-    
-        EXAMPLES
-        
-        (1) anime-ultrascale 
-              input.jpg output.png
-              4k auto auto auto
-              4xHFA2k 2 auto auto auto
-              realesrgan-x4plus-anime 2 auto auto auto
-              --log text
-            
-        (2) anime-ultrascale input.jpg output.png 4k quality
-        
-        (3) anime-ultrascale input.jpg output.png 4k
-        
-        (4) anime-ultrascale input.jpg output.png
-        
-        POSITIONAL ARGUMENTS
-    
-        INPUT (type: str)
-            Input image in any of the following formats: PNG, JPG/JPEG, BMP, 
-            TIF/TIFF, WEBP.
-    
-        OUTPUT.png (type: str)
-            Output  image  in  any  of  the  following  formats: PNG (RGB[A]), 
-            JPG/JPEG (RGB), BMP (RGB), TIF/TIFF (RGB[A]), WEBP (RGB[A]).
-    
-        FORMAT (type: str) (auto: 4k)
-            Output  format,  all the following examples are accepted: (a) 2.0,
-            (b)  200%, (c) w2160, (d)h2160, (e) 4k, 4kh, 4kv (f) 4K, 4KH, 4KV. 
-            (a-b)  multiplies the input format. (c-d) fixes the output width /
-            height (e) fits the input into a multiple of 960 x 540 px or 540 x
-            960  px;  h  and v select the horizontal and vertical orientation, 
-            and  when  absent  the input's orientation is chosen; for example,
-            4kh  fits the input into 3840 x 2160 px (f) like the previous, but
-            instead  of  producing  the largest image fitting into the box, it
-            produces the smallest image filling the box.
-            
-        REDUCTION (type: float) (auto: automatic upscaling inversion)  
-            The divisor of upscaling inversion.
-           
-        CLOSURE (type: str) (auto: bicubic)
-            The algorithm to be used in the final downscaling.
-            
-        TILING (type: int) (auto: 4)
-            The  size  of each tile, to be multiplied with 64 px. For example,
-            4 leads to a tile size of 256 px.
-            
-        ENHANCER (type: str)
-            The  name  of  the Real ESRGAN model to be used during preliminary
-            upscaling  and  conservative  detail enhancement. It has be stored 
-            in the 'models' folder as a '.bin'/'.param' file pair.
-           
-        ITERATIONS (type: str)
-            The  number  of upscalings  performed  during  conservative detail 
-            enhancement.
-        
-        MULTIPLIER (type: int) (auto: deduced by ENHANCER)
-           The upscaling factor of ENHANCER.
-        
-        DIVISOR (type: float) (auto: sqrt(MULTIPLIER))
-           The downscaling to be applied before upscalings during conservative
-           detail enhancement.
-           
-        SCALER (type: str) (auto: bicubic)
-           The  downscaling  algorithm  to  be used during conservative detail 
-           enhancement.
-           
-        {ENHANCER_ │ ITERATIONS_ │ MULTIPLIER_ │ DIVISOR_ │ SCALER_}
-           Just  as  their counterparts without underscore, but these apply to 
-           strong detail enhancement. 
-    
-        PRESET (type: str) (auto: quality)
-            The  name of a stored preset. It has to be stored in the 'presets' 
-            folder  as  a '.preset' file. Each execution with log level 'text' 
-            or higher saves its preset as part of session data.
-    
-        {-h│--help} (or no argument)
-            Shows this help message.
-    
-        {-v│--version}
-            Shows this program's version.
-    
-        CONSTRAINTS
-    
-            No  initial,  intermediate  or  final image can be either empty or 
-            larger than 200 Mpx.
-             
-            REDUCTION  >= 1
-            CLOSURE    in ['bilinear', 'bicubic', 'lanczos']
-            TILING     >= 1 and <= 16
-    
-            iterations >= 0
-            multiplier >= 2
-            divisor    >= 1 and <= SOFT_MULTIPLIER
-            scaler     in ['bilinear', 'bicubic', 'lanczos']
-    
-            ITERATIONS >= 0
-            MULTIPLIER >= 2
-            DIVISOR    >= 1 and <= HARD_MULTIPLIER
-            SCALER     in ['bilinear', 'bicubic', 'lanczos']
-            
-        REGULAR OPTIONS
-    
-        {-l│--log} (type: str)
-            Determines  which  session  data  is  saved: 
-                'dry'       -> nothing (changes the output to terminal infos)
-                'nothing'   -> nothing
-                'text'      -> basic textual data, preset included
-                'endpoints' -> as 'text'      + input/output images
-                'debug'     -> as 'endpoints' + debug textual data
-                'research'  -> as 'debug'     + intermediate images
-        
-        {-q│--quiet}
-            No standard output.
-            
-        OVERRIDE OPTIONS
-        
-        Every  parameter  specified using positional arguments (possibly using
-        the  default mechanic), except for INPUT and OUTPUT, can be overridden 
-        with an option. Positional arguments are treated differently depending
-        on  whether  they have been presented with an underscore or not. These
-        two examples summarize the rules:
-        
-            ENHANCER  -> {-e│--enhancer}
-            ENHANCER_ -> {-E│--Enhancer}
-        
-        DESCRIPTION
-    
-        Anime-Ultrascale  performs  extreme  image  enlargement  by controlled 
-        alternation  of  downscaling  and  AI  upscaling, where downscaling is 
-        performed  by  traditional  algorithms,  and AI upscaling is performed 
-        using Real ESRGAN models.
-    
-        The program consists of four phases: 
-            - upscaling  inversion:  detecting  and   applying  the  strongest 
-              information-preserving  downscaling, as AI models will assume no 
-              size inflation
-            - preliminary upscaling: upscaling to the target format
-            - conservative  detail enhancement: upscaling and downscaling back 
-              the  image  zero or more times while preserving original details
-              (adds detail moderately)
-            - strong  detail  enhancement:  upscaling and downscaling back the 
-              image  zero  or  more times while partly reinterpreting original
-              details (adds detail considerably)
-    
-        PROGRESS
-        
-        A progress bar keeps track of the overall progress of the program. The 
-        cost  unit  is  the Mpx, intended as the average time needed by a Real 
-        ESRGAN model to process 1 Mpx of input data.
-         
-        DEPLOYMENT
-    
-        The  official Real ESRGAN executable, 'realesrgan-ncnn-vulkan', has to 
-        be stored in the 'renv' folder.
-        
-        Real  ESRGAN  models  have to be stored in the 'models' folder. Such a
-        model  consists  in  a  pair  of  '.bin'/'.param'  files with the same
-        basename,  which  is  considered   to  be  the  model's  name.  When a
-        model  multiplier  is  specified  as 'auto', it is searched for in the
-        model name.
-    
-        Presets  have  to  be  stored  in  the 'presets' folder. A preset is a
-        '.preset'  file  that  contains   every   detail   related   to  image 
-        manipulation. The preset file's basename is considered to be its name.
-        Unless  specified  otherwise,  every  execution  saves   its preset as 
-        part  of  session  data.  The  preset  file  syntax is elementary, for 
-        reference look at a generated preset.
-        
-        Session  files  are saved in the 'sessions' folder at the subdirectory
-        'sessions/<date>/<time+pid>'. The most important session files are:
-            - 'session.preset': image manipulation parameters
-            - 'session.json': invocation details, I/O details, ground presets
-            - 'log.txt': history of the execution with timestamps
-            - <image with lowest counter>: input image in png format 
-            - <image with highest counter>: output image in png format
-        
-        Temporary  files  are  created and deleted in the 'temp' folder, which 
-        you don't need to care about.
-    
-        If  this  program has been downloaded from the official repository, it 
-        will    include    the    models    '4xHFA2k'    (conservative)    and    
-        'realesrgan-x4plus-anime'  (strong),  as well as the presets 'quality' 
-        and 'speed'.
-        
-        If,   additionally,   the   program   has  been  installed  using  the
-        repository's  'install.sh', the directory tree will be the following:
-    
-        ┌── anime-ultrascale.py
-        ├── renv
-        │     └── realesrgan-ncnn-vulkan
-        ├── models
-        │     ├── 4xHFA2k.bin
-        │     ├── 4xHFA2k.param
-        │     ├── realesrgan-x4plus-anime.bin
-        │     └── realesrgan-x4plus-anime.param
-        ├── presets
-        │     ├── quality.preset
-        │     └── speed.preset
-        ├── sessions
-        │     ├── <date>
-        │     │      ├── <time+pid>
-        │     │      │        └── ·······
-        │     │      └── ·······
-        │     └── ·······
-        ├── temp
-        │     ├── <date+time+pid>
-        │     │      └── ·······
-        │     └── ·······
-        ├── LICENSE
-        ├── README
-        ├── README.md
-        ├── pyproject.toml
-        ├── install
-        ├── third-party
-        │     ├── LICENSES
-        │     ├── realesrgan-ncnn-vulkan
-        │     ├── 4xHFA2k.bin
-        │     ├── 4xHFA2k.param
-        │     ├── realesrgan-x4plus-anime.bin
-        │     └── realesrgan-x4plus-anime.param        
-        ├── setup-files
-        │     ├── installer
-        │     └── launcher
-        ├── .bin
-        │     └── anime-ultrascale
-        ├── .venv
-        │     └── ·······
-        └── .gitignore      
-        
-        REPOSITORIES
-    
-        Concept -> https://github.com/michele-bizzoca/anime-upscaling
-        Program -> https://github.com/michele-bizzoca/anime-ultrascale
-    
-        LICENSE
-    
-        Copyright (c) 2026 Michele Bizzoca
-        Licensed under the MIT License.
+        Under construction.
 """)
 
 ####################################################################################################
