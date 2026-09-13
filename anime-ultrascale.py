@@ -68,16 +68,20 @@ TEMP_OUTPUT_FILE   : Final = "output.png"
 
 #---------------------------------------------------------------------------------------------------
 
-DEFAULT_FORMAT        : Final = "4k"
-DEFAULT_CLOSURE       : Final = "bicubic"
-DEFAULT_DROP          : Final = "ssim95"
-DEFAULT_REPAIR_MODEL  : Final = "ani2x"
-DEFAULT_ENHANCE_MODEL : Final = "as2x"
-DEFAULT_STYLIZE_MODEL : Final = "rpa4x"
-DEFAULT_CYCLES        : Final = "1"
-DEFAULT_PRESET        : Final = "quality"
-DEFAULT_LOG_LEVEL     : Final = "text"
-DEFAULT_TILE_SIZE     : Final = "4"
+DEFAULT_FORMAT         : Final = "4k"
+DEFAULT_CLOSURE        : Final = "bicubic"
+DEFAULT_REPAIR_DROP    : Final = "ssim95"
+DEFAULT_REPAIR_MODEL   : Final = "ani2x-auto"
+DEFAULT_REPAIR_CYCLES  : Final = "1"
+DEFAULT_ENHANCE_DROP   : Final = "ssim95"
+DEFAULT_ENHANCE_MODEL  : Final = "us4x-auto"
+DEFAULT_ENHANCE_CYCLES : Final = "1"
+DEFAULT_STYLIZE_DROP   : Final = "ssim95"
+DEFAULT_STYLIZE_MODEL  : Final = "rpa4x-auto"
+DEFAULT_STYLIZE_CYCLES : Final = "1"
+DEFAULT_PRESET         : Final = "quality"
+DEFAULT_LOG_LEVEL      : Final = "text"
+DEFAULT_TILE_SIZE      : Final = "4"
 
 #---------------------------------------------------------------------------------------------------
 
@@ -97,12 +101,15 @@ MIN_HEIGHT               : Final = 16
 #---------------------------------------------------------------------------------------------------
 
 PROMPT_WIDTH         : Final = 80
-DESCALE_ITERATIONS   : Final = 6
+DESCALE_ITERATIONS   : Final = 8
 OPAQUE_EXTENSIONS    : Final = ["jpg", "jpeg", "bmp"]
 ALPHA_EXTENSIONS     : Final = ["png", "webp", "tif", "tiff"]
 PRESET_EXTENSION     : Final = "preset"
 OUTPUT_PRESET        : Final = "preset"
 DEFAULT_KEYWORD      : Final = "base"
+AUTO_KEYWORD         : Final = "auto"
+FIXED_KEYWORD        : Final = "fixed"
+UNIT_KEYWORD         : Final = "unit"
 DESCALE_APPROX_RATIO : Final = 0.5
 INTERNAL_SCALER      : Final = "lanczos"
 
@@ -299,28 +306,26 @@ flags_map: Final            = ( { short_opt(x.name, False) : x for x in list(Fla
 # Settings
 ####################################################################################################
 
-class SpecialDrop(str, Enum):
-    unit = "unit"
+@dataclass
+class UnitData:
+    pass
 
-class SpecialScale(str, Enum):
-    root = "root"
-    full = "full"
+@dataclass
+class ScaleData:
+    scaler : Scaler
+    scale  : int
+    fixed  : bool
+
+@dataclass
+class DescaleData:
+    comparer   : Comparer
+    similarity : int
 
 @dataclass
 class UpscaleData:
     name  : str
     scale : int
     auto  : bool
-
-@dataclass
-class ScaleData:
-    scaler : Scaler
-    scale  : int | SpecialScale
-
-@dataclass
-class DescaleData:
-    comparer   : Comparer
-    similarity : int
 
 #---------------------------------------------------------------------------------------------------
 
@@ -331,7 +336,7 @@ class UserMainSettings:
 
 @dataclass
 class UserStageSettings:
-    drop    : None | SpecialDrop   | ScaleData | DescaleData = None
+    drop    : None | UnitData   | ScaleData | DescaleData = None
     model   : None | UpscaleData                             = None
     cycles  : None | int                                     = None
 
@@ -362,7 +367,7 @@ class GroundMainSettings:
 
 @dataclass
 class GroundStageSettings:
-    drop    : SpecialDrop | ScaleData | DescaleData
+    drop    : UnitData | ScaleData | DescaleData
     model   : UpscaleData
     cycles  : int
 
@@ -1027,18 +1032,13 @@ def closure_to_str(closure: Scaler | None) -> str:
         return closure.name
     raise ValueError
 
-def drop_to_str(drop: SpecialDrop | ScaleData | DescaleData | None) -> str:
+def drop_to_str(drop: UnitData | ScaleData | DescaleData | None) -> str:
     if drop is None:
         return DEFAULT_KEYWORD
-    elif isinstance(drop, SpecialDrop):
-        return drop.name
+    elif isinstance(drop, UnitData):
+        return UNIT_KEYWORD
     elif isinstance(drop, ScaleData):
-        if isinstance(drop.scale, SpecialScale):
-            return f"{drop.scaler.name}-{drop.scale.name}"
-        elif isinstance(drop.scale, int):
-            return f"{drop.scaler.name}{drop.scale}"
-        else:
-            raise ValueError
+        return f"{drop.scaler.name}{drop.scale}{f'-{FIXED_KEYWORD}' if drop.fixed else ''}"
     elif isinstance(drop, DescaleData):
         return f"{drop.comparer.name}{drop.similarity}"
     raise ValueError
@@ -1047,7 +1047,7 @@ def model_to_str(model: UpscaleData | None) -> str:
     if model is None:
         return DEFAULT_KEYWORD
     elif isinstance(model, UpscaleData):
-        return f"{model.name}{model.scale}x{'-auto' if model.auto else ''}"
+        return f"{model.name}{model.scale}x{f'-{AUTO_KEYWORD}' if model.auto else ''}"
     raise ValueError
 
 def cycles_to_str(cycles: int | None) -> str:
@@ -1172,21 +1172,20 @@ def parse_closure(s: str) -> Scaler | None:
         fail(f"unrecognized scaler '{s}'")
     return Scaler(s)
 
-def parse_drop(s: str) -> SpecialDrop | ScaleData | DescaleData | None:
+def parse_drop(s: str) -> UnitData | ScaleData | DescaleData | None:
     if   s == DEFAULT_KEYWORD: return None
-    elif s == SpecialDrop.unit.name : return SpecialDrop.unit
-    elif s in [ f"{x.name}-{y.name}" for x in Scaler for y in SpecialScale]:
-        [algorithm, scale] = s.split("-")
-        return ScaleData(Scaler(algorithm), SpecialScale(scale))
-    match = re.match(r"^([a-zA-Z-]+)([0-9]+)$", s)
+    elif s == UNIT_KEYWORD : return UnitData()
+    match = re.match(r"^([a-zA-Z-]+)([0-9]+)(-{FIXED_KEYWORD})?$", s)
     if match is None: fail(f"unrecognized drop '{s}'")
-    algorithm, arg = match.group(1), int(match.group(2))
+    algorithm, arg, fixed = match.group(1), int(match.group(2)), bool(match.group(3))
     if algorithm in Scaler.__members__:
         if arg < MIN_SCALING_SCALE or arg > MAX_SCALING_SCALE:
             fail( f"scale '{arg}' out of range "
                   f"[{MIN_SCALING_SCALE}, {MAX_SCALING_SCALE}]" )
-        return ScaleData(Scaler(algorithm), arg)
+        return ScaleData(Scaler(algorithm), arg, fixed)
     elif algorithm in Comparer.__members__:
+        if fixed:
+            fail(f"unrecognized drop '{s}'")
         if arg < MIN_DESCALING_SIMILARITY or arg > MAX_DESCALING_SIMILARITY:
             fail(f"similarity '{arg}' out of range "
                   f"[{MIN_DESCALING_SIMILARITY}, {MAX_DESCALING_SIMILARITY}]" )
@@ -1195,7 +1194,7 @@ def parse_drop(s: str) -> SpecialDrop | ScaleData | DescaleData | None:
 
 def parse_model(s: str) -> UpscaleData | None:
     if s == DEFAULT_KEYWORD: return None
-    match = re.match(r"^([a-zA-Z0-9-]*[a-zA-Z-])([0-9]+)x(-auto)?$", s)
+    match = re.match(rf"^([a-zA-Z0-9-]*[a-zA-Z-])([0-9]+)x(-{AUTO_KEYWORD})?$", s)
     if match is None: fail(f"unrecognized model '{s}'")
     name, scale, auto = match.group(1), int(match.group(2)), bool(match.group(3))
     if scale < MIN_UPSCALING_SCALE or scale > MAX_UPSCALING_SCALE:
@@ -1321,17 +1320,17 @@ ground_settings: GroundSettings
 
 def resolve_defaults() -> None:
     global ground_settings
-    default_args = [ DEFAULT_FORMAT        ,
-                     DEFAULT_CLOSURE       ,
-                     DEFAULT_DROP          ,
-                     DEFAULT_REPAIR_MODEL  ,
-                     DEFAULT_CYCLES        ,
-                     DEFAULT_DROP          ,
-                     DEFAULT_ENHANCE_MODEL ,
-                     DEFAULT_CYCLES        ,
-                     DEFAULT_DROP          ,
-                     DEFAULT_STYLIZE_MODEL ,
-                     DEFAULT_CYCLES        ]
+    default_args = [ DEFAULT_FORMAT         ,
+                     DEFAULT_CLOSURE        ,
+                     DEFAULT_REPAIR_DROP    ,
+                     DEFAULT_REPAIR_MODEL   ,
+                     DEFAULT_REPAIR_CYCLES  ,
+                     DEFAULT_ENHANCE_DROP   ,
+                     DEFAULT_ENHANCE_MODEL  ,
+                     DEFAULT_ENHANCE_CYCLES ,
+                     DEFAULT_STYLIZE_DROP   ,
+                     DEFAULT_STYLIZE_MODEL  ,
+                     DEFAULT_STYLIZE_CYCLES ]
     default_settings = settings_from_config_arguments(default_args)
     final_settings   = enrich_settings(user_settings, default_settings)
     ground_settings  = freeze_settings(final_settings)
@@ -1663,20 +1662,14 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
 
         for _ in range(s.cycles):
             match s.drop:
-                case SpecialDrop.unit:
+                case UnitData():
                     pass
                 case ScaleData():
-                    step_size = estimated_size if dry else get_size(current_image)
-                    match s.drop.scale:
-                        case SpecialScale.root:
-                            scale_ = 1.0 / math.sqrt(s.model.scale)
-                        case SpecialScale.full:
-                            scale_ = 1.0 / s.model.scale
-                        case int():
-                            scale_ = s.drop.scale / 100.0
-                        case _:
-                            raise ValueError
+                    current_size = estimated_size if dry else get_size(current_image)
+                    step_size = output_size if s.drop.fixed else current_size
                     min_scale = max(MIN_WIDTH / step_size.width, MIN_HEIGHT / step_size.height)
+                    scale_ = s.drop.scale / 100.0
+                    scale_ *= output_size.width / current_size.width if s.drop.fixed else 1
                     unit = Scale(s.drop.scaler, max(scale_, min_scale))
                     if not dry: current_image = scale(unit, current_image, None, bar)
                     cost += unit_cost(estimated_size, unit)

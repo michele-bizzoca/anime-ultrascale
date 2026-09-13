@@ -17,8 +17,8 @@ cp $DIR/setup-files/launcher                      $DIR/.bin/anime-ultrascale
 cp $DIR/third-party/realesrgan-ncnn-vulkan        $DIR/runner
 cp $DIR/third-party/ani2x.bin                     $DIR/models
 cp $DIR/third-party/ani2x.param                   $DIR/models
-cp $DIR/third-party/as2x.bin                      $DIR/models
-cp $DIR/third-party/as2x.param                    $DIR/models
+cp $DIR/third-party/us4x.bin                      $DIR/models
+cp $DIR/third-party/us4x.param                    $DIR/models
 cp $DIR/third-party/rpa4x.bin                     $DIR/models
 cp $DIR/third-party/rpa4x.param                   $DIR/models
 cp $DIR/setup-files/quality.preset                $DIR/presets
