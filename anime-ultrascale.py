@@ -30,12 +30,13 @@ import scipy
 
 #---------------------------------------------------------------------------------------------------
 
-from pathlib import Path
-from enum import IntEnum, Enum
-from datetime import datetime
+from itertools   import count
+from pathlib     import Path
+from enum        import IntEnum, Enum
+from datetime    import datetime
 from dataclasses import dataclass, field
-from threading import Event
-from typing import NoReturn, Final, TextIO, Any, cast, Callable
+from threading   import Event
+from typing      import NoReturn, Final, TextIO, Any, cast, Callable
 
 ####################################################################################################
 # Constants
@@ -73,7 +74,7 @@ DEFAULT_CLOSURE        : Final = "bicubic"
 DEFAULT_REPAIR_DROP    : Final = "ssim95"
 DEFAULT_REPAIR_MODEL   : Final = "ani2x-auto"
 DEFAULT_REPAIR_CYCLES  : Final = "1"
-DEFAULT_ENHANCE_DROP   : Final = "ssim95"
+DEFAULT_ENHANCE_DROP   : Final = "ssim98"
 DEFAULT_ENHANCE_MODEL  : Final = "us4x-auto"
 DEFAULT_ENHANCE_CYCLES : Final = "1"
 DEFAULT_STYLIZE_DROP   : Final = "ssim95"
@@ -87,8 +88,8 @@ DEFAULT_TILE_SIZE      : Final = "4"
 
 MIN_SCALING_SCALE        : Final = 1
 MAX_SCALING_SCALE        : Final = 100
-MIN_DESCALING_SIMILARITY : Final = 80
-MAX_DESCALING_SIMILARITY : Final = 95
+MIN_DESCALING_SIMILARITY : Final = 79
+MAX_DESCALING_SIMILARITY : Final = 99
 MIN_UPSCALING_SCALE      : Final = 2
 MAX_UPSCALING_SCALE      : Final = 16
 MIN_CYCLES               : Final = 0
@@ -100,18 +101,18 @@ MIN_HEIGHT               : Final = 16
 
 #---------------------------------------------------------------------------------------------------
 
-PROMPT_WIDTH         : Final = 80
-DESCALE_ITERATIONS   : Final = 8
-OPAQUE_EXTENSIONS    : Final = ["jpg", "jpeg", "bmp"]
-ALPHA_EXTENSIONS     : Final = ["png", "webp", "tif", "tiff"]
-PRESET_EXTENSION     : Final = "preset"
-OUTPUT_PRESET        : Final = "session"
-DEFAULT_KEYWORD      : Final = "base"
-AUTO_KEYWORD         : Final = "auto"
-FIXED_KEYWORD        : Final = "fixed"
-UNIT_KEYWORD         : Final = "unit"
-DESCALE_APPROX_RATIO : Final = 0.5
-INTERNAL_SCALER      : Final = "lanczos"
+OPAQUE_EXTENSIONS       : Final = ["jpg", "jpeg", "bmp"]
+ALPHA_EXTENSIONS        : Final = ["png", "webp", "tif", "tiff"]
+PRESET_EXTENSION        : Final = "preset"
+OUTPUT_PRESET           : Final = "session"
+DEFAULT_KEYWORD         : Final = "base"
+AUTO_KEYWORD            : Final = "auto"
+FIXED_KEYWORD           : Final = "fixed"
+UNIT_KEYWORD            : Final = "unit"
+PROMPT_WIDTH            : Final = 80
+INTERNAL_SCALER         : Final = "lanczos"
+DESCALING_APPROXIMATION : Final = 0.5
+DESCALING_PRECISION     : Final = 0.01
 
 ####################################################################################################
 # Invocation Data
@@ -468,7 +469,7 @@ def unit_approx_scale(unit: Unit) -> float:
     if isinstance(unit, (Scale, Upscale)):
         return unit.scale
     elif isinstance(unit, Descale):
-        return DESCALE_APPROX_RATIO
+        return DESCALING_APPROXIMATION
     else:
         return 1.00
 
@@ -1411,12 +1412,12 @@ def create_descaling_file() -> None:
     if log_level >= LogLevel.debug:
         descaling_file_handle = safe_open(DESCALING_FILE_PATH)
 
-def record_descaling_progress(divisor: float, similarity: float) -> None:
+def record_descaling_progress(scale: float, similarity: float) -> None:
     if log_level >= LogLevel.debug:
         message = ( f"{timestring(datetime.now())} -> "  +
                     f"{{ "                               +
-                    f"\"divisor\": {divisor:.2f}, "      +
-                    f"\"similarity\" = {similarity:.2f}" +
+                    f"\"scale\": {scale:.4f}, "          +
+                    f"\"similarity\" = {similarity:.4f}" +
                     f" }}"                               )
         fast_print(descaling_file_handle, message)
 
@@ -1469,116 +1470,177 @@ def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
 # Descaling
 ####################################################################################################
 
+DESCALING_CODOMAIN_PRECISION : Final = \
+    DESCALING_PRECISION * (MAX_DESCALING_SIMILARITY - MIN_DESCALING_SIMILARITY) / 100.0
+
+#---------------------------------------------------------------------------------------------------
+
 def gradient_similarity(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
-    sigma = 1.0
-    k     = 1e-6
-    gamma = 0.5
+    gradient_scale      : Final = 1.0
+    magnitude_exponent  : Final = 0.5
+    stabilizer          : Final = 1e-6
     def gradient_magnitude(image: numpy.ndarray) -> numpy.ndarray:
         image = image.astype(numpy.float64, copy=False)
-        gx = scipy.ndimage.gaussian_filter(image, sigma, order=(0, 1))
-        gy = scipy.ndimage.gaussian_filter(image, sigma, order=(1, 0))
-        return numpy.hypot(gx, gy)
-    g_ref = gradient_magnitude(reference) ** gamma
-    g_can = gradient_magnitude(candidate) ** gamma
-    similarity_map = (2.0 * g_ref * g_can + k) / (g_ref ** 2 + g_can ** 2 + k)
+        gradient_x = scipy.ndimage.gaussian_filter(image, gradient_scale, order = (0, 1))
+        gradient_y = scipy.ndimage.gaussian_filter(image, gradient_scale, order = (1, 0))
+        return numpy.hypot(gradient_x, gradient_y)
+    reference_magnitude = gradient_magnitude(reference) ** magnitude_exponent
+    candidate_magnitude = gradient_magnitude(candidate) ** magnitude_exponent
+    similarity_map = ( (2.0 * reference_magnitude * candidate_magnitude + stabilizer)     /
+                       (reference_magnitude ** 2 + candidate_magnitude ** 2 + stabilizer) )
     return numpy.mean(similarity_map)
 
 def phase_similarity(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
-    coefficient_sigma = 1.0
-    window_sigma      = 3.0
-    stabilizer        = 1e-6
-    gf: Final = scipy.ndimage.gaussian_filter
-    x, y = reference.astype(numpy.float64), candidate.astype(numpy.float64)
-    def coefficients(image):
-        return ( gf(image, coefficient_sigma, order=(0, 1))      +
-                 1j * gf(image, coefficient_sigma, order=(1, 0)) )
-    cx, cy = coefficients(x), coefficients(y)
-    cross = cx * numpy.conj(cy)
-    local_cross = ( gf(cross.real, window_sigma)      +
-                    1j * gf(cross.imag, window_sigma) )
-    energy = gf(numpy.abs(cross), window_sigma)
-    coherence = (numpy.abs(local_cross) + stabilizer) / (energy + stabilizer)
-    weight = numpy.sum(energy)
-    if weight == 0: return 1.0
-    return numpy.sum(coherence * energy) / weight
+    gradient_scale  : Final = 1.0
+    window_scale    : Final = 3.0
+    stabilizer      : Final = 1e-6
+    gaussian_filter : Final = scipy.ndimage.gaussian_filter
+    reference = reference.astype(numpy.float64, copy = False)
+    candidate = candidate.astype(numpy.float64, copy = False)
+    def coefficients(image: numpy.ndarray) -> numpy.ndarray:
+        gradient_x = gaussian_filter(image, gradient_scale, order = (0, 1))
+        gradient_y = gaussian_filter(image, gradient_scale, order = (1, 0))
+        return gradient_x + 1j * gradient_y
+    reference_coefficients = coefficients(reference)
+    candidate_coefficients = coefficients(candidate)
+    phase_product = reference_coefficients * numpy.conj(candidate_coefficients)
+    local_phase_product = ( gaussian_filter(phase_product.real, window_scale)      +
+                            gaussian_filter(phase_product.imag, window_scale) * 1j )
+    local_energy = gaussian_filter(numpy.abs(phase_product), window_scale)
+    coherence = (numpy.abs(local_phase_product) + stabilizer) / (local_energy + stabilizer)
+    total_energy = numpy.sum(local_energy)
+    if total_energy == 0.0: return 1.0
+    return numpy.sum(coherence * local_energy) / total_energy
 
 def structural_similarity(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
     return skimage.metrics.structural_similarity(reference, candidate, data_range = 255)
 
 #---------------------------------------------------------------------------------------------------
 
-def sim(reference: numpy.ndarray, candidate: numpy.ndarray, comparer: Comparer) -> float:
-    if   comparer == Comparer.ssim:
-        return structural_similarity(reference, candidate)
-    elif comparer == Comparer.psim:
-        return phase_similarity(reference, candidate)
-    elif comparer == Comparer.gsim:
-        return gradient_similarity(reference, candidate)
-    raise ValueError
+def similarity(reference: numpy.ndarray, candidate: numpy.ndarray, comparer: Comparer) -> float:
+    if   comparer == Comparer.ssim: return structural_similarity(reference, candidate)
+    elif comparer == Comparer.gsim: return gradient_similarity(reference, candidate)
+    elif comparer == Comparer.psim: return phase_similarity(reference, candidate)
+    else: raise ValueError
 
-def ndarray(image: pyvips.Image) -> numpy.ndarray:
+def to_bytes(image: pyvips.Image) -> numpy.ndarray:
     return numpy.ndarray( buffer = image.write_to_memory()  ,
                           dtype  = numpy.uint8              ,
                           shape=(image.height, image.width) )
 
-def roundtrip(image: pyvips.Image, div: float) -> pyvips.Image:
-    forth = image.resize(1.0 / div, kernel = scaler_map[Scaler(INTERNAL_SCALER)])
-    back  = forth.resize( image.width / forth.width                    ,
-                          vscale = image.height / forth.height         ,
-                          kernel = scaler_map[Scaler(INTERNAL_SCALER)] )
-    return back
+def roundtrip(image: pyvips.Image, hscale: float, vscale: float | None = None) -> pyvips.Image:
+    small = image.resize( hscale                                            ,
+                          vscale = vscale if vscale is not None else hscale ,
+                          kernel = scaler_map[Scaler(INTERNAL_SCALER)]      )
+    return small.resize( image.width / small.width                    ,
+                         vscale = image.height / small.height         ,
+                         kernel = scaler_map[Scaler(INTERNAL_SCALER)] )
 
 #---------------------------------------------------------------------------------------------------
 
 def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) -> pyvips.Image:
-    if bar is not None: start_unit(Size(image.width, image.height), unit, bar)
+    if bar is not None:
+        start_unit(Size(image.width, image.height), unit, bar)
     try:
-        bw = image.copy()
-        if bw.hasalpha(): bw = bw[:-1]
-        if bw.bands > 3: bw = bw[:3]
-        bw = bw.colourspace("b-w").cast("uchar")
-        ref  = ndarray(bw)
-        max_div = min(bw.width / MIN_WIDTH, bw.height / MIN_HEIGHT)
-        hi_div = min(2.0, max_div)
-        bar_n = 0
-        bar_p = 0
-        if bw.width <= MIN_WIDTH or bw.height <= MIN_HEIGHT:
+        if image.width <= MIN_WIDTH or image.height <= MIN_HEIGHT:
             if bar is not None: bar.progress(100.0)
             return image.copy_memory()
-        lo_div = 1.0
-        while round(bw.width / hi_div) >= MIN_WIDTH and round(bw.height / hi_div) >= MIN_HEIGHT:
-            candidate = roundtrip(bw, hi_div)
-            if candidate.width < MIN_WIDTH or candidate.height < MIN_HEIGHT: break
-            similarity = sim(ref, ndarray(candidate), unit.comparer)
-            record_descaling_progress(hi_div, similarity)
-            if similarity < unit.similarity: break
-            lo_div = hi_div
-            next_div = min(hi_div * 2.0, max_div)
-            if next_div == hi_div: break
-            hi_div = next_div
-            bar_p += 25.0 / 2 ** bar_n
-            if bar is not None: bar.progress(bar_p)
-            bar_n += 1
-        else: fail("descaling search space exhausted")
-        bar_p += 25.0 / 2 ** bar_n
-        if bar is not None: bar.progress(bar_p)
-        div = (lo_div + hi_div) / 2.0
-        for i in range(DESCALE_ITERATIONS):
-            similarity = sim(ref, ndarray(roundtrip(bw, div)), unit.comparer)
-            record_descaling_progress(div, similarity)
-            b = similarity >= unit.similarity
-            lo_div = div if     b else lo_div
-            hi_div = div if not b else hi_div
-            div = (lo_div + hi_div) / 2.0
-            delta_p = (90.0 - bar_p) * (i + 1) / DESCALE_ITERATIONS
-            if bar is not None: bar.progress(bar_p + delta_p)
+
+        grayscale = image
+        if grayscale.hasalpha(): grayscale = grayscale[:-1]
+        if grayscale.bands  > 3: grayscale = grayscale[:3]
+        grayscale = grayscale.colourspace("b-w").cast("uchar").copy_memory()
+
+        grayscale_m1 = roundtrip( grayscale                                   ,
+                                  (grayscale.width - 1.0)  / grayscale.width  ,
+                                  (grayscale.height - 1.0) / grayscale.height )
+        reference_m1 = to_bytes(grayscale_m1)
+
+        grayscale_m2 = roundtrip( grayscale_m1                                      ,
+                                  (grayscale_m1.width - 1.0)  / grayscale_m1.width  ,
+                                  (grayscale_m1.height - 1.0) / grayscale_m1.height )
+
+        max_score = similarity(reference_m1, to_bytes(grayscale_m2), unit.comparer)
+
+        min_scale = max(MIN_WIDTH / grayscale.width, MIN_HEIGHT / grayscale.height)
+
+        def self_similarity(scale: float) -> float:
+            score = ( similarity( reference_m1                             ,
+                                  to_bytes(roundtrip(grayscale_m1, scale)) ,
+                                  unit.comparer                            )
+                      / max_score )
+            record_descaling_progress(scale, score)
+            return score
+
+        upper_scale = 1.0
+        upper_score = 1.0
+        lower_scale = max(0.5, min_scale)
+        lower_score = self_similarity(lower_scale)
+        progress    = 20.0
+
+        if bar is not None: bar.progress(progress)
+
+        for iteration in count(1):
+            if lower_score < unit.similarity: break
+
+            upper_scale, upper_score = lower_scale, lower_score
+
+            if lower_scale == min_scale: break
+
+            lower_scale = max(lower_scale / 2.0, min_scale)
+            lower_score = self_similarity(lower_scale)
+            progress   += 20.0 / 2 ** iteration
+
+            if bar is not None: bar.progress(progress)
+
+        scale = lower_scale
+
+        if lower_score < unit.similarity:
+            last_side = 0
+            same_side = False
+
+            for iteration in count(1):
+                if upper_scale - lower_scale <= DESCALING_PRECISION: break
+
+                effective_lower_score = lower_score
+                effective_upper_score = upper_score
+
+                if same_side:
+                    if last_side < 0:
+                        effective_upper_score = ( unit.similarity                       +
+                                                  (upper_score - unit.similarity) / 2.0 )
+                    else:
+                        effective_lower_score = ( unit.similarity                       +
+                                                  (lower_score - unit.similarity) / 2.0 )
+
+                scale = ( lower_scale                               +
+                          (unit.similarity - effective_lower_score) *
+                          (upper_scale - lower_scale)               /
+                          (effective_upper_score - effective_lower_score) )
+
+                scale = min(max(scale, lower_scale), upper_scale)
+                score = self_similarity(scale)
+
+                if abs(score - unit.similarity) <= DESCALING_CODOMAIN_PRECISION: break
+
+                side      = 1 if score >= unit.similarity else -1
+                same_side = side == last_side
+                last_side = side
+
+                if side > 0: upper_scale, upper_score = scale, score
+                else:        lower_scale, lower_score = scale, score
+
+                if bar is not None:
+                    bar.progress(min(90.0, progress + 10.0 * iteration))
+
         kernel = scaler_map[Scaler(INTERNAL_SCALER)]
-        result = image.resize(1.0 / lo_div, kernel = kernel).copy_memory()
+        result = image.resize(scale, kernel=kernel).copy_memory()
+
         if bar is not None: bar.progress(100.0)
         return result
+
     finally:
-        if bar is not None:
-            bar.stop()
+        if bar is not None: bar.stop()
 
 ####################################################################################################
 # Picture Logging
