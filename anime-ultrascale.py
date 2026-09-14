@@ -86,7 +86,7 @@ DEFAULT_TILE_SIZE      : Final = "4"
 #---------------------------------------------------------------------------------------------------
 
 MIN_SCALING_SCALE        : Final = 1
-MAX_SCALING_SCALE        : Final = 99
+MAX_SCALING_SCALE        : Final = 100
 MIN_DESCALING_SIMILARITY : Final = 80
 MAX_DESCALING_SIMILARITY : Final = 95
 MIN_UPSCALING_SCALE      : Final = 2
@@ -105,7 +105,7 @@ DESCALE_ITERATIONS   : Final = 8
 OPAQUE_EXTENSIONS    : Final = ["jpg", "jpeg", "bmp"]
 ALPHA_EXTENSIONS     : Final = ["png", "webp", "tif", "tiff"]
 PRESET_EXTENSION     : Final = "preset"
-OUTPUT_PRESET        : Final = "preset"
+OUTPUT_PRESET        : Final = "session"
 DEFAULT_KEYWORD      : Final = "base"
 AUTO_KEYWORD         : Final = "auto"
 FIXED_KEYWORD        : Final = "fixed"
@@ -696,7 +696,7 @@ def prepare_log_file() -> None:
 def log(message: str, level: LogLevel = LogLevel.text, now_ : str | None = None):
     if log_level >= LogLevel.text and log_level >= level:
         message = ( f"{now_ or timestring(datetime.now())}, "
-                    f"level {log_level_map[level].upper()}: "
+                    f"level {log_level_map[level].upper(): <6} -> "
                     f"{message}" )
         fast_print(log_file_handle, message)
 
@@ -717,10 +717,10 @@ def fail( message   : str                         ,
 
 def create_invocation_file() -> None:
     if log_level >= LogLevel.text:
-        INVOCATION_FILE_PATH.write_text( f"PID: {INVOCATION_PID}\n"         +
-                                         f"Timestamp: {INVOCATION_STAMP}\n" +
-                                         f"PWD: {Path.cwd()}\n"             +
-                                         f"Command: {' '.join(sys.argv)}\n" )
+        INVOCATION_FILE_PATH.write_text( f"PID       -> {INVOCATION_PID}\n"     +
+                                         f"Timestamp -> {INVOCATION_STAMP}\n"   +
+                                         f"PWD       -> {Path.cwd()}\n"         +
+                                         f"Command   -> {' '.join(sys.argv)}\n" )
 
 ####################################################################################################
 # Temporary Files
@@ -817,14 +817,15 @@ def prepare_scaling_file() -> None:
 
 def record_scaling_progress(job: str, event: str, progress: Any) -> None:
     if log_level >= LogLevel.debug:
-        fast_print(scaling_file_handle, f"{timestring(datetime.now())}: " +
-                                        f"job={job}, "                    +
-                                        f"event={event}, "                +
-                                        f"percent={progress.percent}, "   +
-                                        f"run={progress.run}, "           +
-                                        f"eta={progress.eta}, "           +
-                                        f"npels={progress.npels}, "       +
-                                        f"tpels={progress.tpels}"         )
+        fast_print( scaling_file_handle                                         ,
+                    f"{timestring(datetime.now())} -> "                         +
+                    f"{{ "                                                      +
+                    f"\"job\": \"{job + '",': <7} "                             +
+                    f"\"event\": \"{event + '",': <10} "                        +
+                    f"\"percent\": {f"{progress.percent},": >4} "               +
+                    f"\"done\": {f"{progress.npels},": >9} "                    +
+                    f"\"left\": {f"{progress.tpels - progress.npels}": >9}"     +
+                    f" }}"                                                      )
 
 ####################################################################################################
 # Loading
@@ -1071,7 +1072,7 @@ def import_settings(s : str) -> UserSettings:
 def export_settings(s: UserSettings) -> str:
     result: str = ""
     for key, value in flatten(dataclasses.asdict(s)).items():
-        result += f"{key} = {json.dumps(value)}\n"
+        result += f"{key: <23} = {json.dumps(value)}\n"
     return result
 
 def rewind_settings(s: UserSettings) -> list[str]:
@@ -1175,7 +1176,7 @@ def parse_closure(s: str) -> Scaler | None:
 def parse_drop(s: str) -> UnitData | ScaleData | DescaleData | None:
     if   s == DEFAULT_KEYWORD: return None
     elif s == UNIT_KEYWORD : return UnitData()
-    match = re.match(r"^([a-zA-Z-]+)([0-9]+)(-{FIXED_KEYWORD})?$", s)
+    match = re.match(rf"^([a-zA-Z-]+)([0-9]+)(-{FIXED_KEYWORD})?$", s)
     if match is None: fail(f"unrecognized drop '{s}'")
     algorithm, arg, fixed = match.group(1), int(match.group(2)), bool(match.group(3))
     if algorithm in Scaler.__members__:
@@ -1394,7 +1395,7 @@ def create_upscaling_file() -> None:
 
 def record_upscaling_progress(line: str) -> None:
     if log_level >= LogLevel.debug:
-        message = f"{timestring(datetime.now())}: {line}"
+        message = f"{timestring(datetime.now())} -> {line}"
         fast_print(upscaling_file_handle, message)
 
 ####################################################################################################
@@ -1410,9 +1411,13 @@ def create_descaling_file() -> None:
     if log_level >= LogLevel.debug:
         descaling_file_handle = safe_open(DESCALING_FILE_PATH)
 
-def record_descaling_progress(line: str) -> None:
+def record_descaling_progress(divisor: float, similarity: float) -> None:
     if log_level >= LogLevel.debug:
-        message = f"{timestring(datetime.now())}: {line}"
+        message = ( f"{timestring(datetime.now())} -> "  +
+                    f"{{ "                               +
+                    f"\"divisor\": {divisor:.2f}, "      +
+                    f"\"similarity\" = {similarity:.2f}" +
+                    f" }}"                               )
         fast_print(descaling_file_handle, message)
 
 ####################################################################################################
@@ -1545,7 +1550,7 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
             candidate = roundtrip(bw, hi_div)
             if candidate.width < MIN_WIDTH or candidate.height < MIN_HEIGHT: break
             similarity = sim(ref, ndarray(candidate), unit.comparer)
-            record_descaling_progress(f"divisor = {hi_div:.2f}, similarity = {similarity}")
+            record_descaling_progress(hi_div, similarity)
             if similarity < unit.similarity: break
             lo_div = hi_div
             next_div = min(hi_div * 2.0, max_div)
@@ -1560,7 +1565,7 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
         div = (lo_div + hi_div) / 2.0
         for i in range(DESCALE_ITERATIONS):
             similarity = sim(ref, ndarray(roundtrip(bw, div)), unit.comparer)
-            record_descaling_progress(f"divisor = {div:.2f}, similarity = {similarity}")
+            record_descaling_progress(div, similarity)
             b = similarity >= unit.similarity
             lo_div = div if     b else lo_div
             hi_div = div if not b else hi_div
