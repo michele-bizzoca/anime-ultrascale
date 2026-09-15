@@ -2,6 +2,7 @@
 /models
 /temp
 /sessions
+/presets
 /.bin
 /.venv*
 /.idea
