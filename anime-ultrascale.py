@@ -1470,6 +1470,8 @@ def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
 # Descaling
 ####################################################################################################
 
+DESCALING_DOMAIN_PRECISION : Final = DESCALING_PRECISION
+
 DESCALING_CODOMAIN_PRECISION : Final = \
     DESCALING_PRECISION * (MAX_DESCALING_SIMILARITY - MIN_DESCALING_SIMILARITY) / 100.0
 
@@ -1545,100 +1547,69 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
         if image.width <= MIN_WIDTH or image.height <= MIN_HEIGHT:
             if bar is not None: bar.progress(100.0)
             return image.copy_memory()
-
         grayscale = image
         if grayscale.hasalpha(): grayscale = grayscale[:-1]
         if grayscale.bands  > 3: grayscale = grayscale[:3]
         grayscale = grayscale.colourspace("b-w").cast("uchar").copy_memory()
-
         grayscale_m1 = roundtrip( grayscale                                   ,
                                   (grayscale.width - 1.0)  / grayscale.width  ,
                                   (grayscale.height - 1.0) / grayscale.height )
         reference_m1 = to_bytes(grayscale_m1)
-
         grayscale_m2 = roundtrip( grayscale_m1                                      ,
                                   (grayscale_m1.width - 1.0)  / grayscale_m1.width  ,
                                   (grayscale_m1.height - 1.0) / grayscale_m1.height )
-
         max_score = similarity(reference_m1, to_bytes(grayscale_m2), unit.comparer)
-
         min_scale = max(MIN_WIDTH / grayscale.width, MIN_HEIGHT / grayscale.height)
-
         def self_similarity(scale: float) -> float:
-            score = ( similarity( reference_m1                             ,
-                                  to_bytes(roundtrip(grayscale_m1, scale)) ,
-                                  unit.comparer                            )
-                      / max_score )
-            record_descaling_progress(scale, score)
-            return score
-
+            candidate = to_bytes(roundtrip(grayscale_m1, scale))
+            similarity_ = similarity(reference_m1, candidate, unit.comparer) / max_score
+            record_descaling_progress(scale, similarity_)
+            return similarity_
         upper_scale = 1.0
         upper_score = 1.0
         lower_scale = max(0.5, min_scale)
         lower_score = self_similarity(lower_scale)
         progress    = 20.0
-
         if bar is not None: bar.progress(progress)
-
         for iteration in count(1):
             if lower_score < unit.similarity: break
-
-            upper_scale, upper_score = lower_scale, lower_score
-
+            upper_scale = lower_scale
+            upper_score = lower_score
             if lower_scale == min_scale: break
-
             lower_scale = max(lower_scale / 2.0, min_scale)
             lower_score = self_similarity(lower_scale)
             progress   += 20.0 / 2 ** iteration
-
             if bar is not None: bar.progress(progress)
-
         scale = lower_scale
-
         if lower_score < unit.similarity:
             last_side = 0
             same_side = False
-
             for iteration in count(1):
-                if upper_scale - lower_scale <= DESCALING_PRECISION: break
-
+                if upper_scale - lower_scale <= DESCALING_DOMAIN_PRECISION: break
                 effective_lower_score = lower_score
                 effective_upper_score = upper_score
-
                 if same_side:
-                    if last_side < 0:
-                        effective_upper_score = ( unit.similarity                       +
-                                                  (upper_score - unit.similarity) / 2.0 )
-                    else:
-                        effective_lower_score = ( unit.similarity                       +
-                                                  (lower_score - unit.similarity) / 2.0 )
-
-                scale = ( lower_scale                               +
-                          (unit.similarity - effective_lower_score) *
-                          (upper_scale - lower_scale)               /
+                    def effective_score(s): return unit.similarity + (s - unit.similarity) / 2.0
+                    if last_side < 0: effective_upper_score = effective_score(upper_score)
+                    else: effective_lower_score = effective_score(lower_score)
+                scale = ( lower_scale                                     +
+                          (unit.similarity - effective_lower_score)       *
+                          (upper_scale - lower_scale)                     /
                           (effective_upper_score - effective_lower_score) )
-
                 scale = min(max(scale, lower_scale), upper_scale)
                 score = self_similarity(scale)
-
                 if abs(score - unit.similarity) <= DESCALING_CODOMAIN_PRECISION: break
-
                 side      = 1 if score >= unit.similarity else -1
                 same_side = side == last_side
                 last_side = side
-
                 if side > 0: upper_scale, upper_score = scale, score
                 else:        lower_scale, lower_score = scale, score
-
                 if bar is not None:
                     bar.progress(min(90.0, progress + 10.0 * iteration))
-
         kernel = scaler_map[Scaler(INTERNAL_SCALER)]
-        result = image.resize(scale, kernel=kernel).copy_memory()
-
+        result = image.resize(scale, kernel = kernel).copy_memory()
         if bar is not None: bar.progress(100.0)
         return result
-
     finally:
         if bar is not None: bar.stop()
 
