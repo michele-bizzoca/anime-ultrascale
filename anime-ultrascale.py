@@ -36,7 +36,7 @@ from enum        import IntEnum, Enum
 from datetime    import datetime
 from dataclasses import dataclass, field
 from threading   import Event
-from typing      import NoReturn, Final, TextIO, Any, cast, Callable
+from typing      import NoReturn, Final, TextIO, Any, cast, Callable, Optional
 
 ####################################################################################################
 # Constants
@@ -88,8 +88,8 @@ DEFAULT_TILE_SIZE      : Final = "4"
 
 MIN_SCALING_SCALE        : Final = 1
 MAX_SCALING_SCALE        : Final = 100
-MIN_DESCALING_SIMILARITY : Final = 79
-MAX_DESCALING_SIMILARITY : Final = 99
+MIN_DESCALING_SIMILARITY : Final = 80
+MAX_DESCALING_SIMILARITY : Final = 100
 MIN_UPSCALING_SCALE      : Final = 2
 MAX_UPSCALING_SCALE      : Final = 16
 MIN_CYCLES               : Final = 0
@@ -332,14 +332,14 @@ class UpscaleData:
 
 @dataclass
 class UserMainSettings:
-    format  : None | str    = None
-    closure : None | Scaler = None
+    format  : Optional[str]    = None
+    closure : Optional[Scaler] = None
 
 @dataclass
 class UserStageSettings:
-    drop    : None | UnitData   | ScaleData   | DescaleData = None
-    model   : None | UnitData   | UpscaleData               = None
-    cycles  : None | int                                    = None
+    drop    : Optional[ScaleData   | DescaleData | UnitData] = None
+    model   : Optional[UpscaleData | UnitData              ] = None
+    cycles  : Optional[int]                                  = None
 
 @dataclass
 class UserSettings:
@@ -1068,9 +1068,11 @@ def import_settings(s : str) -> UserSettings:
     s = re.sub(r'^\s*(\w+)\s*=([^#\n]*)(#.*)?$\n?', r'"\1": \2,', s, flags=re.MULTILINE)
     s = re.sub(r",\s*$", "", s)
     s = "{" + s + "}"
-    return dacite.from_dict( data_class = UserSettings,
-                             data = unflatten(json.loads(s)),
-                             config = dacite.Config(check_types = True, cast = [Enum]) )
+    type_hooks = {Scaler: Scaler, Comparer: Comparer}
+    config = dacite.Config(check_types = True, type_hooks = type_hooks)
+    return dacite.from_dict( data       = unflatten(json.loads(s)) ,
+                             data_class = UserSettings             ,
+                             config     = config                   )
 
 def export_settings(s: UserSettings) -> str:
     result: str = ""
@@ -1473,13 +1475,6 @@ def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
 # Descaling
 ####################################################################################################
 
-DESCALING_DOMAIN_PRECISION : Final = DESCALING_PRECISION
-
-DESCALING_CODOMAIN_PRECISION : Final = \
-    DESCALING_PRECISION * (MAX_DESCALING_SIMILARITY - MIN_DESCALING_SIMILARITY) / 100.0
-
-#---------------------------------------------------------------------------------------------------
-
 def gradient_similarity(reference: numpy.ndarray, candidate: numpy.ndarray) -> float:
     gradient_scale      : Final = 1.0
     magnitude_exponent  : Final = 0.5
@@ -1546,75 +1541,189 @@ def roundtrip(image: pyvips.Image, hscale: float, vscale: float | None = None) -
 def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) -> pyvips.Image:
     if bar is not None:
         start_unit(Size(image.width, image.height), unit, bar)
+
     try:
         if image.width <= MIN_WIDTH or image.height <= MIN_HEIGHT:
-            if bar is not None: bar.progress(100.0)
+            if bar is not None:
+                bar.progress(100.0)
             return image.copy_memory()
+
         grayscale = image
-        if grayscale.hasalpha(): grayscale = grayscale[:-1]
-        if grayscale.bands  > 3: grayscale = grayscale[:3]
+
+        if grayscale.hasalpha():
+            grayscale = grayscale[:-1]
+
+        if grayscale.bands > 3:
+            grayscale = grayscale[:3]
+
         grayscale = grayscale.colourspace("b-w").cast("uchar").copy_memory()
-        grayscale_r1 = roundtrip( grayscale                                   ,
-                                  (grayscale.width - 1.0)  / grayscale.width  ,
-                                  (grayscale.height - 1.0) / grayscale.height )
+
+        scale_x = (grayscale.width  - 1.0) / grayscale.width
+        scale_y = (grayscale.height - 1.0) / grayscale.height
+
+        grayscale_r1 = roundtrip(
+            grayscale,
+            scale_x,
+            scale_y
+        )
+
         reference_r1 = to_bytes(grayscale_r1)
-        grayscale_r2 = roundtrip( grayscale_r1                                ,
-                                  (grayscale.width - 1.0)  / grayscale.width  ,
-                                  (grayscale.height - 1.0) / grayscale.height )
-        max_score = similarity(reference_r1, to_bytes(grayscale_r2), unit.comparer)
-        min_scale = max(MIN_WIDTH / grayscale.width, MIN_HEIGHT / grayscale.height)
-        def self_similarity(scale: float) -> float:
-            candidate = to_bytes(roundtrip(grayscale_r1, scale))
-            similarity_ = similarity(reference_r1, candidate, unit.comparer) / max_score
-            record_descaling_progress(scale, similarity_)
-            return similarity_
-        upper_scale = 1.0
-        upper_score = 1.0
-        lower_scale = max(0.5, min_scale)
-        lower_score = self_similarity(lower_scale)
-        progress    = 20.0
-        if bar is not None: bar.progress(progress)
-        for iteration in count(1):
-            if lower_score < unit.similarity: break
-            upper_scale = lower_scale
-            upper_score = lower_score
-            if lower_scale == min_scale: break
-            lower_scale = max(lower_scale / 2.0, min_scale)
-            lower_score = self_similarity(lower_scale)
-            progress   += 20.0 / 2 ** iteration
-            if bar is not None: bar.progress(progress)
-        scale = lower_scale
-        if lower_score < unit.similarity:
-            last_side = 0
-            same_side = False
-            for iteration in count(1):
-                if upper_scale - lower_scale <= DESCALING_DOMAIN_PRECISION: break
-                effective_lower_score = lower_score
-                effective_upper_score = upper_score
-                if same_side:
-                    def effective_score(s): return unit.similarity + (s - unit.similarity) / 2.0
-                    if last_side < 0: effective_upper_score = effective_score(upper_score)
-                    else: effective_lower_score = effective_score(lower_score)
-                scale = ( lower_scale                                     +
-                          (unit.similarity - effective_lower_score)       *
-                          (upper_scale - lower_scale)                     /
-                          (effective_upper_score - effective_lower_score) )
-                scale = min(max(scale, lower_scale), upper_scale)
-                score = self_similarity(scale)
-                if abs(score - unit.similarity) <= DESCALING_CODOMAIN_PRECISION: break
-                side      = 1 if score >= unit.similarity else -1
-                same_side = side == last_side
-                last_side = side
-                if side > 0: upper_scale, upper_score = scale, score
-                else:        lower_scale, lower_score = scale, score
-                if bar is not None:
-                    bar.progress(min(90.0, progress + 10.0 * iteration))
-        kernel = scaler_map[Scaler(INTERNAL_SCALER)]
-        result = image.resize(scale, kernel = kernel).copy_memory()
-        if bar is not None: bar.progress(100.0)
+
+        grayscale_r2 = roundtrip(
+            grayscale_r1,
+            scale_x,
+            scale_y
+        )
+
+        max_score = similarity(
+            reference_r1,
+            to_bytes(grayscale_r2),
+            unit.comparer
+        )
+
+        min_output_scale = max(
+            MIN_WIDTH  / grayscale.width,
+            MIN_HEIGHT / grayscale.height
+        )
+
+        score_cache: dict[float, float] = {}
+
+        def raw_similarity(scale: float) -> float:
+            if scale not in score_cache:
+                candidate = to_bytes(
+                    roundtrip(grayscale_r1, scale)
+                )
+
+                score_cache[scale] = similarity(
+                    reference_r1,
+                    candidate,
+                    unit.comparer
+                )
+
+            return score_cache[scale]
+
+        def relative_similarity(scale: float) -> float:
+            return raw_similarity(scale) / max_score
+
+        def search_from_below(
+            scorer,
+            target: float,
+            minimum: float,
+            log_divisor: float | None = None
+        ) -> float:
+
+            previous_scale = minimum
+            previous_score = scorer(previous_scale)
+
+            if log_divisor is not None:
+                record_descaling_progress(
+                    min(previous_scale / log_divisor, 1.0),
+                    min(previous_score, 1.0)
+                )
+
+            if previous_score >= target:
+                return previous_scale
+
+            exponent = 1
+
+            while True:
+                scale = max(
+                    1.0 - 1.0 / 2 ** exponent,
+                    minimum
+                )
+
+                if scale <= previous_scale:
+                    exponent += 1
+                    continue
+
+                score = scorer(scale)
+
+                if log_divisor is not None:
+                    record_descaling_progress(
+                        min(scale / log_divisor, 1.0),
+                        min(score, 1.0)
+                    )
+
+                if score >= target:
+                    lower_scale = previous_scale
+                    upper_scale = scale
+                    break
+
+                previous_scale = scale
+                previous_score = score
+                exponent += 1
+
+            while upper_scale - lower_scale > DESCALING_PRECISION:
+                scale = (
+                    lower_scale + upper_scale
+                ) / 2.0
+
+                score = scorer(scale)
+
+                if log_divisor is not None:
+                    record_descaling_progress(
+                        min(scale / log_divisor, 1.0),
+                        min(score, 1.0)
+                    )
+
+                if score >= target:
+                    upper_scale = scale
+                else:
+                    lower_scale = scale
+
+            result = (
+                lower_scale + upper_scale
+            ) / 2.0
+
+            if log_divisor is not None:
+                result_score = scorer(result)
+
+                record_descaling_progress(
+                    min(result / log_divisor, 1.0),
+                    min(result_score, 1.0)
+                )
+
+            return result
+
+        max_scale = search_from_below(
+            raw_similarity,
+            max_score,
+            min_output_scale
+        )
+
+        min_scale = (
+            min_output_scale * max_scale
+        )
+
+        scale = search_from_below(
+            relative_similarity,
+            unit.similarity,
+            min_scale,
+            max_scale
+        )
+
+        output_scale = min(
+            scale / max_scale,
+            1.0
+        )
+
+        kernel = scaler_map[
+            Scaler(INTERNAL_SCALER)
+        ]
+
+        result = image.resize(
+            output_scale,
+            kernel=kernel
+        ).copy_memory()
+
+        if bar is not None:
+            bar.progress(100.0)
+
         return result
+
     finally:
-        if bar is not None: bar.stop()
+        if bar is not None:
+            bar.stop()
 
 ####################################################################################################
 # Picture Logging
