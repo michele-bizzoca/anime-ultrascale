@@ -71,13 +71,13 @@ TEMP_OUTPUT_FILE   : Final = "output.png"
 
 DEFAULT_FORMAT         : Final = "4k"
 DEFAULT_CLOSURE        : Final = "bicubic"
-DEFAULT_REPAIR_DROP    : Final = "ssim95"
-DEFAULT_REPAIR_MODEL   : Final = "ani2x-auto"
+DEFAULT_REPAIR_DROP    : Final = "unit"
+DEFAULT_REPAIR_MODEL   : Final = "hfa4x-auto"
 DEFAULT_REPAIR_CYCLES  : Final = "1"
-DEFAULT_ENHANCE_DROP   : Final = "ssim98"
-DEFAULT_ENHANCE_MODEL  : Final = "us4x-auto"
+DEFAULT_ENHANCE_DROP   : Final = "unit"
+DEFAULT_ENHANCE_MODEL  : Final = "hfa4x-auto"
 DEFAULT_ENHANCE_CYCLES : Final = "1"
-DEFAULT_STYLIZE_DROP   : Final = "ssim95"
+DEFAULT_STYLIZE_DROP   : Final = "unit"
 DEFAULT_STYLIZE_MODEL  : Final = "rpa4x-auto"
 DEFAULT_STYLIZE_CYCLES : Final = "1"
 DEFAULT_PRESET         : Final = "quality"
@@ -337,9 +337,9 @@ class UserMainSettings:
 
 @dataclass
 class UserStageSettings:
-    drop    : None | UnitData   | ScaleData | DescaleData = None
-    model   : None | UpscaleData                             = None
-    cycles  : None | int                                     = None
+    drop    : None | UnitData   | ScaleData   | DescaleData = None
+    model   : None | UnitData   | UpscaleData               = None
+    cycles  : None | int                                    = None
 
 @dataclass
 class UserSettings:
@@ -1045,9 +1045,11 @@ def drop_to_str(drop: UnitData | ScaleData | DescaleData | None) -> str:
         return f"{drop.comparer.name}{drop.similarity}"
     raise ValueError
 
-def model_to_str(model: UpscaleData | None) -> str:
+def model_to_str(model: UnitData | UpscaleData | None) -> str:
     if model is None:
         return DEFAULT_KEYWORD
+    elif isinstance(model, UnitData):
+        return UNIT_KEYWORD
     elif isinstance(model, UpscaleData):
         return f"{model.name}{model.scale}x{f'-{AUTO_KEYWORD}' if model.auto else ''}"
     raise ValueError
@@ -1194,8 +1196,9 @@ def parse_drop(s: str) -> UnitData | ScaleData | DescaleData | None:
         return DescaleData(Comparer(algorithm), arg)
     fail(f"unrecognized algorithm '{algorithm}'")
 
-def parse_model(s: str) -> UpscaleData | None:
+def parse_model(s: str) -> UnitData | UpscaleData | None:
     if s == DEFAULT_KEYWORD: return None
+    elif s == UNIT_KEYWORD : return UnitData()
     match = re.match(rf"^([a-zA-Z0-9-]*[a-zA-Z-])([0-9]+)x(-{AUTO_KEYWORD})?$", s)
     if match is None: fail(f"unrecognized model '{s}'")
     name, scale, auto = match.group(1), int(match.group(2)), bool(match.group(3))
@@ -1551,18 +1554,18 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
         if grayscale.hasalpha(): grayscale = grayscale[:-1]
         if grayscale.bands  > 3: grayscale = grayscale[:3]
         grayscale = grayscale.colourspace("b-w").cast("uchar").copy_memory()
-        grayscale_m1 = roundtrip( grayscale                                   ,
+        grayscale_r1 = roundtrip( grayscale                                   ,
                                   (grayscale.width - 1.0)  / grayscale.width  ,
                                   (grayscale.height - 1.0) / grayscale.height )
-        reference_m1 = to_bytes(grayscale_m1)
-        grayscale_m2 = roundtrip( grayscale_m1                                      ,
-                                  (grayscale_m1.width - 1.0)  / grayscale_m1.width  ,
-                                  (grayscale_m1.height - 1.0) / grayscale_m1.height )
-        max_score = similarity(reference_m1, to_bytes(grayscale_m2), unit.comparer)
+        reference_r1 = to_bytes(grayscale_r1)
+        grayscale_r2 = roundtrip( grayscale_r1                                ,
+                                  (grayscale.width - 1.0)  / grayscale.width  ,
+                                  (grayscale.height - 1.0) / grayscale.height )
+        max_score = similarity(reference_r1, to_bytes(grayscale_r2), unit.comparer)
         min_scale = max(MIN_WIDTH / grayscale.width, MIN_HEIGHT / grayscale.height)
         def self_similarity(scale: float) -> float:
-            candidate = to_bytes(roundtrip(grayscale_m1, scale))
-            similarity_ = similarity(reference_m1, candidate, unit.comparer) / max_score
+            candidate = to_bytes(roundtrip(grayscale_r1, scale))
+            similarity_ = similarity(reference_r1, candidate, unit.comparer) / max_score
             record_descaling_progress(scale, similarity_)
             return similarity_
         upper_scale = 1.0
@@ -1724,6 +1727,8 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
                     raise ValueError
 
             match s.model:
+                case UnitData():
+                    pass
                 case UpscaleData():
                     w = estimated_size.width if dry else current_image.width
                     if s.model.auto and w >= output_size.width:
