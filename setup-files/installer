@@ -10,20 +10,22 @@ DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)/.."
 # File Deployment
 ################################################################################
 
-mkdir $DIR/.bin   $DIR/.venv    $DIR/runner
-mkdir $DIR/models $DIR/sessions $DIR/temp $DIR/presets
+mkdir $DIR/.bin
+mkdir $DIR/.venv
+mkdir $DIR/runner
+mkdir $DIR/models
+mkdir $DIR/sessions
+mkdir $DIR/temp
+mkdir $DIR/presets
 
-cp $DIR/setup-files/launcher                      $DIR/.bin/anime-ultrascale
-cp $DIR/third-party/realesrgan-ncnn-vulkan        $DIR/runner
-cp $DIR/third-party/ani2x.bin                     $DIR/models
-cp $DIR/third-party/ani2x.param                   $DIR/models
-cp $DIR/third-party/us4x.bin                      $DIR/models
-cp $DIR/third-party/us4x.param                    $DIR/models
-cp $DIR/third-party/rpa4x.bin                     $DIR/models
-cp $DIR/third-party/rpa4x.param                   $DIR/models
-cp $DIR/setup-files/quality.preset                $DIR/presets
+cp $DIR/setup-files/launcher               $DIR/.bin/anime-ultrascale
+cp $DIR/third-party/realesrgan-ncnn-vulkan $DIR/runner
+cp $DIR/third-party/*.bin                  $DIR/models
+cp $DIR/third-party/*.param                $DIR/models
+cp $DIR/setup-files/*.preset               $DIR/presets
 
-chmod +x $DIR/.bin/anime-ultrascale $DIR/renv/realesrgan-ncnn-vulkan
+chmod +x $DIR/.bin/anime-ultrascale
+chmod +x $DIR/runner/realesrgan-ncnn-vulkan
 
 ################################################################################
 # Venv Creation
@@ -38,10 +40,9 @@ rm -rf -- "$DIR/build" "$DIR/dist" "$DIR"/*.egg-info "$DIR/.tmp"
 ################################################################################
 
 BASHRC="$HOME/.bashrc"
-COMMAND="export PATH=\"\$PATH:$DIR/.bin\""
+EXPORT="export PATH=\"\$PATH:$DIR/.bin\""
 
-grep -Fqx -- "$COMMAND" "$BASHRC" ||
-    printf '\n%s\n' "$COMMAND" >> "$BASHRC"
+grep -Fqx -- "$EXPORT" "$BASHRC" || printf '\n%s\n' "$EXPORT" >> "$BASHRC"
 
 ################################################################################
 # Bashrc Activation

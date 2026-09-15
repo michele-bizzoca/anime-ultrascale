@@ -6,4 +6,5 @@
 /.bin
 /.venv*
 /.idea
-/clip.txt
+/CLIP
+/TODO
