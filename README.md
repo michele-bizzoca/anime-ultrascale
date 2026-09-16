@@ -2,10 +2,10 @@
 
 Ever thought how an anime image's lifecycle can impact its quality?
 
-For  example, an enthusiast creates an image and publishes it on a platform. The
-platform  requires  downscaling  and conversion to JPG. The image travels across
-the  WWW, until someone uses it on their own website, prior upscaling and export
-to JPG. Finally, you see the image, and download it.
+For  example,  an  enthusiast  creates  an  image  and publishes it on an online
+platform.  The  platform  requires  downscaling and conversion to JPG. The image
+travels  across  the  WWW,  until  someone  uses  it on their own website, prior
+upscaling and export to JPG. Finally, you see the image, and download it.
 
 What you downloaded and its original version are separated by *information loss*
 (due  to  downscaling),  a  *false  perception  of  the downscaled size* (due to
@@ -18,15 +18,16 @@ the  same  size  and  detail level of the original which, when downscaled, turns
 into  the  picture  you  downloaded.  This  is  possible  thanks  to  artificial
 intelligence models.
 
-I  summarized  my experience on this topic in a workflow for extreme restoration 
-of  anime  images, which can be executed with freely available and simple-to-use 
-tools.  It  is  presented,  with  an example of 170x resolution increase, in the 
-article [**Anime Upscaling**](https://github.com/michele-bizzoca/anime-upscaling), 
-which you can [**Read Online**](https://michele-bizzoca.github.io/anime-upscaling/).
+I  summarized  my experience on this topic in a workflow for extreme restoration
+of  anime  images, which can be executed with freely available and simple-to-use
+tools.  It  is  presented,  with  an example of 170x resolution increase, in the
+article
+[**Upscaling Anime**](https://github.com/michele-bizzoca/upscaling-anime), which
+you can [**Read Online**](https://michele-bizzoca.github.io/upscaling-anime/).
 
-Later, I  turned Anime Upscaling into a fully automatic program, and added extra
-features to it, like  automatic upscaling inversion, progress bar, preset files,
-advanced  logging  and  format  expressions.  Its  name is [**Anime Ultrascale**
-](https://github.com/michele-bizzoca/anime-ultrascale).  It   is  written  as  a
-single  Python  file  which  can  be run anywhere. Installation is available for 
-Ubuntu.
+Later,  I turned Upscaling Anime into a fully automatic program, and added extra
+features  to it, like automatic upscaling inversion, progress bar, preset files,
+advanced     logging     and     format     expressions.     Its     name     is
+[**Anime Ultrascale**](https://github.com/michele-bizzoca/anime-ultrascale).  It
+is  written  as  a single Python file which can be run anywhere. Installation is
+available for Ubuntu.
