@@ -2021,9 +2021,289 @@ def print_help() -> None:
 
     def printer(s: str): print(textwrap.dedent(textwrap.dedent(s[1:])),end="")
 
-    printer("""
-        Under construction.
-""")
+#     printer("""
+#         Anime-Ultrascale
+#         A Tool for Extreme Anime Upscaling.
+#
+#         USAGE
+#
+#         (1) anime-ultrascale INPUT OUTPUT
+#                              FORMAT CLOSURE
+#                              DROP   MODEL   CYCLES
+#                              DROP_  MODEL_  CYCLES_
+#                              DROP__ MODEL__ CYCLES__
+#                              [OPTIONS]
+#
+#         (2) anime-ultrascale INPUT OUTPUT FORMAT PRESET [OPTIONS]
+#             anime-ultrascale INPUT OUTPUT PRESET FORMAT [OPTIONS]
+#
+#         (3) anime-ultrascale INPUT OUTPUT FORMAT [OPTIONS]
+#             anime-ultrascale INPUT OUTPUT PRESET [OPTIONS]
+#
+#         (4) anime-ultrascale INPUT OUTPUT [OPTIONS]
+#
+#         (5) anime-ultrascale {ε│-h│--help│-v│--version}
+#
+#         EXAMPLES
+#
+#         (1)  anime-ultrascale input.jpg output.png
+#                               base base
+#                               base base base
+#                               base base base
+#                               base base base
+#                               --log debug
+#
+#         (2a) anime-ultrascale input.jpg output.png my-preset 4k
+#         (2b) anime-ultrascale input.jpg output.png 4k my-preset
+#
+#         (3a) anime-ultrascale input.jpg output.png my-preset
+#         (3b) anime-ultrascale input.jpg output.png 4k
+#
+#         (4)  anime-ultrascale input.jpg output.png
+#
+#         (1) Is  complete,  in  the  sense  that  it  specifies  every possible
+#         positional argument. It applies no transformation, saves the input and
+#         the  output  images,  and  logs  all  debug  information.  Use it as a
+#         template for your own invocation.
+#
+#         (2-4) Revolve  around  'my-preset' which, when not specified, defaults
+#         to  the  built-in preset "quality". The argument 'format', if present,
+#         overrides  the preset's format. Preset files are always generated into
+#         the  "session" folder ("session.preset") as  long as "--log" is "text"
+#         or above, and can be invoked by basename if they are renamed and moved
+#         into the "presets" folder.
+#
+#         (5) Prints  information,  where  "", "-h", and "--help" show this help
+#         message, while "-v" and "--version" show the program's version.
+#
+#         POSITIONAL ARGUMENTS
+#
+#         INPUT (type: str)
+#             Input image in any of the following formats: PNG, JPG/JPEG, BMP,
+#             TIF/TIFF, WEBP.
+#
+#         OUTPUT.png (type: str)
+#             Output  image  in  any  of  the  following  formats: PNG (RGB[A]),
+#             JPG/JPEG (RGB), BMP (RGB), TIF/TIFF (RGB[A]), WEBP (RGB[A]).
+#
+#         FORMAT (type: str) (auto: 4k)
+#             Output  format,  all the following examples are accepted: (a) 2.0,
+#             (b)  200%, (c) w2160, (d)h2160, (e) 4k, 4kh, 4kv (f) 4K, 4KH, 4KV.
+#             (a-b)  multiplies the input format. (c-d) fixes the output width /
+#             height (e) fits the input into a multiple of 960 x 540 px or 540 x
+#             960  px;  h  and v select the horizontal and vertical orientation,
+#             and  when  absent  the input's orientation is chosen; for example,
+#             4kh  fits the input into 3840 x 2160 px (f) like the previous, but
+#             instead  of  producing  the largest image fitting into the box, it
+#             produces the smallest image filling the box.
+#
+#
+#         CLOSURE (type: str) (auto: bicubic)
+#             The algorithm to be used in the final downscaling.
+#
+#         DROP / DROP_ / DROP__ (type: str)
+#             The algorithm to be used in the preliminary downscaling of the
+#             repair / enhance / stylize phase.
+#
+#         REDUCTION (type: float) (auto: automatic upscaling inversion)
+#             The divisor of upscaling inversion.
+#
+#         ENHANCER (type: str)
+#             The  name  of  the Real ESRGAN model to be used during preliminary
+#             upscaling  and  conservative  detail enhancement. It has be stored
+#             in the 'models' folder as a '.bin'/'.param' file pair.
+#
+#         ITERATIONS (type: str)
+#             The  number  of upscalings  performed  during  conservative detail
+#             enhancement.
+#
+#         MULTIPLIER (type: int) (auto: deduced by ENHANCER)
+#            The upscaling factor of ENHANCER.
+#
+#         DIVISOR (type: float) (auto: sqrt(MULTIPLIER))
+#            The downscaling to be applied before upscalings during conservative
+#            detail enhancement.
+#
+#         SCALER (type: str) (auto: bicubic)
+#            The  downscaling  algorithm  to  be used during conservative detail
+#            enhancement.
+#
+#         {ENHANCER_ │ ITERATIONS_ │ MULTIPLIER_ │ DIVISOR_ │ SCALER_}
+#            Just  as  their counterparts without underscore, but these apply to
+#            strong detail enhancement.
+#
+#         PRESET (type: str) (auto: quality)
+#             The  name of a stored preset. It has to be stored in the 'presets'
+#             folder  as  a '.preset' file. Each execution with log level 'text'
+#             or higher saves its preset as part of session data.
+#
+#         {-h│--help} (or no argument)
+#             Shows this help message.
+#
+#         {-v│--version}
+#             Shows this program's version.
+#
+#         CONSTRAINTS
+#
+#             No  initial,  intermediate  or  final image can be either empty or
+#             larger than 200 Mpx.
+#
+#             REDUCTION  >= 1
+#             CLOSURE    in ['bilinear', 'bicubic', 'lanczos']
+#             TILING     >= 1 and <= 16
+#
+#             iterations >= 0
+#             multiplier >= 2
+#             divisor    >= 1 and <= SOFT_MULTIPLIER
+#             scaler     in ['bilinear', 'bicubic', 'lanczos']
+#
+#             ITERATIONS >= 0
+#             MULTIPLIER >= 2
+#             DIVISOR    >= 1 and <= HARD_MULTIPLIER
+#             SCALER     in ['bilinear', 'bicubic', 'lanczos']
+#
+#         REGULAR OPTIONS
+#
+#         {-l│--log} (type: str)
+#             Determines  which  session  data  is  saved:
+#                 'dry'       -> nothing (changes the output to infos)
+#                 'nothing'   -> nothing
+#                 'text'      -> basic textual data, preset included
+#                 'endpoints' -> as 'text'      + input/output images
+#                 'debug'     -> as 'endpoints' + debug textual data
+#                 'research'  -> as 'debug'     + intermediate images
+#
+#         {-q│--quiet}
+#             No standard output.
+#              TILING (type: int) (auto: 4)
+#             The  size  of each tile, to be multiplied with 64 px. For example,
+#             4 leads to a tile size of 256 px.
+#
+#         OVERRIDE OPTIONS
+#
+#         Every  parameter  specified using positional arguments (possibly using
+#         the  default mechanic), except for INPUT and OUTPUT, can be overridden
+#         with an option. Positional arguments are treated differently depending
+#         on  whether  they have been presented with an underscore or not. These
+#         two examples summarize the rules:
+#
+#             ENHANCER  -> {-e│--enhancer}
+#             ENHANCER_ -> {-E│--Enhancer}
+#
+#         DESCRIPTION
+#
+#         Anime-Ultrascale  performs  extreme  image  enlargement  by controlled
+#         alternation  of  downscaling  and  AI  upscaling, where downscaling is
+#         performed  by  traditional  algorithms,  and AI upscaling is performed
+#         using Real ESRGAN models.
+#
+#         The program consists of four phases:
+#             - upscaling  inversion:  detecting  and   applying  the  strongest
+#               information-preserving  downscaling, as AI models will assume no
+#               size inflation
+#             - preliminary upscaling: upscaling to the target format
+#             - conservative  detail enhancement: upscaling and downscaling back
+#               the  image  zero or more times while preserving original details
+#               (adds detail moderately)
+#             - strong  detail  enhancement:  upscaling and downscaling back the
+#               image  zero  or  more times while partly reinterpreting original
+#               details (adds detail considerably)
+#
+#         PROGRESS
+#
+#         A progress bar keeps track of the overall progress of the program. The
+#         cost  unit  is  the Mpx, intended as the average time needed by a Real
+#         ESRGAN model to process 1 Mpx of input data.
+#
+#         DEPLOYMENT
+#
+#         The  official Real ESRGAN executable, 'realesrgan-ncnn-vulkan', has to
+#         be stored in the 'renv' folder.
+#
+#         Real  ESRGAN  models  have to be stored in the 'models' folder. Such a
+#         model  consists  in  a  pair  of  '.bin'/'.param'  files with the same
+#         basename,  which  is  considered   to  be  the  model's  name.  When a
+#         model  multiplier  is  specified  as 'auto', it is searched for in the
+#         model name.
+#
+#         Presets  have  to  be  stored  in  the 'presets' folder. A preset is a
+#         '.preset'  file  that  contains   every   detail   related   to  image
+#         manipulation. The preset file's basename is considered to be its name.
+#         Unless  specified  otherwise,  every  execution  saves   its preset as
+#         part  of  session  data.  The  preset  file  syntax is elementary, for
+#         reference look at a generated preset.
+#
+#         Session  files  are saved in the 'sessions' folder at the subdirectory
+#         'sessions/<date>/<time+pid>'. The most important session files are:
+#             - 'session.preset': image manipulation parameters
+#             - 'session.json': invocation details, I/O details, ground presets
+#             - 'log.txt': history of the execution with timestamps
+#             - <image with lowest counter>: input image in png format
+#             - <image with highest counter>: output image in png format
+#
+#         Temporary  files  are  created and deleted in the 'temp' folder, which
+#         you don't need to care about.
+#
+#         If  this  program has been downloaded from the official repository, it
+#         will    include    the    models    '4xHFA2k'    (conservative)    and
+#         'realesrgan-x4plus-anime'  (strong),  as well as the presets 'quality'
+#         and 'speed'.
+#
+#         If,   additionally,   the   program   has  been  installed  using  the
+#         repository's  'install.sh', the directory tree will be the following:
+#
+#         ┌── anime-ultrascale.py
+#         ├── renv
+#         │     └── realesrgan-ncnn-vulkan
+#         ├── models
+#         │     ├── 4xHFA2k.bin
+#         │     ├── 4xHFA2k.param
+#         │     ├── realesrgan-x4plus-anime.bin
+#         │     └── realesrgan-x4plus-anime.param
+#         ├── presets
+#         │     ├── quality.preset
+#         │     └── speed.preset
+#         ├── sessions
+#         │     ├── <date>
+#         │     │      ├── <time+pid>
+#         │     │      │        └── ·······
+#         │     │      └── ·······
+#         │     └── ·······
+#         ├── temp
+#         │     ├── <date+time+pid>
+#         │     │      └── ·······
+#         │     └── ·······
+#         ├── LICENSE
+#         ├── README
+#         ├── README.md
+#         ├── pyproject.toml
+#         ├── install
+#         ├── third-party
+#         │     ├── LICENSES
+#         │     ├── realesrgan-ncnn-vulkan
+#         │     ├── 4xHFA2k.bin
+#         │     ├── 4xHFA2k.param
+#         │     ├── realesrgan-x4plus-anime.bin
+#         │     └── realesrgan-x4plus-anime.param
+#         ├── setup-files
+#         │     ├── installer
+#         │     └── launcher
+#         ├── .bin
+#         │     └── anime-ultrascale
+#         ├── .venv
+#         │     └── ·······
+#         └── .gitignore
+#
+#         REPOSITORIES
+#
+#         Concept -> https://github.com/michele-bizzoca/anime-upscaling
+#         Program -> https://github.com/michele-bizzoca/anime-ultrascale
+#
+#         LICENSE
+#
+#         Anime Ultrascale - Copyright (c) 2026 Michele Bizzoca
+#         Licensed under the MIT License.
+# """)
 
 ####################################################################################################
 # Main Call
