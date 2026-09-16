@@ -33,8 +33,8 @@ is  written  as  a single Python file which can be run anywhere. Installation is
 available for Ubuntu.
 
 Anime  Ultrascale is distributed under the MIT license, which permits commercial
-use,  together  with  high quality models usable for commercial purposes. Useful
-non-commercial  models  for  which  I  could  not  find  a permissively licensed
+use,  alongside  high quality  models  that  are usable for commercial purposes. 
+Useful  non-commercial models for which I could not find a permissively licensed
 replacement         are         available        separately        in        the
 [**Anime Ultrascale NC**](https://github.com/michele-bizzoca/anime-ultrascale-nc)
 repository.
