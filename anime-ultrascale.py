@@ -105,12 +105,13 @@ OPAQUE_EXTENSIONS       : Final = ["jpg", "jpeg", "bmp"]
 ALPHA_EXTENSIONS        : Final = ["png", "webp", "tif", "tiff"]
 PRESET_EXTENSION        : Final = "preset"
 OUTPUT_PRESET           : Final = "session"
-DEFAULT_KEYWORD         : Final = "base"
+DEFAULT_KEYWORD         : Final = "pass"
 AUTO_KEYWORD            : Final = "auto"
-FIXED_KEYWORD           : Final = "fixed"
+FIX_KEYWORD             : Final = "fix"
+FLEX_KEYWORD            : Final = "flex"
 UNIT_KEYWORD            : Final = "unit"
 PROMPT_WIDTH            : Final = 80
-INTERNAL_SCALER         : Final = "lanczos"
+DEFAULT_SCALER          : Final = "lanczos"
 DESCALING_APPROXIMATION : Final = 0.5
 DESCALING_PRECISION     : Final = 0.01
 
@@ -228,20 +229,18 @@ class Step(str, Enum):
 # ---------------------------------------------------------------------------------------------------
 
 class Scaler(str, Enum):
-    bilinear = "bilinear"
-    bicubic  = "bicubic"
-    lanczos  = "lanczos"
+    cubic = "cubic"
+    lanc  = "lanc"
 
 class Comparer(str, Enum):
-    ssim  = "ssim"
-    psim  = "psim"
-    gsim  = "gsim"
+    form  = "form"
+    phase = "phase"
+    grad  = "grad"
 
 #---------------------------------------------------------------------------------------------------
 
-scaler_map: Final = { Scaler.bilinear : "linear"   ,
-                      Scaler.bicubic  : "cubic"    ,
-                      Scaler.lanczos  : "lanczos3" }
+scaler_map: Final = { Scaler.cubic : "cubic"    ,
+                      Scaler.lanc  : "lanczos3" }
 
 ####################################################################################################
 # Arguments
@@ -312,21 +311,31 @@ class UnitData:
     pass
 
 @dataclass
-class ScaleData:
-    scaler : Scaler
-    scale  : int
-    fixed  : bool
+class DownscaleData:
+    scaler     : Scaler
+    scale      : int
+    fixed      : bool
 
 @dataclass
 class DescaleData:
     comparer   : Comparer
     similarity : int
+    scaler     : Scaler
 
 @dataclass
 class UpscaleData:
-    name  : str
-    scale : int
-    auto  : bool
+    model      : str
+    scale      : int
+
+@dataclass
+class UltrascaleData:
+    model      : str
+    scale      : int
+    scaler     : Scaler
+
+@dataclass
+class IterationData:
+    count      : int
 
 #---------------------------------------------------------------------------------------------------
 
@@ -337,9 +346,9 @@ class UserMainSettings:
 
 @dataclass
 class UserStageSettings:
-    drop    : Optional[ScaleData   | DescaleData | UnitData] = None
-    model   : Optional[UpscaleData | UnitData              ] = None
-    cycles  : Optional[int]                                  = None
+    fall   : Optional[DownscaleData | DescaleData    | UnitData] = None
+    rise   : Optional[UpscaleData   | UltrascaleData | UnitData] = None
+    cycles : Optional[IterationData]                             = None
 
 @dataclass
 class UserSettings:
@@ -368,9 +377,9 @@ class GroundMainSettings:
 
 @dataclass
 class GroundStageSettings:
-    drop    : UnitData | ScaleData | DescaleData
-    model   : UpscaleData
-    cycles  : int
+    fall    : DownscaleData | DescaleData    | UnitData
+    rise    : UpscaleData   | UltrascaleData | UnitData
+    cycles  : IterationData
 
 @dataclass
 class GroundSettings:
@@ -431,13 +440,14 @@ class Scale(Unit):
 
 @dataclass
 class Upscale(Unit):
-    name  : str
+    model : str
     scale : int
 
 @dataclass
 class Descale(Unit):
     comparer   : Comparer
     similarity : float
+    scaler     : Scaler
 
 @dataclass
 class Save(Unit):
@@ -510,8 +520,7 @@ def early_fail( message   : str                         ,
     text = f"{message[:1].upper()}{message[1:]}.{suggestion if suggest else ''}"
     if exception is not None and DEVELOPMENT_MODE:
         raise RuntimeError(text) from exception
-    else:
-        raise SystemExit(text)
+    raise SystemExit(text)
 
 ####################################################################################################
 # Information Check
@@ -799,9 +808,9 @@ def create_bar(cost: float) -> ProgressBar:
     data   = numpy.random.bytes(2000 * 2000 * 3)
     image  = pyvips.Image.new_from_memory(data, 2000, 2000, 3, "uchar")
     start  = time.perf_counter()
-    image.resize(0.5, kernel = scaler_map[Scaler(INTERNAL_SCALER)]).copy_memory()
+    image.resize(0.5, kernel = scaler_map[Scaler(DEFAULT_SCALER)]).copy_memory()
     delta  = time.perf_counter() - start
-    cost_  = unit_cost(Size(2000, 2000), Scale(Scaler(INTERNAL_SCALER), 0.5))
+    cost_  = unit_cost(Size(2000, 2000), Scale(Scaler(DEFAULT_SCALER), 0.5))
     mpxs   = cost_ / delta
     return ProgressBar(cost, mpxs, log_bar_progress)
 
@@ -1022,43 +1031,47 @@ def unflatten(data: dict[str, object]) -> dict[str, object]:
 # Settings Import/Export
 ####################################################################################################
 
-def format_to_str(format_: str | None) -> str:
+def print_format(format_: str | None) -> str:
     if format_ is None:
         return DEFAULT_KEYWORD
     return format_
 
-def closure_to_str(closure: Scaler | None) -> str:
+def print_closure(closure: Scaler | None) -> str:
     if closure is None:
         return DEFAULT_KEYWORD
     elif isinstance(closure, Scaler):
         return closure.name
     raise ValueError
 
-def drop_to_str(drop: UnitData | ScaleData | DescaleData | None) -> str:
-    if drop is None:
+def print_fall(fall: DownscaleData | DescaleData | UnitData | None) -> str:
+    if fall is None:
         return DEFAULT_KEYWORD
-    elif isinstance(drop, UnitData):
+    elif isinstance(fall, UnitData):
         return UNIT_KEYWORD
-    elif isinstance(drop, ScaleData):
-        return f"{drop.scaler.name}{drop.scale}{f'-{FIXED_KEYWORD}' if drop.fixed else ''}"
-    elif isinstance(drop, DescaleData):
-        return f"{drop.comparer.name}{drop.similarity}"
+    elif isinstance(fall, DownscaleData):
+        trail = f'-{FIX_KEYWORD if fall.fixed else FLEX_KEYWORD}'
+        return f"{fall.scaler.name}{fall.scale}{trail}"
+    elif isinstance(fall, DescaleData):
+        trail = f'-{fall.scaler.name}' if fall.scaler else ''
+        return f"{fall.comparer.name}{fall.similarity}{trail}"
     raise ValueError
 
-def model_to_str(model: UnitData | UpscaleData | None) -> str:
-    if model is None:
+def print_rise(rise: UpscaleData | UltrascaleData | UnitData | None) -> str:
+    if rise is None:
         return DEFAULT_KEYWORD
-    elif isinstance(model, UnitData):
+    elif isinstance(rise, UnitData):
         return UNIT_KEYWORD
-    elif isinstance(model, UpscaleData):
-        return f"{model.name}{model.scale}x{f'-{AUTO_KEYWORD}' if model.auto else ''}"
+    elif isinstance(rise, UpscaleData):
+        return f"{rise.model}{rise.scale}x"
+    elif isinstance(rise, UltrascaleData):
+        return f"{rise.model}{rise.scale}x-{rise.scaler.name}"
     raise ValueError
 
-def cycles_to_str(cycles: int | None) -> str:
+def print_cycles(cycles: IterationData | None) -> str:
     if cycles is None:
         return DEFAULT_KEYWORD
-    elif isinstance(cycles, int):
-        return str(cycles)
+    elif isinstance(cycles, IterationData):
+        return f"{cycles}"
     raise ValueError
 
 #---------------------------------------------------------------------------------------------------
@@ -1081,17 +1094,17 @@ def export_settings(s: UserSettings) -> str:
     return result
 
 def rewind_settings(s: UserSettings) -> list[str]:
-    return [ format_to_str(s.main.format)     ,
-             closure_to_str(s.main.closure)   ,
-             drop_to_str(s.repair.drop)       ,
-             model_to_str(s.repair.model)     ,
-             cycles_to_str(s.repair.cycles)   ,
-             drop_to_str(s.enhance.drop)      ,
-             model_to_str(s.enhance.model)    ,
-             cycles_to_str(s.enhance.cycles)  ,
-             drop_to_str(s.stylize.drop)      ,
-             model_to_str(s.stylize.model)    ,
-             cycles_to_str(s.stylize.cycles)  ]
+    return [print_format(s.main.format)     ,
+            print_closure(s.main.closure)   ,
+            print_fall(s.repair.fall)       ,
+            print_rise(s.repair.rise)       ,
+            print_cycles(s.repair.cycles)   ,
+            print_fall(s.enhance.fall)      ,
+            print_rise(s.enhance.rise)      ,
+            print_cycles(s.enhance.cycles)  ,
+            print_fall(s.stylize.fall)      ,
+            print_rise(s.stylize.rise)      ,
+            print_cycles(s.stylize.cycles)]
 
 ####################################################################################################
 # Session Import/Export
@@ -1178,48 +1191,51 @@ def parse_closure(s: str) -> Scaler | None:
         fail(f"unrecognized scaler '{s}'")
     return Scaler(s)
 
-def parse_drop(s: str) -> UnitData | ScaleData | DescaleData | None:
-    if   s == DEFAULT_KEYWORD: return None
-    elif s == UNIT_KEYWORD : return UnitData()
-    match = re.match(rf"^([a-zA-Z-]+)([0-9]+)(-{FIXED_KEYWORD})?$", s)
-    if match is None: fail(f"unrecognized drop '{s}'")
-    algorithm, arg, fixed = match.group(1), int(match.group(2)), bool(match.group(3))
-    if algorithm in Scaler.__members__:
-        if arg < MIN_SCALING_SCALE or arg > MAX_SCALING_SCALE:
-            fail( f"scale '{arg}' out of range "
-                  f"[{MIN_SCALING_SCALE}, {MAX_SCALING_SCALE}]" )
-        return ScaleData(Scaler(algorithm), arg, fixed)
-    elif algorithm in Comparer.__members__:
-        if fixed:
-            fail(f"unrecognized drop '{s}'")
-        if arg < MIN_DESCALING_SIMILARITY or arg > MAX_DESCALING_SIMILARITY:
-            fail(f"similarity '{arg}' out of range "
-                  f"[{MIN_DESCALING_SIMILARITY}, {MAX_DESCALING_SIMILARITY}]" )
-        return DescaleData(Comparer(algorithm), arg)
-    fail(f"unrecognized algorithm '{algorithm}'")
-
-def parse_model(s: str) -> UnitData | UpscaleData | None:
+def parse_fall(s: str) -> UnitData | DownscaleData | DescaleData | None:
     if s == DEFAULT_KEYWORD: return None
     elif s == UNIT_KEYWORD : return UnitData()
-    match = re.match(rf"^([a-zA-Z0-9-]*[a-zA-Z-])([0-9]+)x(-{AUTO_KEYWORD})?$", s)
+    match = re.match(r"^([a-zA-Z0-9-]*[a-zA-Z-])([0-9]+)(-([a-zA-Z-]+))$", s)
+    if match is None: fail(f"unrecognized drop '{s}'")
+    algorithm, arg1, arg2 = match.group(1), int(match.group(2)), match.group(4)
+    if algorithm in Scaler.__members__ and arg2 in [FIX_KEYWORD, FLEX_KEYWORD]:
+        if arg1 < MIN_SCALING_SCALE or arg1 > MAX_SCALING_SCALE:
+            fail( f"scale '{arg1}' out of range "
+                  f"[{MIN_SCALING_SCALE}, {MAX_SCALING_SCALE}]" )
+        return DownscaleData(Scaler(algorithm), arg1, arg2 == FIX_KEYWORD)
+    elif algorithm in Comparer.__members__ and arg2 in Scaler.__members__:
+        if arg1 < MIN_DESCALING_SIMILARITY or arg1 > MAX_DESCALING_SIMILARITY:
+            fail(f"similarity '{arg1}' out of range "
+                  f"[{MIN_DESCALING_SIMILARITY}, {MAX_DESCALING_SIMILARITY}]" )
+        return DescaleData(Comparer(algorithm), arg1, Scaler(arg2))
+    fail(f"unrecognized drop '{s}'")
+
+def parse_rise(s: str) -> UnitData | UpscaleData | UltrascaleData | None :
+    if s == DEFAULT_KEYWORD: return None
+    elif s == UNIT_KEYWORD : return UnitData()
+    match = re.match(r"^([a-zA-Z0-9-]*[a-zA-Z-])([0-9]+)x(-([a-zA-Z-]+))?$", s)
     if match is None: fail(f"unrecognized model '{s}'")
-    name, scale, auto = match.group(1), int(match.group(2)), bool(match.group(3))
+    model, scale, scaler = match.group(1), int(match.group(2)), match.group(4)
     if scale < MIN_UPSCALING_SCALE or scale > MAX_UPSCALING_SCALE:
         fail( f"scale '{scale}' out of range "
               f"[{MIN_UPSCALING_SCALE}, {MAX_UPSCALING_SCALE}]" )
-    if not (MODEL_FOLDER_PATH / f"{name}{scale}x.bin").is_file():
-        fail(f"missing weights (.bin) of model '{name}{scale}x'")
-    if not (MODEL_FOLDER_PATH / f"{name}{scale}x.param").is_file():
-        fail(f"missing parameters (.param) of model '{name}{scale}x'")
-    return UpscaleData(name, scale, auto)
+    if not (MODEL_FOLDER_PATH / f"{model}{scale}x.bin").is_file():
+        fail(f"missing weights (.bin) of model '{model}{scale}x'")
+    if not (MODEL_FOLDER_PATH / f"{model}{scale}x.param").is_file():
+        fail(f"missing parameters (.param) of model '{model}{scale}x'")
+    if scaler is None:
+        return UpscaleData(model, scale)
+    elif scaler in Scaler.__members__:
+        return UltrascaleData(model, scale, Scaler(scaler))
+    else:
+        fail(f"unrecognized rise '{s}'")
 
-def parse_cycles(s: str) -> int | None:
+def parse_cycles(s: str) -> IterationData | None:
     if s == DEFAULT_KEYWORD: return None
     try: cycles = int(s)
     except ValueError as e: fail(f"unrecognized cycles '{s}'", e)
     if cycles < MIN_CYCLES or cycles > MAX_CYCLES:
-        fail(f"cycles '{s}' out of range [{MIN_CYCLES}, {MAX_CYCLES}]")
-    return cycles
+        fail(f"cycles '{cycles}' out of range [{MIN_CYCLES}, {MAX_CYCLES}]")
+    return IterationData(cycles)
 
 #---------------------------------------------------------------------------------------------------
 
@@ -1227,14 +1243,14 @@ def settings_from_config_arguments(args: list[str]) -> UserSettings:
    return UserSettings \
         ( UserMainSettings  ( parse_format  ( args[ConfigArgument.main_format]    ) ,
                               parse_closure ( args[ConfigArgument.main_closure]   ) ) ,
-          UserStageSettings ( parse_drop    ( args[ConfigArgument.repair_drop]    ) ,
-                              parse_model   ( args[ConfigArgument.repair_model]   ) ,
+          UserStageSettings ( parse_fall    (args[ConfigArgument.repair_drop]     ) ,
+                              parse_rise    (args[ConfigArgument.repair_model]    ) ,
                               parse_cycles  ( args[ConfigArgument.repair_cycles]  ) ) ,
-          UserStageSettings ( parse_drop    ( args[ConfigArgument.enhance_drop]   ) ,
-                              parse_model   ( args[ConfigArgument.enhance_model]  ) ,
+          UserStageSettings ( parse_fall    (args[ConfigArgument.enhance_drop])   ,
+                              parse_rise    (args[ConfigArgument.enhance_model])  ,
                               parse_cycles  ( args[ConfigArgument.enhance_cycles] ) ) ,
-          UserStageSettings ( parse_drop    ( args[ConfigArgument.stylize_drop]   ) ,
-                              parse_model   ( args[ConfigArgument.stylize_model]  ) ,
+          UserStageSettings ( parse_fall    (args[ConfigArgument.stylize_drop])   ,
+                              parse_rise    (args[ConfigArgument.stylize_model])  ,
                               parse_cycles  ( args[ConfigArgument.stylize_cycles] ) ) )
 
 ####################################################################################################
@@ -1445,7 +1461,7 @@ def upscale(unit: Upscale, bar: ProgressBar | None = None) -> None:
                                       "-i", str(TEMP_INPUT_FILE_PATH)       ,
                                       "-o", str(TEMP_OUTPUT_FILE_PATH)      ,
                                       "-m", str(MODEL_FOLDER_PATH)          ,
-                                      "-n", f"{unit.name}{unit.scale}x"     ,
+                                      "-n", f"{unit.model}{unit.scale}x"     ,
                                       "-t", str(64 * tile_size)             ,
                                       "-g", "0"                             ,
                                       "-j", "1:1:1"                         ,
@@ -1518,23 +1534,26 @@ def structural_similarity(reference: numpy.ndarray, candidate: numpy.ndarray) ->
 #---------------------------------------------------------------------------------------------------
 
 def similarity(reference: numpy.ndarray, candidate: numpy.ndarray, comparer: Comparer) -> float:
-    if   comparer == Comparer.ssim: return structural_similarity(reference, candidate)
-    elif comparer == Comparer.gsim: return gradient_similarity(reference, candidate)
-    elif comparer == Comparer.psim: return phase_similarity(reference, candidate)
-    else: raise ValueError
+    if   comparer == Comparer.form: return structural_similarity(reference, candidate)
+    elif comparer == Comparer.grad: return gradient_similarity(reference, candidate)
+    elif comparer == Comparer.phase: return phase_similarity(reference, candidate)
+    raise ValueError
 
 def to_bytes(image: pyvips.Image) -> numpy.ndarray:
     return numpy.ndarray( buffer = image.write_to_memory()  ,
                           dtype  = numpy.uint8              ,
                           shape=(image.height, image.width) )
 
-def roundtrip(image: pyvips.Image, hscale: float, vscale: float | None = None) -> pyvips.Image:
+def roundtrip( image: pyvips.Image         ,
+               scaler: Scaler              ,
+               hscale: float               ,
+               vscale: float | None = None ) -> pyvips.Image:
     small = image.resize( hscale                                            ,
                           vscale = vscale if vscale is not None else hscale ,
-                          kernel = scaler_map[Scaler(INTERNAL_SCALER)]      )
-    return small.resize( image.width / small.width                    ,
-                         vscale = image.height / small.height         ,
-                         kernel = scaler_map[Scaler(INTERNAL_SCALER)] )
+                          kernel = scaler_map[scaler]                       )
+    return small.resize( image.width / small.width            ,
+                         vscale = image.height / small.height ,
+                         kernel = scaler_map[scaler]          )
 
 #---------------------------------------------------------------------------------------------------
 
@@ -1563,6 +1582,7 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
 
         grayscale_r1 = roundtrip(
             grayscale,
+            unit.scaler,
             scale_x,
             scale_y
         )
@@ -1571,6 +1591,7 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
 
         grayscale_r2 = roundtrip(
             grayscale_r1,
+            unit.scaler,
             scale_x,
             scale_y
         )
@@ -1591,7 +1612,7 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
         def raw_similarity(scale: float) -> float:
             if scale not in score_cache:
                 candidate = to_bytes(
-                    roundtrip(grayscale_r1, scale)
+                    roundtrip(grayscale_r1, unit.scaler, scale)
                 )
 
                 score_cache[scale] = similarity(
@@ -1708,7 +1729,7 @@ def descale(unit: Descale, image: pyvips.Image, bar: ProgressBar | None = None) 
         )
 
         kernel = scaler_map[
-            Scaler(INTERNAL_SCALER)
+            unit.scaler
         ]
 
         result = image.resize(
@@ -1810,44 +1831,61 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
 
         s: GroundStageSettings = getattr(ground_settings, phase.name)
 
-        for _ in range(s.cycles):
-            match s.drop:
+        for _ in range(s.cycles.count):
+            match s.fall:
                 case UnitData():
                     pass
-                case ScaleData():
+                case DownscaleData():
                     current_size = estimated_size if dry else get_size(current_image)
-                    step_size = output_size if s.drop.fixed else current_size
+                    step_size = output_size if s.fall.fixed else current_size
                     min_scale = max(MIN_WIDTH / step_size.width, MIN_HEIGHT / step_size.height)
-                    scale_ = s.drop.scale / 100.0
-                    scale_ *= output_size.width / current_size.width if s.drop.fixed else 1
-                    unit = Scale(s.drop.scaler, max(scale_, min_scale))
+                    scale_ = s.fall.scale / 100.0
+                    scale_ *= output_size.width / current_size.width if s.fall.fixed else 1
+                    unit = Scale(s.fall.scaler, max(scale_, min_scale))
                     if not dry: current_image = scale(unit, current_image, None, bar)
                     cost += unit_cost(estimated_size, unit)
                     cost += log_step(estimated_size, index(), dry, phase, Step.scale, bar)
                     estimated_size *= unit_approx_scale(unit)
                 case DescaleData():
-                    similarity_ = s.drop.similarity / 100.0
-                    unit = Descale(s.drop.comparer, similarity_)
+                    similarity_ = s.fall.similarity / 100.0
+                    scaler = s.fall.scaler or Scaler(DEFAULT_SCALER)
+                    unit = Descale(s.fall.comparer, similarity_, scaler)
                     if not dry: current_image = descale(unit, current_image, bar)
                     cost += unit_cost(estimated_size, unit)
                     cost += log_step(estimated_size, index(), dry, phase, Step.descale, bar)
                     estimated_size *= unit_approx_scale(unit)
                 case _:
                     raise ValueError
-
-            match s.model:
+            w    = estimated_size.width if dry else current_image.width
+            rise = s.rise
+            if isinstance(s.rise, UltrascaleData) and w * s.rise.scale >= output_size.width:
+                rise = UpscaleData(s.rise.model, s.rise.scale)
+            match rise:
                 case UnitData():
                     pass
                 case UpscaleData():
-                    w = estimated_size.width if dry else current_image.width
-                    if s.model.auto and w >= output_size.width:
-                        pass
-                    elif not s.model.auto or w * s.model.scale >= output_size.width:
+                    step_size = estimated_size
+                    unit = Save(TEMP_INPUT_FILE_PATH)
+                    if not dry: save(unit, current_image, bar)
+                    cost += unit_cost(estimated_size, unit)
+                    unit = Upscale(rise.model, rise.scale)
+                    if not dry: upscale(unit, bar)
+                    cost += unit_cost(estimated_size, unit)
+                    estimated_size *= unit_approx_scale(unit)
+                    unit = Load(TEMP_OUTPUT_FILE_PATH)
+                    if not dry: current_image = load(unit, bar)
+                    cost += unit_cost(estimated_size, unit)
+                    cost += log_step(step_size, index(), dry, phase, Step.upscale, bar)
+                case UltrascaleData():
+                    r = output_size.width / w
+                    n = math.ceil(math.log(r, rise.scale))
+                    k = (r / rise.scale ** n) ** (1.0 / (n - 1))
+                    for j in range(n):
                         step_size = estimated_size
                         unit = Save(TEMP_INPUT_FILE_PATH)
                         if not dry: save(unit, current_image, bar)
                         cost += unit_cost(estimated_size, unit)
-                        unit = Upscale(s.model.name, s.model.scale)
+                        unit = Upscale(rise.model, rise.scale)
                         if not dry: upscale(unit, bar)
                         cost += unit_cost(estimated_size, unit)
                         estimated_size *= unit_approx_scale(unit)
@@ -1855,37 +1893,20 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
                         if not dry: current_image = load(unit, bar)
                         cost += unit_cost(estimated_size, unit)
                         cost += log_step(step_size, index(), dry, phase, Step.upscale, bar)
-                        if s.model.auto:
-                            k = output_size.width / (w * s.model.scale)
-                            unit = Scale(Scaler(INTERNAL_SCALER), k)
+                        if j < n - 1:
+                            unit = Scale(rise.scaler, k)
                             if not dry: current_image = scale(unit, current_image, None, bar)
                             cost += unit_cost(estimated_size, unit)
-                            estimated_size = output_size
-                    else:
-                        r = output_size.width / w
-                        n = math.ceil(math.log(r, s.model.scale))
-                        k = (r / s.model.scale **  n) ** (1.0 / (n - 1))
-                        for j in range(n):
-                            step_size = estimated_size
-                            unit = Save(TEMP_INPUT_FILE_PATH)
-                            if not dry: save(unit, current_image, bar)
-                            cost += unit_cost(estimated_size, unit)
-                            unit = Upscale(s.model.name, s.model.scale)
-                            if not dry: upscale(unit, bar)
-                            cost += unit_cost(estimated_size, unit)
                             estimated_size *= unit_approx_scale(unit)
-                            unit = Load(TEMP_OUTPUT_FILE_PATH)
-                            if not dry: current_image = load(unit, bar)
-                            cost += unit_cost(estimated_size, unit)
-                            cost += log_step(step_size, index(), dry, phase, Step.upscale, bar)
-                            if j < n - 1:
-                                unit = Scale(Scaler(INTERNAL_SCALER), k)
-                                if not dry: current_image = scale(unit, current_image, None, bar)
-                                cost += unit_cost(estimated_size, unit)
-                                estimated_size *= unit_approx_scale(unit)
-                        estimated_size = output_size
+                    estimated_size = output_size
                 case _:
                     raise ValueError
+            if isinstance(rise, UpscaleData) and isinstance(s.rise, UltrascaleData):
+                k = output_size.width / (w * s.rise.scale)
+                unit = Scale(Scaler(s.rise.scaler), k)
+                if not dry: current_image = scale(unit, current_image, None, bar)
+                cost += unit_cost(estimated_size, unit)
+                estimated_size = output_size
 
     w = estimated_size.width  if dry else current_image.width
     h = estimated_size.height if dry else current_image.height
@@ -1908,19 +1929,19 @@ def dry_check(cost: float) -> None:
             print("")
             print(f" input format   : {input_size.width} x {input_size.height} px")
             print(f" input mode     : {input_mode.replace('--', ', ')}")
-            print(f" closure        : {closure_to_str(ground_settings.main.closure)}")
+            print(f" closure        : {print_closure(ground_settings.main.closure)}")
             print(f" repair")
-            print(f"    downscaling : {drop_to_str(ground_settings.repair.drop)}")
-            print(f"    upscaling   : {model_to_str(ground_settings.repair.model)}")
-            print(f"    cycles      : {cycles_to_str(ground_settings.repair.cycles)}")
+            print(f"    downscaling : {print_fall(ground_settings.repair.fall)}")
+            print(f"    upscaling   : {print_rise(ground_settings.repair.rise)}")
+            print(f"    cycles      : {print_cycles(ground_settings.repair.cycles)}")
             print(f" enhance")
-            print(f"    downscaling : {drop_to_str(ground_settings.enhance.drop)}")
-            print(f"    upscaling   : {model_to_str(ground_settings.enhance.model)}")
-            print(f"    cycles      : {cycles_to_str(ground_settings.enhance.cycles)}")
+            print(f"    downscaling : {print_fall(ground_settings.enhance.fall)}")
+            print(f"    upscaling   : {print_rise(ground_settings.enhance.rise)}")
+            print(f"    cycles      : {print_cycles(ground_settings.enhance.cycles)}")
             print(f" stylize")
-            print(f"    downscaling : {drop_to_str(ground_settings.stylize.drop)}")
-            print(f"    upscaling   : {model_to_str(ground_settings.stylize.model)}")
-            print(f"    cycles      : {cycles_to_str(ground_settings.stylize.cycles)}")
+            print(f"    downscaling : {print_fall(ground_settings.stylize.fall)}")
+            print(f"    upscaling   : {print_rise(ground_settings.stylize.rise)}")
+            print(f"    cycles      : {print_cycles(ground_settings.stylize.cycles)}")
             print(f" output format  : {output_size.width} x {output_size.height} px")
             print(f" output mode    : {output_mode.replace('--', ', ')}")
             print(f" tile size      : {int(tile_size) * 64} px")
