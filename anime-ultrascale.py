@@ -70,15 +70,15 @@ TEMP_OUTPUT_FILE   : Final = "output.png"
 #---------------------------------------------------------------------------------------------------
 
 DEFAULT_FORMAT         : Final = "4k"
-DEFAULT_CLOSURE        : Final = "bicubic"
+DEFAULT_CLOSURE        : Final = "cubic"
 DEFAULT_REPAIR_DROP    : Final = "unit"
-DEFAULT_REPAIR_MODEL   : Final = "hfa4x-auto"
+DEFAULT_REPAIR_MODEL   : Final = "hfa4x-cubic"
 DEFAULT_REPAIR_CYCLES  : Final = "1"
 DEFAULT_ENHANCE_DROP   : Final = "unit"
-DEFAULT_ENHANCE_MODEL  : Final = "hfa4x-auto"
+DEFAULT_ENHANCE_MODEL  : Final = "hfa4x-lanczos"
 DEFAULT_ENHANCE_CYCLES : Final = "1"
 DEFAULT_STYLIZE_DROP   : Final = "unit"
-DEFAULT_STYLIZE_MODEL  : Final = "rpa4x-auto"
+DEFAULT_STYLIZE_MODEL  : Final = "rpa4x-lanczos"
 DEFAULT_STYLIZE_CYCLES : Final = "1"
 DEFAULT_PRESET         : Final = "quality"
 DEFAULT_LOG_LEVEL      : Final = "text"
@@ -229,18 +229,19 @@ class Step(str, Enum):
 # ---------------------------------------------------------------------------------------------------
 
 class Scaler(str, Enum):
-    cubic = "cubic"
-    lanc  = "lanc"
+    linear  = "linear"
+    cubic   = "cubic"
+    lanczos = "lanczos"
 
 class Comparer(str, Enum):
-    form  = "form"
-    phase = "phase"
-    grad  = "grad"
+    structure = "structure"
+    phase     = "phase"
+    gradient  = "gradient"
 
 #---------------------------------------------------------------------------------------------------
 
 scaler_map: Final = { Scaler.cubic : "cubic"    ,
-                      Scaler.lanc  : "lanczos3" }
+                      Scaler.lanczos  : "lanczos3" }
 
 ####################################################################################################
 # Arguments
@@ -602,9 +603,6 @@ def sort_arguments() -> None:
             flags.add(flags_map[arg])
             i += 1; continue
 
-        if i + 1 >= len(sys.argv) or sys.argv[i + 1].startswith("-"):
-            early_fail(f"option '{arg}' has no value")
-
         if arg in regular_options_map:
             resolver  = regular_options_map
             collector = regular_options
@@ -613,6 +611,9 @@ def sort_arguments() -> None:
             collector = override_options
         else:
             early_fail(f"unrecognized option '{arg}'")
+
+        if i + 1 >= len(sys.argv) or sys.argv[i + 1].startswith("-"):
+            early_fail(f"option '{arg}' has no value")
 
         option = resolver[arg]
         if option in collector:
@@ -1009,7 +1010,10 @@ def flatten(data: dict[str, object]) -> dict[str, object]:
         for key, value in data_.items():
             joined_key = f"{prefix}_{key}" if prefix else key
             if isinstance(value, dict):
-                result.update(flatten_(value, joined_key))
+                if value:
+                    result.update(flatten_(value, joined_key))
+                else:
+                    result[joined_key] = {}
             else:
                 result[joined_key] = value
         return result
@@ -1071,7 +1075,7 @@ def print_cycles(cycles: IterationData | None) -> str:
     if cycles is None:
         return DEFAULT_KEYWORD
     elif isinstance(cycles, IterationData):
-        return f"{cycles}"
+        return f"{cycles.count}"
     raise ValueError
 
 #---------------------------------------------------------------------------------------------------
@@ -1534,8 +1538,8 @@ def structural_similarity(reference: numpy.ndarray, candidate: numpy.ndarray) ->
 #---------------------------------------------------------------------------------------------------
 
 def similarity(reference: numpy.ndarray, candidate: numpy.ndarray, comparer: Comparer) -> float:
-    if   comparer == Comparer.form: return structural_similarity(reference, candidate)
-    elif comparer == Comparer.grad: return gradient_similarity(reference, candidate)
+    if   comparer == Comparer.structure: return structural_similarity(reference, candidate)
+    elif comparer == Comparer.gradient: return gradient_similarity(reference, candidate)
     elif comparer == Comparer.phase: return phase_similarity(reference, candidate)
     raise ValueError
 
@@ -1838,27 +1842,29 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
                 case DownscaleData():
                     current_size = estimated_size if dry else get_size(current_image)
                     step_size = output_size if s.fall.fixed else current_size
-                    min_scale = max(MIN_WIDTH / step_size.width, MIN_HEIGHT / step_size.height)
+                    min_scale = max( MIN_WIDTH / current_size.width   ,
+                                     MIN_HEIGHT / current_size.height )
                     scale_ = s.fall.scale / 100.0
                     scale_ *= output_size.width / current_size.width if s.fall.fixed else 1
                     unit = Scale(s.fall.scaler, max(scale_, min_scale))
                     if not dry: current_image = scale(unit, current_image, None, bar)
                     cost += unit_cost(estimated_size, unit)
-                    cost += log_step(estimated_size, index(), dry, phase, Step.scale, bar)
                     estimated_size *= unit_approx_scale(unit)
+                    cost += log_step(estimated_size, index(), dry, phase, Step.scale, bar)
                 case DescaleData():
                     similarity_ = s.fall.similarity / 100.0
                     scaler = s.fall.scaler or Scaler(DEFAULT_SCALER)
                     unit = Descale(s.fall.comparer, similarity_, scaler)
                     if not dry: current_image = descale(unit, current_image, bar)
                     cost += unit_cost(estimated_size, unit)
-                    cost += log_step(estimated_size, index(), dry, phase, Step.descale, bar)
                     estimated_size *= unit_approx_scale(unit)
+                    cost += log_step(estimated_size, index(), dry, phase, Step.descale, bar)
                 case _:
                     raise ValueError
             w    = estimated_size.width if dry else current_image.width
             rise = s.rise
-            if isinstance(s.rise, UltrascaleData) and w * s.rise.scale >= output_size.width:
+            if ( isinstance(s.rise, UltrascaleData)  and
+                 w * s.rise.scale >= output_size.width ):
                 rise = UpscaleData(s.rise.model, s.rise.scale)
             match rise:
                 case UnitData():
@@ -1875,7 +1881,7 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
                     unit = Load(TEMP_OUTPUT_FILE_PATH)
                     if not dry: current_image = load(unit, bar)
                     cost += unit_cost(estimated_size, unit)
-                    cost += log_step(step_size, index(), dry, phase, Step.upscale, bar)
+                    cost += log_step(estimated_size, index(), dry, phase, Step.upscale, bar)
                 case UltrascaleData():
                     r = output_size.width / w
                     n = math.ceil(math.log(r, rise.scale))
@@ -1892,7 +1898,7 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
                         unit = Load(TEMP_OUTPUT_FILE_PATH)
                         if not dry: current_image = load(unit, bar)
                         cost += unit_cost(estimated_size, unit)
-                        cost += log_step(step_size, index(), dry, phase, Step.upscale, bar)
+                        cost += log_step(estimated_size, index(), dry, phase, Step.upscale, bar)
                         if j < n - 1:
                             unit = Scale(rise.scaler, k)
                             if not dry: current_image = scale(unit, current_image, None, bar)
@@ -1915,7 +1921,7 @@ def process(dry: bool, bar: ProgressBar | None = None) -> float:
     unit = Scale(ground_settings.main.closure, hscale)
     if not dry: current_image = scale(unit, current_image, vscale, bar)
     cost += unit_cost(estimated_size, unit)
-    cost += log_output(estimated_size, index(), dry, bar)
+    cost += log_output(output_size, index(), dry, bar)
 
     return cost
 
