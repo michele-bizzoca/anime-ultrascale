@@ -2063,9 +2063,9 @@ def print_help() -> None:
 
         (1) anime-ultrascale INPUT OUTPUT
                              FORMAT CLOSURE
-                             DROP   MODEL   CYCLES
-                             DROP_  MODEL_  CYCLES_
-                             DROP__ MODEL__ CYCLES__
+                             FALL   RISE   CYCLES
+                             FALL_  RISE_  CYCLES_
+                             FALL__ RISE__ CYCLES__
                              [OPTIONS]
 
         (2) anime-ultrascale INPUT OUTPUT FORMAT PRESET [OPTIONS]
@@ -2080,27 +2080,27 @@ def print_help() -> None:
 
         EXAMPLES
 
-        (1)  anime-ultrascale input.jpg output.png
+        [1]  anime-ultrascale input.jpg output.png
                               pass pass
                               pass pass pass
                               pass pass pass
                               pass pass pass
                               --log debug
 
-        (2a) anime-ultrascale input.jpg output.png my-preset 4k
-        (2b) anime-ultrascale input.jpg output.png 4k my-preset
+        [2a] anime-ultrascale input.jpg output.png my-preset 4k
+        [2b] anime-ultrascale input.jpg output.png 4k my-preset
 
-        (3a) anime-ultrascale input.jpg output.png my-preset
-        (3b) anime-ultrascale input.jpg output.png 4k
+        [3a] anime-ultrascale input.jpg output.png my-preset
+        [3b] anime-ultrascale input.jpg output.png 4k
 
-        (4)  anime-ultrascale input.jpg output.png
-
-        (1) Is  complete,  in  the  sense  that  it  specifies  every possible
+        [4]  anime-ultrascale input.jpg output.png
+        
+        [1] Is  complete,  in  the  sense  that  it  specifies  every possible
         positional argument. It applies no transformation, saves the input and
         the  output  images,  and  logs  all  debug  information.  Use it as a
         template for your own invocation.
 
-        (2-4) Revolve  around  'my-preset' which, when not specified, defaults
+        [2-4] Revolve  around  'my-preset' which, when not specified, defaults
         to  the  built-in preset "quality". The argument 'format', if present,
         overrides  the preset's format. Preset files are always generated into
         the  "session" folder ("session.preset") as  long as "--log" is "text"
@@ -2112,15 +2112,15 @@ def print_help() -> None:
 
         POSITIONAL ARGUMENTS
 
-        INPUT (type: str)
+        INPUT
             Input image in any of the following formats: PNG, JPG/JPEG, BMP,
             TIF/TIFF, WEBP.
 
-        OUTPUT.png (type: str)
+        OUTPUT.png
             Output  image  in  any  of  the  following  formats: PNG (RGB[A]),
             JPG/JPEG (RGB), BMP (RGB), TIF/TIFF (RGB[A]), WEBP (RGB[A]).
 
-        FORMAT (type: str) (auto: 4k)
+        FORMAT (pass: 1.0)
             Output  format,  all the following examples are accepted: (a) 2.0,
             (b)  200%, (c) w2160, (d)h2160, (e) 4k, 4kh, 4kv (f) 4K, 4KH, 4KV.
             (a-b)  multiplies the input format. (c-d) fixes the output width /
@@ -2131,45 +2131,25 @@ def print_help() -> None:
             instead  of  producing  the largest image fitting into the box, it
             produces the smallest image filling the box.
 
-
-        CLOSURE (type: str) (auto: bicubic)
+        CLOSURE (pass: cubic)
             The algorithm to be used in the final downscaling.
 
-        DROP / DROP_ / DROP__ (type: str)
-            The algorithm to be used in the preliminary downscaling of the
+        FALL / FALL_ / FALL__ (pass: unit)
+            The  algorithm  to  be  used  for  preliminary  downscaling of the
             repair / enhance / stylize phase.
 
-        REDUCTION (type: float) (auto: automatic upscaling inversion)
-            The divisor of upscaling inversion.
+        RISE / RISE_ / RISE__ (pass: unit)
+            The  algorithm  to be used for upscaling of the repair / enhance /
+            stylize phase.
 
-        ENHANCER (type: str)
-            The  name  of  the Real ESRGAN model to be used during preliminary
-            upscaling  and  conservative  detail enhancement. It has be stored
-            in the 'models' folder as a '.bin'/'.param' file pair.
+        CYCLES / CYCLES_ / CYCLES__ (pass: 1)
+            How many times to repeat the rise-fall cycle.
 
-        ITERATIONS (type: str)
-            The  number  of upscalings  performed  during  conservative detail
-            enhancement.
-
-        MULTIPLIER (type: int) (auto: deduced by ENHANCER)
-           The upscaling factor of ENHANCER.
-
-        DIVISOR (type: float) (auto: sqrt(MULTIPLIER))
-           The downscaling to be applied before upscalings during conservative
-           detail enhancement.
-
-        SCALER (type: str) (auto: bicubic)
-           The  downscaling  algorithm  to  be used during conservative detail
-           enhancement.
-
-        {ENHANCER_ │ ITERATIONS_ │ MULTIPLIER_ │ DIVISOR_ │ SCALER_}
-           Just  as  their counterparts without underscore, but these apply to
-           strong detail enhancement.
-
-        PRESET (type: str) (auto: quality)
-            The  name of a stored preset. It has to be stored in the 'presets'
-            folder  as  a '.preset' file. Each execution with log level 'text'
-            or higher saves its preset as part of session data.
+        PRESET (pass: quality)
+            The  name  of  a stored preset. The preset 'name' has to be stored
+            as  "presets/<name>.preset".  Each execution with log level 'text'
+            or  higher saves its preset in "session.preset" as part of session 
+            data.
 
         {-h│--help} (or no argument)
             Shows this help message.
